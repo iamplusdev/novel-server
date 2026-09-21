@@ -1,0 +1,24 @@
+[Unit]
+Description=Personal Novel Library (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+# 改成你的部署路径与用户
+WorkingDirectory=/opt/novel-server
+User=novel
+Group=novel
+EnvironmentFile=-/opt/novel-server/.env
+# 若不用 .env，也可直接写 Environment=
+# Environment=ADMIN_TOKEN=your-token
+# Environment=PUBLIC_BASE_URL=http://192.168.1.100:8000
+ExecStart=/opt/novel-server/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=3
+
+# 基础加固（个人 NAS 足够）
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,121 @@
+{
+  "bookSourceName": "本地小说库",
+  "bookSourceGroup": "本地NAS",
+  "bookSourceUrl": "http://127.0.0.1:8000",
+  "bookSourceType": 0,
+  "bookUrlPattern": "",
+  "customOrder": 0,
+  "enabled": true,
+  "enabledCookieJar": false,
+  "enabledExplore": true,
+  "enabledLogin": false,
+  "exploreUrl": [
+    {
+      "title": "玄幻",
+      "url": "/api/legado/explore/玄幻?page={{page}}&page_size=20"
+    },
+    {
+      "title": "奇幻",
+      "url": "/api/legado/explore/奇幻?page={{page}}&page_size=20"
+    },
+    {
+      "title": "武侠",
+      "url": "/api/legado/explore/武侠?page={{page}}&page_size=20"
+    },
+    {
+      "title": "仙侠",
+      "url": "/api/legado/explore/仙侠?page={{page}}&page_size=20"
+    },
+    {
+      "title": "都市",
+      "url": "/api/legado/explore/都市?page={{page}}&page_size=20"
+    },
+    {
+      "title": "现实",
+      "url": "/api/legado/explore/现实?page={{page}}&page_size=20"
+    },
+    {
+      "title": "军事",
+      "url": "/api/legado/explore/军事?page={{page}}&page_size=20"
+    },
+    {
+      "title": "历史",
+      "url": "/api/legado/explore/历史?page={{page}}&page_size=20"
+    },
+    {
+      "title": "游戏",
+      "url": "/api/legado/explore/游戏?page={{page}}&page_size=20"
+    },
+    {
+      "title": "体育",
+      "url": "/api/legado/explore/体育?page={{page}}&page_size=20"
+    },
+    {
+      "title": "科幻",
+      "url": "/api/legado/explore/科幻?page={{page}}&page_size=20"
+    },
+    {
+      "title": "诸天无限",
+      "url": "/api/legado/explore/诸天无限?page={{page}}&page_size=20"
+    },
+    {
+      "title": "悬疑灵异",
+      "url": "/api/legado/explore/悬疑灵异?page={{page}}&page_size=20"
+    },
+    {
+      "title": "轻小说",
+      "url": "/api/legado/explore/轻小说?page={{page}}&page_size=20"
+    },
+    {
+      "title": "短篇",
+      "url": "/api/legado/explore/短篇?page={{page}}&page_size=20"
+    }
+  ],
+  "header": "",
+  "lastUpdateTime": 0,
+  "loginUrl": "",
+  "respondTime": 180000,
+  "ruleArticles": "",
+  "ruleBookInfo": {
+    "author": "$.author",
+    "coverUrl": "$.cover_url",
+    "intro": "$.intro",
+    "kind": "$.kind",
+    "lastChapter": "$.lastChapter",
+    "name": "$.name",
+    "tocUrl": "$.toc_url",
+    "wordCount": "$.word_count"
+  },
+  "ruleContent": {
+    "content": "$.content",
+    "nextContentUrl": ""
+  },
+  "ruleExplore": {
+    "bookList": "$.books",
+    "author": "$.author",
+    "coverUrl": "$.cover_url",
+    "intro": "$.intro",
+    "kind": "$.kind",
+    "lastChapter": "$.lastChapter",
+    "name": "$.name",
+    "tocUrl": "$.toc_url"
+  },
+  "ruleSearch": {
+    "bookList": "$.books",
+    "author": "$.author",
+    "coverUrl": "$.cover_url",
+    "intro": "$.intro",
+    "kind": "$.kind",
+    "lastChapter": "$.lastChapter",
+    "name": "$.name",
+    "tocUrl": "$.toc_url"
+  },
+  "ruleToc": {
+    "chapterList": "$.chapters",
+    "chapterName": "$.name",
+    "chapterUrl": "$.content_url",
+    "nextTocUrl": ""
+  },
+  "searchUrl": "/api/legado/search?q={{key}}&page={{page}}&page_size=20",
+  "weight": 0
+}

@@ -1,0 +1,211 @@
+<!-- AI生成 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>小说库 · 管理后台</title>
+  <link rel="stylesheet" href="/admin.css" />
+</head>
+<body>
+<p data-aigc-mark="1" style="margin:0 0 8px;font-size:10px;line-height:1.3;color:#6b6560;font-weight:400;">AI生成</p>
+
+  <div id="login" class="login-wrap">
+    <div class="login-card">
+      <div class="brand">
+        <span class="brand-mark">卷</span>
+        <div>
+          <h1>个人小说库</h1>
+          <p class="muted">管理后台 · Token 鉴权</p>
+        </div>
+      </div>
+      <label class="field">
+        <span>Admin Token</span>
+        <input id="token-input" type="password" placeholder="Authorization Bearer Token" autocomplete="current-password" />
+      </label>
+      <button id="login-btn" class="btn btn-primary btn-block">进入后台</button>
+      <p id="login-error" class="error" hidden>Token 无效</p>
+      <p class="hint">Token 由服务端环境变量 <code>ADMIN_TOKEN</code> 配置。</p>
+    </div>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <aside class="sidebar">
+      <div class="brand brand-side">
+        <span class="brand-mark">卷</span>
+        <div>
+          <strong>小说库</strong>
+          <div class="muted tiny" id="base-url-label">—</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="library">书库</button>
+        <button class="nav-item" data-view="import">导入</button>
+        <button class="nav-item" data-view="api">API / 书源</button>
+      </nav>
+      <div class="stats" id="stats-box">
+        <div class="stat"><span class="stat-n" id="stat-books">0</span><span class="stat-l">书籍</span></div>
+        <div class="stat"><span class="stat-n" id="stat-words">0</span><span class="stat-l">字数</span></div>
+      </div>
+      <div class="side-foot">
+        <button id="logout-btn" class="btn btn-ghost btn-sm">退出登录</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- 书库 -->
+      <section id="view-library" class="view">
+        <header class="toolbar">
+          <div class="toolbar-left">
+            <h2>书库</h2>
+            <span class="pill" id="lib-count">0</span>
+          </div>
+          <div class="toolbar-right">
+            <input id="search-input" class="input" type="search" placeholder="搜索书名 / 作者 / 标签…" />
+            <select id="category-filter" class="input select">
+              <option value="">全部分类</option>
+            </select>
+            <select id="status-filter" class="input select">
+              <option value="">全部状态</option>
+              <option value="连载">连载</option>
+              <option value="完结">完结</option>
+              <option value="未知">未知</option>
+            </select>
+            <select id="view-mode" class="input select" title="显示方式">
+              <option value="grid">封面墙</option>
+              <option value="table">列表</option>
+            </select>
+            <button id="refresh-btn" class="btn btn-ghost">刷新</button>
+          </div>
+        </header>
+
+        <div id="grid-wrap" class="book-grid"></div>
+        <div id="table-wrap" class="table-wrap" hidden>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>书名</th><th>作者</th><th>分类</th><th>状态</th><th>章节</th><th>字数</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="prev-page" class="btn btn-ghost btn-sm">上一页</button>
+          <span id="page-label" class="muted">1 / 1</span>
+          <button id="next-page" class="btn btn-ghost btn-sm">下一页</button>
+        </div>
+      </section>
+
+      <!-- 导入 -->
+      <section id="view-import" class="view" hidden>
+        <header class="toolbar">
+          <div class="toolbar-left"><h2>导入 TXT</h2></div>
+          <div class="toolbar-right">
+            <button id="import-btn" class="btn btn-primary">开始导入</button>
+            <button id="import-refresh" class="btn btn-ghost">刷新状态</button>
+          </div>
+        </header>
+        <div class="panel">
+          <div class="panel-title">扫描路径</div>
+          <p class="mono" id="novels-path">NOVELS_DIR（服务端配置）</p>
+          <p class="muted">将 TXT 按分类放入子目录，例如 <code>novels/玄幻/书名.txt</code>。支持 <code>书名.txt</code>、<code>书名(作者).txt</code>、<code>作者-书名.txt</code>。文件内容未变化会自动跳过。</p>
+        </div>
+        <div class="panel">
+          <div class="panel-title">导入日志</div>
+          <pre id="import-log" class="log">尚未运行导入。</pre>
+        </div>
+      </section>
+
+      <!-- API -->
+      <section id="view-api" class="view" hidden>
+        <header class="toolbar">
+          <div class="toolbar-left"><h2>API / Legado 书源</h2></div>
+        </header>
+        <div class="panel">
+          <div class="panel-title">服务地址</div>
+          <p class="mono" id="api-base">—</p>
+          <p class="muted">请在服务端设置 <code>PUBLIC_BASE_URL</code> 为手机可访问的局域网或穿透地址，书源与封面绝对地址都依赖它。</p>
+        </div>
+        <div class="panel">
+          <div class="panel-title">公开 JSON API</div>
+          <ul class="api-list mono">
+            <li>GET /api/categories</li>
+            <li>GET /api/books?category=&amp;q=&amp;page=</li>
+            <li>GET /api/books/{id}</li>
+            <li>GET /api/books/{id}/chapters</li>
+            <li>GET /api/books/{id}/chapters/{chapter_id}</li>
+            <li>GET /api/search?q=</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Legado 书源 API（完整 URL）</div>
+          <ul class="api-list mono">
+            <li>GET /api/legado/explore/{分类}?page=</li>
+            <li>GET /api/legado/search?q=&amp;page=</li>
+            <li>GET /api/legado/book/{id}</li>
+            <li>GET /api/legado/toc/{id}</li>
+            <li>GET /api/legado/content/{book_id}/{chapter_id}</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-title">书源 JSON</div>
+          <p class="muted">下载后在开源阅读 Legado → 我的 → 书源管理 → 本地导入。若开启了全局鉴权，可在 header 中加入 Bearer Token。</p>
+          <div class="row">
+            <a class="btn btn-primary" href="/legado_book_source.json" download>下载书源 JSON</a>
+            <button id="copy-source" class="btn btn-ghost">复制书源 JSON</button>
+          </div>
+          <pre id="source-preview" class="log"></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 编辑抽屉 -->
+  <div id="drawer-mask" class="drawer-mask" hidden></div>
+  <aside id="drawer" class="drawer" hidden>
+    <header class="drawer-head">
+      <h3 id="drawer-title">编辑书籍</h3>
+      <button id="drawer-close" class="icon-btn" aria-label="关闭">✕</button>
+    </header>
+    <div class="drawer-body">
+      <input type="hidden" id="edit-id" />
+      <div class="cover-edit">
+        <img id="cover-preview" alt="封面" />
+        <div class="cover-actions">
+          <label class="btn btn-ghost btn-sm file-label">
+            上传封面
+            <input id="cover-file" type="file" accept="image/*" hidden />
+          </label>
+          <div class="muted tiny">支持 jpg / png / webp / gif</div>
+        </div>
+      </div>
+      <label class="field"><span>书名</span><input id="edit-title" class="input" /></label>
+      <label class="field"><span>作者</span><input id="edit-author" class="input" /></label>
+      <label class="field"><span>分类</span>
+        <select id="edit-category" class="input select"></select>
+      </label>
+      <label class="field"><span>状态</span>
+        <select id="edit-status" class="input select">
+          <option value="连载">连载</option>
+          <option value="完结">完结</option>
+          <option value="未知">未知</option>
+        </select>
+      </label>
+      <label class="field"><span>标签（逗号分隔）</span><input id="edit-tags" class="input" placeholder="热血, 系统流" /></label>
+      <label class="field"><span>简介</span><textarea id="edit-intro" class="input textarea" rows="6"></textarea></label>
+      <div class="muted tiny" id="edit-meta"></div>
+    </div>
+    <footer class="drawer-foot">
+      <button id="delete-btn" class="btn btn-danger">删除书籍</button>
+      <div class="spacer"></div>
+      <button id="cancel-btn" class="btn btn-ghost">取消</button>
+      <button id="save-btn" class="btn btn-primary">保存</button>
+    </footer>
+  </aside>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/admin.js"></script>
+</body>
+</html>
