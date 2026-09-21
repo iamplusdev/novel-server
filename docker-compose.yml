@@ -1,0 +1,25 @@
+services:
+  novel-server:
+    build: .
+    image: novel-server:latest
+    container_name: novel-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # 必改：管理 Token
+      ADMIN_TOKEN: "change-me-to-a-long-random-string"
+      # 必改：手机能访问到的地址（局域网 IP 或穿透域名）
+      PUBLIC_BASE_URL: "http://192.168.1.100:8000"
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      NOVELS_DIR: "/app/novels"
+      DATABASE_PATH: "/app/data/novels.db"
+      COVERS_DIR: "/app/covers"
+    volumes:
+      # 源 TXT、数据库、封面 持久化
+      - ./novels:/app/novels
+      - ./data:/app/data
+      - ./covers:/app/covers
+    # 同网段手机访问即可；如需宿主机网络可取消注释
+    # network_mode: host
