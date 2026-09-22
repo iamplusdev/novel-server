@@ -134,6 +134,7 @@
     batchScrapeStatus: $("batch-scrape-status"),
     batchOnlyMissing: $("batch-only-missing"),
     batchMinScore: $("batch-min-score"),
+    batchSource: $("batch-source"),
     batchScrapeLog: $("batch-scrape-log"),
     drawer: $("drawer"),
     drawerMask: $("drawer-mask"),
@@ -784,7 +785,28 @@
   async function runScrapeSearch() {
     const keyword = (els.scrapeKeyword.value || els.editTitle.value || "").trim();
     if (!keyword) {
-      toast("请填写搜索关键词", "err");
+      toast("请填写书名或书号/链接", "err");
+      return;
+    }
+    const src0 = (els.scrapeSource && els.scrapeSource.value) || "qidian";
+    const idLike = /^\d{5,24}$/.test(keyword) || /qidian\.com\/book\/\d+|fanqienovel\.com\/page\/\d+/.test(keyword);
+    if (idLike) {
+      els.scrapeSearchBtn.disabled = true;
+      els.scrapeResults.innerHTML = '<div class="muted tiny">按书号拉取详情…</div>';
+      try {
+        const res = await api("/api/admin/scrape/detail", {
+          method: "POST",
+          body: { source: src0, source_book_id: keyword },
+        });
+        const hit = Object.assign({}, res, { source_id: res.source_id || keyword });
+        renderScrapeHits([hit], els.editTitle.value);
+        askScrapeConfirm(hit);
+      } catch (err) {
+        els.scrapeResults.innerHTML = '<div class="muted tiny">' + escapeHtml(err.message || "详情失败") + "</div>";
+        toast(err.message || "详情失败", "err");
+      } finally {
+        els.scrapeSearchBtn.disabled = false;
+      }
       return;
     }
     els.scrapeSearchBtn.disabled = true;
@@ -820,7 +842,7 @@
       const res = await api("/api/admin/scrape/books/" + bookId + "/apply", {
         method: "POST",
         body: {
-          source: "qidian",
+          source: (els.scrapeSource && els.scrapeSource.value) || "qidian",
           source_book_id: String(hit.source_id),
           with_cover: true,
           hint_name: hit.name || null,
@@ -1344,7 +1366,7 @@
       const res = await api("/api/admin/scrape/batch/start", {
         method: "POST",
         body: {
-          source: "qidian",
+          source: (els.batchSource && els.batchSource.value) || "all",
           only_missing: !!els.batchOnlyMissing.checked,
           min_score: Number(els.batchMinScore.value) || 0.55,
           dry_run: !!dryRun,

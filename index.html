@@ -216,6 +216,7 @@
             <button id="batch-scrape-preview" class="btn btn-ghost">预览匹配</button>
             <button id="batch-scrape-run" class="btn btn-primary">开始一键刮削</button>
             <button id="batch-scrape-status" class="btn btn-ghost">刷新进度</button>
+            
             <label class="check-row" style="margin:0">
               <input id="batch-only-missing" type="checkbox" checked />
               <span>仅未刮削</span>
@@ -427,10 +428,10 @@
     </header>
     <div class="drawer-body">
       <div class="row" style="margin:0 0 10px">
-        <input id="scrape-keyword" class="input" placeholder="搜索关键词（默认当前书名）" style="flex:1;min-width:160px" />
+        <input id="scrape-keyword" class="input" placeholder="书名 / 书号 / 详情链接" style="flex:1;min-width:160px" />
         <select id="scrape-source" class="input select" title="刮削源">
           <option value="qidian">起点</option>
-          <option value="fanqie" disabled>番茄（待抓包）</option>
+          <option value="fanqie">番茄</option>
         </select>
         <button id="scrape-search-btn" class="btn btn-primary">搜索</button>
       </div>

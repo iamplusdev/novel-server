@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal
 from .models import Book
-from .scrapers import REGISTRY, SOURCE_LABELS
+from .scrapers import ALL_SOURCES, REGISTRY, SOURCE_LABELS
 from .scrapers.qidian import ScrapeError, clean_tag_token, download_cover
 from .config import settings
 
