@@ -44,6 +44,20 @@
     importLog: $("import-log"),
     sourcePreview: $("source-preview"),
     copySource: $("copy-source"),
+    backupAutoPill: $("backup-auto-pill"),
+    backupRun: $("backup-run"),
+    backupListRefresh: $("backup-list-refresh"),
+    davUrl: $("dav-url"),
+    davPath: $("dav-path"),
+    davUser: $("dav-user"),
+    davPass: $("dav-pass"),
+    davInterval: $("dav-interval"),
+    davKeep: $("dav-keep"),
+    davAuto: $("dav-auto"),
+    davSave: $("dav-save"),
+    davTest: $("dav-test"),
+    backupTableBody: $("backup-table-body"),
+    backupLog: $("backup-log"),
     drawer: $("drawer"),
     drawerMask: $("drawer-mask"),
     drawerTitle: $("drawer-title"),
@@ -477,14 +491,180 @@
     document.body.removeChild(ta);
   }
 
+  // —— WebDAV 备份 ——
+  function fmtSize(n) {
+    if (!n && n !== 0) return "—";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    return n + " B";
+  }
+
+  function backupLog(text) {
+    els.backupLog.textContent = text || "";
+  }
+
+  function appendBackupLog(text) {
+    const prev = els.backupLog.textContent || "";
+    const line = "[" + new Date().toLocaleTimeString() + "] " + text;
+    els.backupLog.textContent = (prev && prev !== "尚未操作。" ? prev + "\n" : "") + line;
+    els.backupLog.scrollTop = els.backupLog.scrollHeight;
+  }
+
+  async function loadBackupConfig() {
+    const cfg = await api("/api/admin/backup/config");
+    els.davUrl.value = cfg.webdav_url || "";
+    els.davPath.value = cfg.remote_path || "novel-server-backups";
+    els.davUser.value = cfg.username || "";
+    els.davPass.placeholder = cfg.password_set ? "已保存，留空表示不修改" : "输入 WebDAV 密码";
+    els.davInterval.value = cfg.interval_hours || 24;
+    els.davKeep.value = cfg.keep_count || 7;
+    els.davAuto.checked = !!cfg.auto_enabled;
+    els.backupAutoPill.textContent = cfg.auto_enabled
+      ? ("自动备份 · 每 " + (cfg.interval_hours || 24) + "h")
+      : "未启用自动";
+  }
+
+  async function collectBackupConfig() {
+    const payload = {
+      webdav_url: els.davUrl.value.trim(),
+      username: els.davUser.value.trim(),
+      remote_path: els.davPath.value.trim() || "novel-server-backups",
+      auto_enabled: els.davAuto.checked,
+      interval_hours: Number(els.davInterval.value) || 24,
+      keep_count: Number(els.davKeep.value) || 7,
+    };
+    const pass = els.davPass.value;
+    if (pass) payload.password = pass;
+    return payload;
+  }
+
+  async function saveBackupConfig() {
+    try {
+      const payload = await collectBackupConfig();
+      const saved = await api("/api/admin/backup/config", { method: "PUT", body: payload });
+      els.davPass.value = "";
+      els.davPass.placeholder = saved.password_set ? "已保存，留空表示不修改" : "输入 WebDAV 密码";
+      els.backupAutoPill.textContent = saved.auto_enabled
+        ? ("自动备份 · 每 " + saved.interval_hours + "h")
+        : "未启用自动";
+      appendBackupLog("配置已保存");
+      toast("备份配置已保存", "ok");
+    } catch (err) {
+      toast(err.message || "保存失败", "err");
+    }
+  }
+
+  async function testBackupConn() {
+    try {
+      const payload = await collectBackupConfig();
+      const res = await api("/api/admin/backup/test", { method: "POST", body: payload });
+      appendBackupLog("测试连接: " + res.message);
+      toast(res.message || "连接成功", "ok");
+    } catch (err) {
+      appendBackupLog("测试失败: " + (err.message || err));
+      toast(err.message || "连接失败", "err");
+    }
+  }
+
+  function renderBackupList(items) {
+    if (!items || !items.length) {
+      els.backupTableBody.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;padding:18px">暂无备份，点「立即备份」创建</td></tr>';
+      return;
+    }
+    els.backupTableBody.innerHTML = items.map((it) => `
+      <tr data-name="${escapeAttr(it.name)}">
+        <td class="mono">${escapeHtml(it.name)}</td>
+        <td>${fmtSize(it.size)}</td>
+        <td class="muted tiny">${escapeHtml(it.modified || "")}</td>
+        <td class="actions">
+          <button class="btn btn-ghost btn-sm" data-restore="${escapeAttr(it.name)}">还原</button>
+        </td>
+      </tr>`).join("");
+    els.backupTableBody.querySelectorAll("[data-restore]").forEach((btn) => {
+      btn.addEventListener("click", () => restoreBackup(btn.dataset.restore));
+    });
+  }
+
+  async function loadBackupList() {
+    const res = await api("/api/admin/backup/list");
+    renderBackupList(res.items || []);
+  }
+
+  async function runBackupNow() {
+    els.backupRun.disabled = true;
+    try {
+      appendBackupLog("开始备份…");
+      const res = await api("/api/admin/backup/run", { method: "POST" });
+      appendBackupLog("本地: " + res.local_file + " · 远程: " + (res.remote || "(仅本地)"));
+      if (res.manifest) {
+        appendBackupLog("规模: 书 " + res.manifest.book_count + " · 章 " + res.manifest.chapter_count + " · 封面 " + res.manifest.cover_count);
+      }
+      toast("备份完成", "ok");
+      await Promise.all([loadBackupList(), loadBackupStatus(), loadStats()]);
+    } catch (err) {
+      appendBackupLog("备份失败: " + (err.message || err));
+      toast(err.message || "备份失败", "err");
+    } finally {
+      els.backupRun.disabled = false;
+    }
+  }
+
+  async function restoreBackup(filename) {
+    if (!confirm("确认从备份「" + filename + "」还原？当前数据库与封面将被覆盖，操作不可撤销。")) return;
+    els.backupRun.disabled = true;
+    try {
+      appendBackupLog("还原 " + filename + " …");
+      const res = await api("/api/admin/backup/restore", {
+        method: "POST",
+        body: { filename: filename },
+      });
+      appendBackupLog("还原完成 " + (res.restored_at || ""));
+      toast("还原完成，书库数据已恢复", "ok");
+      state.page = 1;
+      await Promise.all([loadBooks(), loadStats(), loadBackupStatus()]);
+    } catch (err) {
+      appendBackupLog("还原失败: " + (err.message || err));
+      toast(err.message || "还原失败", "err");
+    } finally {
+      els.backupRun.disabled = false;
+    }
+  }
+
+  function renderBackupStatus(st) {
+    if (!st) return;
+    const lines = [];
+    if (st.last_backup_at) lines.push("上次备份: " + st.last_backup_at);
+    if (st.last_restore_at) lines.push("上次还原: " + st.last_restore_at);
+    if (st.running) lines.push("任务进行中: " + (st.action || ""));
+    if (st.message) lines.push("最新消息: " + st.message);
+    if (st.last_error) lines.push("最近错误: " + st.last_error);
+    if ((st.history || []).length) {
+      lines.push("");
+      (st.history || []).slice(-10).forEach((h) => {
+        lines.push(h.time + "  " + h.message);
+      });
+    }
+    if (lines.length) backupLog(lines.join("\n"));
+  }
+
+  async function loadBackupStatus() {
+    const st = await api("/api/admin/backup/status");
+    renderBackupStatus(st);
+  }
+
   function switchView(name) {
     document.querySelectorAll(".nav-item").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.view === name);
     });
-    ["library", "import", "api"].forEach((v) => {
+    ["library", "import", "backup", "api"].forEach((v) => {
       const el = $("view-" + v);
       if (el) el.hidden = v !== name;
     });
+    if (name === "backup") {
+      loadBackupConfig().catch(() => {});
+      loadBackupList().catch(() => {});
+      loadBackupStatus().catch(() => {});
+    }
   }
 
   // Events
@@ -515,6 +695,10 @@
   els.importBtn.addEventListener("click", startImport);
   els.importRefresh.addEventListener("click", () => refreshImport().catch(toast));
   els.copySource.addEventListener("click", copySource);
+  els.backupRun.addEventListener("click", runBackupNow);
+  els.backupListRefresh.addEventListener("click", () => loadBackupList().catch((e) => toast(e.message, "err")));
+  els.davSave.addEventListener("click", saveBackupConfig);
+  els.davTest.addEventListener("click", testBackupConn);
   els.drawerClose.addEventListener("click", closeDrawer);
   els.cancelBtn.addEventListener("click", closeDrawer);
   els.drawerMask.addEventListener("click", closeDrawer);

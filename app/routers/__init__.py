@@ -1,1 +1,1 @@
-from . import admin, legado, public  # noqa: F401
+from . import admin, backup, legado, public  # noqa: F401

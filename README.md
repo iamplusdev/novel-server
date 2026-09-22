@@ -10,6 +10,7 @@
 - JSON API：分类浏览、搜索、书籍详情、目录、正文
 - Legado（开源阅读）自定义书源：发现页分类、搜索、详情、目录、正文，**全部返回完整 URL**
 - 管理后台（`/admin`）：Token 鉴权；维护封面/书名/作者/简介/状态/标签；上传封面；删除书籍；触发导入
+- **WebDAV 备份 / 还原**：备份数据库+封面到 WebDAV，支持自动备份与一键还原
 - 封面存本地 `covers/`，由服务直接提供
 
 ## 技术栈与依赖
@@ -34,10 +35,13 @@ novel-server/
 │   ├── importer.py        # 目录扫描与增量导入
 │   ├── auth.py            # 管理 Token 校验
 │   ├── serializers.py     # Book/Chapter → JSON
+│   ├── webdav.py          # 极简 WebDAV 客户端（标准库）
+│   ├── backup.py          # 备份打包 / 上传 / 还原 / 自动调度
 │   └── routers/
 │       ├── public.py      # 公开阅读 API
 │       ├── legado.py      # Legado 书源 API
-│       └── admin.py       # 管理后台 API
+│       ├── admin.py       # 管理后台 API
+│       └── backup.py      # WebDAV 备份 API
 ├── index.html             # 管理后台 SPA
 ├── admin.css / admin.js
 ├── import_novels.py       # CLI 导入
@@ -128,6 +132,12 @@ Legado（返回绝对 URL）：
 | DELETE | `/api/admin/books/{id}` | 删除书籍（级联章节+封面） |
 | POST | `/api/admin/import` | 后台触发导入 |
 | GET | `/api/admin/import/status` | 导入状态 |
+| GET/PUT | `/api/admin/backup/config` | WebDAV 备份配置（密码不回传） |
+| POST | `/api/admin/backup/test` | 测试 WebDAV 连接 |
+| POST | `/api/admin/backup/run` | 立即备份并上传 |
+| GET | `/api/admin/backup/list` | 列出远程备份 |
+| POST | `/api/admin/backup/restore` | 按文件名还原 |
+| GET | `/api/admin/backup/status` | 备份/还原状态日志 |
 
 OpenAPI 文档：`/docs`
 
@@ -228,19 +238,37 @@ sudo -u novel /opt/novel-server/.venv/bin/python /opt/novel-server/import_novels
 - 防火墙放行 TCP 8000。
 - 外网访问（可选）：frp / Cloudflare Tunnel / Tailscale 等，将 `PUBLIC_BASE_URL` 改为穿透后的 HTTPS 地址；Legado 若走外网建议再加反向代理 Basic Auth，并在书源 `header` 中带认证信息。
 
+## WebDAV 备份与还原
+
+管理后台 →「备份」页配置：
+
+1. **WebDAV 地址**：如 `https://dav.example.com/dav/`（坚果云 / Nextcloud / NAS 均可）
+2. **账号 / 密码**、**远程目录**（默认 `novel-server-backups`）
+3. **测试连接** → **保存配置**
+4. **立即备份**：打包 `novels.db` + `covers/` 为 zip 上传，并写 `latest.json`
+5. **自动备份**：勾选后按「间隔小时」在服务运行时自动备份；按「保留份数」滚动删除旧包
+
+**还原**：在备份列表点「还原」，会下载对应 zip，覆盖本地数据库与封面（不覆盖 `novels/` 源 TXT）。
+
+说明：
+- 备份密码存于服务器 `data/backup_config.json`（接口不回传明文），请妥善保护该文件
+- 还原会重建 SQLite 连接；还原完成后建议刷新管理后台
+- 本地也会在 `data/backups/` 留一份最近打包文件
+
 ## 管理后台
 
 1. 打开 `/admin`，输入 `ADMIN_TOKEN`。
 2. 书库：封面墙/列表、搜索筛选、点击卡片编辑元数据、上传封面、删除。
 3. 导入：一键扫描 `NOVELS_DIR`，查看新增/更新/跳过/失败日志。
-4. API / 书源：查看接口与复制 Legado JSON。
+4. 备份：WebDAV 配置、立即/自动备份、列表还原。
+5. API / 书源：查看接口与复制 Legado JSON。
 
 ## 维护建议
 
 - 源 TXT 只增不改时，重复导入几乎无开销（SHA256 跳过）。
-- 备份：打包 `data/` + `covers/` 即可；`novels/` 另存。
+- 备份：打包 `data/` + `covers/` 即可；`novels/` 另存；或直接用 WebDAV 备份功能。
 - 升级：拉代码 → `pip install -r requirements.txt` → 重启服务。
-- 不要把真实 `ADMIN_TOKEN` 提交到仓库。
+- 不要把真实 `ADMIN_TOKEN` 或 WebDAV 密码提交到仓库。
 
 ## License
 
