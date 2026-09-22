@@ -67,8 +67,11 @@ def scrape_search(payload: SearchIn) -> dict:
 @router.post("/detail")
 def scrape_detail(payload: ApplyIn) -> dict:
     mod = _mod(payload.source)
+    raw = (payload.source_book_id or "").strip()
+    extract = getattr(mod, "extract_book_id", None)
+    bid = (extract(raw) if extract else raw) or raw
     try:
-        hit = mod.fetch_detail(payload.source_book_id)
+        hit = mod.fetch_detail(bid)
     except ScrapeError as e:
         raise HTTPException(502, str(e)) from e
     return hit.to_dict()
@@ -80,7 +83,7 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
     if not book:
         raise HTTPException(404, "书籍不存在")
     mod = _mod(payload.source)
-    label = SOURCE_LABELS.get(payload.source.strip().lower(), "起点")
+    label = SOURCE_LABELS.get((payload.source or "qidian").strip().lower(), "起点")
 
     sid = (payload.source_book_id or "").strip()
     taken = db.execute(
@@ -179,6 +182,6 @@ def scrape_sources() -> dict:
     return {
         "items": [
             {"key": "qidian", "label": "起点", "enabled": True},
-            {"key": "fanqie", "label": "番茄小说", "enabled": False},
+            {"key": "fanqie", "label": "番茄", "enabled": True},
         ]
     }

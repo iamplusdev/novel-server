@@ -238,6 +238,16 @@ def cover_url_for(book_id: str) -> str:
 def book_url_for(book_id: str) -> str:
     return f"https://www.qidian.com/book/{book_id}/"
 
+def extract_book_id(text: str) -> str:
+    """从 URL 或纯数字提取起点 bookId。"""
+    s = (text or "").strip()
+    m = re.search(r"qidian\.com/(?:book|info)/(\d{5,12})", s)
+    if m:
+        return m.group(1)
+    m = re.fullmatch(r"(\d{5,12})", s)
+    return m.group(1) if m else ""
+
+
 
 def _parse_mobile_search(page: str, limit: int) -> list[ScrapeHit]:
     hits: list[ScrapeHit] = []
