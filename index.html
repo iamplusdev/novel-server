@@ -16,16 +16,73 @@
         <span class="brand-mark">爱</span>
         <div>
           <h1>爱小说</h1>
-          <p class="muted">管理后台 · Token 鉴权</p>
+          <p class="muted" id="auth-subtitle">管理后台 · 账号登录</p>
         </div>
       </div>
-      <label class="field">
-        <span>Admin Token</span>
-        <input id="token-input" type="password" placeholder="Authorization Bearer Token" autocomplete="current-password" />
-      </label>
-      <button id="login-btn" class="btn btn-primary btn-block">进入后台</button>
-      <p id="login-error" class="error" hidden>Token 无效</p>
-      <p class="hint">Token 由服务端环境变量 <code>ADMIN_TOKEN</code> 配置。</p>
+
+      <div id="auth-login">
+        <label class="field">
+          <span>用户名</span>
+          <input id="login-user" class="input" autocomplete="username" placeholder="用户名" />
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input id="login-pass" class="input" type="password" autocomplete="current-password" placeholder="密码" />
+        </label>
+        <button id="login-btn" class="btn btn-primary btn-block">登录</button>
+        <div class="auth-links">
+          <button type="button" class="link-btn" id="show-forgot">忘记密码</button>
+        </div>
+      </div>
+
+      <div id="auth-setup" hidden>
+        <p class="hint" style="margin:0 0 12px">首次使用：输入的用户名和密码将设为管理账号，请妥善保管。</p>
+        <label class="field">
+          <span>用户名</span>
+          <input id="setup-user" class="input" autocomplete="username" placeholder="例如 admin" />
+        </label>
+        <label class="field">
+          <span>密码（至少 6 位）</span>
+          <input id="setup-pass" class="input" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field">
+          <span>确认密码</span>
+          <input id="setup-pass2" class="input" type="password" autocomplete="new-password" />
+        </label>
+        <button id="setup-btn" class="btn btn-primary btn-block">创建账号并进入</button>
+      </div>
+
+      <div id="auth-forgot" hidden>
+        <p class="hint" style="margin:0 0 12px">使用初始化时保存的恢复码重设账号。若已丢失，请在服务器执行 <code>python reset_auth.py</code>。</p>
+        <label class="field">
+          <span>恢复码</span>
+          <input id="forgot-code" class="input" placeholder="XXXX-XXXX-XXXX-XXXX" />
+        </label>
+        <label class="field">
+          <span>新用户名（可选，留空不变）</span>
+          <input id="forgot-user" class="input" autocomplete="username" />
+        </label>
+        <label class="field">
+          <span>新密码（至少 6 位）</span>
+          <input id="forgot-pass" class="input" type="password" autocomplete="new-password" />
+        </label>
+        <button id="forgot-btn" class="btn btn-primary btn-block">重设并登录</button>
+        <div class="auth-links">
+          <button type="button" class="link-btn" id="show-login">返回登录</button>
+        </div>
+      </div>
+
+      <div id="auth-recovery" hidden>
+        <p class="hint" style="margin:0 0 8px;color:var(--danger)">请立即保存恢复码，离开本页面后无法再次查看！</p>
+        <div class="recovery-box mono" id="recovery-code"></div>
+        <div class="row">
+          <button id="copy-recovery" class="btn btn-ghost">复制恢复码</button>
+          <button id="recovery-done" class="btn btn-primary">我已保存，进入后台</button>
+        </div>
+      </div>
+
+      <p id="login-error" class="error" hidden></p>
+      <p class="hint">也可在服务器执行 <code>python reset_auth.py</code> 紧急重置账号。</p>
     </div>
   </div>
 
@@ -57,6 +114,7 @@
             <option value="dark">深色</option>
           </select>
         </label>
+        <button id="change-pass-btn" class="btn btn-ghost btn-sm">修改密码</button>
         <button id="logout-btn" class="btn btn-ghost btn-sm">退出登录</button>
       </div>
     </aside>
@@ -274,6 +332,31 @@
   </aside>
 
   <div id="toast" class="toast" hidden></div>
+
+  <div id="pw-mask" class="drawer-mask" hidden></div>
+  <div id="pw-modal" class="modal" hidden>
+    <header class="drawer-head">
+      <h3>修改密码</h3>
+      <button id="pw-close" class="icon-btn" aria-label="关闭">✕</button>
+    </header>
+    <div class="drawer-body">
+      <label class="field"><span>当前密码</span>
+        <input id="pw-old" class="input" type="password" autocomplete="current-password" />
+      </label>
+      <label class="field"><span>新密码（至少 6 位）</span>
+        <input id="pw-new" class="input" type="password" autocomplete="new-password" />
+      </label>
+      <label class="field"><span>确认新密码</span>
+        <input id="pw-new2" class="input" type="password" autocomplete="new-password" />
+      </label>
+      <p class="muted tiny">修改成功后会自动重新登录。</p>
+    </div>
+    <footer class="drawer-foot">
+      <div class="spacer"></div>
+      <button id="pw-cancel" class="btn btn-ghost">取消</button>
+      <button id="pw-save" class="btn btn-primary">保存</button>
+    </footer>
+  </div>
 
   <script src="/admin.js"></script>
 </body>

@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..auth import require_admin
+from ..auth import require_admin_dep
 from ..backup import (
     get_status,
     list_remote_backups,
@@ -17,7 +17,7 @@ from ..backup import (
 )
 from ..webdav import WebDAVError
 
-router = APIRouter(prefix="/api/admin/backup", tags=["backup"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin/backup", tags=["backup"], dependencies=[Depends(require_admin_dep)])
 
 
 class BackupConfigIn(BaseModel):

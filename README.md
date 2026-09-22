@@ -9,7 +9,7 @@
 - 扫描 `novels/<分类>/*.txt`，解析章节写入 SQLite（内容哈希未变则跳过）
 - JSON API：分类浏览、搜索、书籍详情、目录、正文
 - Legado（开源阅读）自定义书源：发现页分类、搜索、详情、目录、正文，**全部返回完整 URL**
-- 管理后台（`/admin`）：Token 鉴权；维护封面/书名/作者/简介/状态/标签；上传封面；删除书籍；触发导入
+- 管理后台（`/admin`）：**账号密码登录**（首次打开创建账号）；维护封面/书名/作者/简介/状态/标签；上传封面；删除书籍；触发导入；支持改密与恢复码重置
 - **WebDAV 备份 / 还原**：备份数据库+封面到 WebDAV，支持自动备份与一键还原
 - 封面存本地 `covers/`，由服务直接提供
 
@@ -121,10 +121,17 @@ Legado（返回绝对 URL）：
 | GET | `/api/legado/content/{book_id}/{chapter_id}` |
 | GET | `/api/legado/book-source` | 生成注入了 `PUBLIC_BASE_URL` 的书源 JSON |
 
-管理（`Authorization: Bearer $ADMIN_TOKEN`）：
+管理（登录后 `Authorization: Bearer <session>`，同时下发 HttpOnly Cookie）：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| GET | `/api/auth/status` | 是否需首设 / 当前用户名 |
+| POST | `/api/auth/setup` | 首次创建账号（返回恢复码） |
+| POST | `/api/auth/login` | 登录，返回会话 Token |
+| POST | `/api/auth/logout` | 退出 |
+| GET | `/api/auth/me` | 当前用户 |
+| POST | `/api/auth/change-password` | 修改密码 |
+| POST | `/api/auth/forgot` | 恢复码重设（返回新恢复码） |
 | GET | `/api/admin/stats` | 统计 |
 | GET | `/api/admin/books` | 管理列表 |
 | GET/PATCH | `/api/admin/books/{id}` | 详情 / 更新元数据 |
@@ -147,7 +154,6 @@ OpenAPI 文档：`/docs`
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `ADMIN_TOKEN` | `change-me` | **必改**，管理后台 Token |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | **必改**，手机可访问的完整根地址 |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | 监听 |
 | `NOVELS_DIR` | `./novels` | TXT 根目录 |
@@ -163,8 +169,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 配置 Token 与局域网地址（PowerShell 示例）
-$env:ADMIN_TOKEN = "please-change-me"
+# 配置局域网地址（PowerShell 示例）
 $env:PUBLIC_BASE_URL = "http://192.168.1.100:8000"
 
 # 导入 TXT
@@ -199,7 +204,7 @@ python run.py
 ### 方式 A：Docker（推荐 NAS）
 
 ```bash
-# 编辑 docker-compose.yml 中的 ADMIN_TOKEN 与 PUBLIC_BASE_URL
+# 编辑 docker-compose.yml 中的 PUBLIC_BASE_URL
 docker compose up -d --build
 
 # 导入（容器内）
@@ -217,7 +222,6 @@ sudo python3 -m venv .venv
 sudo .venv/bin/pip install -r requirements.txt
 
 cat | sudo tee /opt/novel-server/.env <<'EOF'
-ADMIN_TOKEN=please-change-me
 PUBLIC_BASE_URL=http://192.168.1.100:8000
 HOST=0.0.0.0
 PORT=8000
@@ -257,7 +261,7 @@ sudo -u novel /opt/novel-server/.venv/bin/python /opt/novel-server/import_novels
 
 ## 管理后台
 
-1. 打开 `/admin`，输入 `ADMIN_TOKEN`。
+1. 打开 `/admin`，**首次使用创建用户名/密码**（请保存恢复码）。
 2. 书库：封面墙/列表、搜索筛选、点击卡片编辑元数据、上传封面、删除。
 3. 导入：一键扫描 `NOVELS_DIR`，查看新增/更新/跳过/失败日志。
 4. 备份：WebDAV 配置、立即/自动备份、列表还原。
@@ -268,7 +272,8 @@ sudo -u novel /opt/novel-server/.venv/bin/python /opt/novel-server/import_novels
 - 源 TXT 只增不改时，重复导入几乎无开销（SHA256 跳过）。
 - 备份：打包 `data/` + `covers/` 即可；`novels/` 另存；或直接用 WebDAV 备份功能。
 - 升级：拉代码 → `pip install -r requirements.txt` → 重启服务。
-- 不要把真实 `ADMIN_TOKEN` 或 WebDAV 密码提交到仓库。
+- 不要把真实密码、恢复码或 WebDAV 密码提交到仓库。
+- 忘记密码：登录页「忘记密码」+ 恢复码；或服务器 `python reset_auth.py`。
 
 ## License
 

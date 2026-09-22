@@ -22,10 +22,38 @@
   const els = {
     login: $("login"),
     app: $("app"),
-    tokenInput: $("token-input"),
+    authSubtitle: $("auth-subtitle"),
+    authLogin: $("auth-login"),
+    authSetup: $("auth-setup"),
+    authForgot: $("auth-forgot"),
+    authRecovery: $("auth-recovery"),
+    loginUser: $("login-user"),
+    loginPass: $("login-pass"),
     loginBtn: $("login-btn"),
+    showForgot: $("show-forgot"),
+    showLogin: $("show-login"),
+    setupUser: $("setup-user"),
+    setupPass: $("setup-pass"),
+    setupPass2: $("setup-pass2"),
+    setupBtn: $("setup-btn"),
+    forgotCode: $("forgot-code"),
+    forgotUser: $("forgot-user"),
+    forgotPass: $("forgot-pass"),
+    forgotBtn: $("forgot-btn"),
+    recoveryCode: $("recovery-code"),
+    copyRecovery: $("copy-recovery"),
+    recoveryDone: $("recovery-done"),
     loginError: $("login-error"),
     logoutBtn: $("logout-btn"),
+    changePassBtn: $("change-pass-btn"),
+    pwMask: $("pw-mask"),
+    pwModal: $("pw-modal"),
+    pwOld: $("pw-old"),
+    pwNew: $("pw-new"),
+    pwNew2: $("pw-new2"),
+    pwSave: $("pw-save"),
+    pwCancel: $("pw-cancel"),
+    pwClose: $("pw-close"),
     baseUrlLabel: $("base-url-label"),
     apiBase: $("api-base"),
     novelsPath: $("novels-path"),
@@ -161,7 +189,7 @@
 
   async function api(path, options) {
     const headers = Object.assign({ Accept: "application/json" }, (options && options.headers) || {});
-    if (state.token) headers.Authorization = "Bearer " + state.token;
+    if (state.token && !options?.skipAuth) headers.Authorization = "Bearer " + state.token;
     const opts = Object.assign({}, options, { headers });
     if (opts.body && !(opts.body instanceof FormData) && typeof opts.body !== "string") {
       headers["Content-Type"] = "application/json";
@@ -193,28 +221,194 @@
     els.viewMode.value = state.viewMode;
   }
 
-  async function login() {
-    const token = els.tokenInput.value.trim();
-    if (!token) { els.loginError.hidden = false; els.loginError.textContent = "请输入 Token"; return; }
-    state.token = token;
-    localStorage.setItem(TOKEN_KEY, token);
+  function showAuthPane(name) {
+    const panes = {
+      login: els.authLogin,
+      setup: els.authSetup,
+      forgot: els.authForgot,
+      recovery: els.authRecovery,
+    };
+    Object.keys(panes).forEach((k) => {
+      if (panes[k]) panes[k].hidden = k !== name;
+    });
     els.loginError.hidden = true;
-    try {
-      await loadStats();
-      showApp();
-      await Promise.all([loadBooks(), loadSourceJson()]);
-    } catch (err) {
-      els.loginError.hidden = false;
-      els.loginError.textContent = err.message || "登录失败";
-      state.token = "";
-      localStorage.removeItem(TOKEN_KEY);
+    if (name === "setup") {
+      els.authSubtitle.textContent = "首次使用 · 创建管理账号";
+    } else if (name === "forgot") {
+      els.authSubtitle.textContent = "忘记密码 · 恢复码重设";
+    } else if (name === "recovery") {
+      els.authSubtitle.textContent = "保存恢复码";
+    } else {
+      els.authSubtitle.textContent = "管理后台 · 账号登录";
     }
   }
 
-  function logout(notify) {
+  function authError(msg) {
+    els.loginError.hidden = false;
+    els.loginError.textContent = msg || "操作失败";
+  }
+
+  function saveSession(payload) {
+    if (payload && payload.token) {
+      state.token = payload.token;
+      localStorage.setItem(TOKEN_KEY, payload.token);
+    }
+  }
+
+  function pendingRecovery(code) {
+    state.pendingRecovery = code;
+    els.recoveryCode.textContent = code;
+    showAuthPane("recovery");
+  }
+
+  async function bootAuth() {
+    const st = await api("/api/auth/status", { skipAuth: true, headers: {} });
+    if (st.setup_required) {
+      showLogin();
+      showAuthPane("setup");
+      return;
+    }
+    // 已有本地会话则尝试 /me
+    if (state.token) {
+      try {
+        const me = await api("/api/auth/me");
+        state.username = me.username;
+        await afterLogin();
+        return;
+      } catch (_) {
+        state.token = "";
+        localStorage.removeItem(TOKEN_KEY);
+      }
+    }
+    showLogin();
+    showAuthPane("login");
+  }
+
+  async function afterLogin() {
+    await loadStats();
+    showApp();
+    await Promise.all([loadBooks(), loadSourceJson()]);
+  }
+
+  async function login() {
+    const username = els.loginUser.value.trim();
+    const password = els.loginPass.value;
+    if (!username || !password) {
+      authError("请输入用户名和密码");
+      return;
+    }
+    els.loginError.hidden = true;
+    try {
+      const res = await api("/api/auth/login", {
+        method: "POST",
+        body: { username: username, password: password },
+      });
+      saveSession(res);
+      state.username = res.username;
+      els.loginPass.value = "";
+      await afterLogin();
+    } catch (err) {
+      authError(err.message || "登录失败");
+    }
+  }
+
+  async function setupAccount() {
+    const username = els.setupUser.value.trim();
+    const password = els.setupPass.value;
+    const password2 = els.setupPass2.value;
+    if (!username) return authError("请填写用户名");
+    if (!password || password.length < 6) return authError("密码至少 6 位");
+    if (password !== password2) return authError("两次密码不一致");
+    els.loginError.hidden = true;
+    try {
+      const res = await api("/api/auth/setup", {
+        method: "POST",
+        body: { username: username, password: password },
+      });
+      saveSession(res);
+      state.username = res.username;
+      if (res.recovery_code) {
+        pendingRecovery(res.recovery_code);
+        toast("账号已创建，请保存恢复码", "ok");
+      } else {
+        await afterLogin();
+      }
+    } catch (err) {
+      authError(err.message || "创建失败");
+    }
+  }
+
+  async function forgotPassword() {
+    const code = els.forgotCode.value.trim();
+    const password = els.forgotPass.value;
+    const username = els.forgotUser.value.trim();
+    if (!code) return authError("请填写恢复码");
+    if (!password || password.length < 6) return authError("新密码至少 6 位");
+    els.loginError.hidden = true;
+    try {
+      const res = await api("/api/auth/forgot", {
+        method: "POST",
+        body: {
+          recovery_code: code,
+          username: username || null,
+          new_password: password,
+        },
+      });
+      saveSession(res);
+      state.username = res.username;
+      if (res.recovery_code) {
+        pendingRecovery(res.recovery_code);
+        toast("已重设账号，恢复码已更换", "ok");
+      } else {
+        await afterLogin();
+      }
+    } catch (err) {
+      authError(err.message || "重设失败");
+    }
+  }
+
+  function openPwModal() {
+    els.pwOld.value = "";
+    els.pwNew.value = "";
+    els.pwNew2.value = "";
+    els.pwModal.hidden = false;
+    els.pwMask.hidden = false;
+    els.pwOld.focus();
+  }
+
+  function closePwModal() {
+    els.pwModal.hidden = true;
+    els.pwMask.hidden = true;
+  }
+
+  async function saveNewPassword() {
+    const oldPassword = els.pwOld.value;
+    const newPassword = els.pwNew.value;
+    const newPassword2 = els.pwNew2.value;
+    if (!oldPassword) return toast("请输入当前密码", "err");
+    if (!newPassword || newPassword.length < 6) return toast("新密码至少 6 位", "err");
+    if (newPassword !== newPassword2) return toast("两次新密码不一致", "err");
+    try {
+      const res = await api("/api/auth/change-password", {
+        method: "POST",
+        body: { old_password: oldPassword, new_password: newPassword },
+      });
+      saveSession(res);
+      closePwModal();
+      toast("密码已修改", "ok");
+    } catch (err) {
+      toast(err.message || "修改失败", "err");
+    }
+  }
+
+  async function logout(notify) {
+    try {
+      await api("/api/auth/logout", { method: "POST" });
+    } catch (_) { /* ignore */ }
     state.token = "";
     localStorage.removeItem(TOKEN_KEY);
     showLogin();
+    showAuthPane("login");
     if (notify !== false) toast("已退出登录");
   }
 
@@ -756,8 +950,27 @@
 
   // Events
   els.loginBtn.addEventListener("click", login);
-  els.tokenInput.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+  els.loginPass.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
+  els.loginUser.addEventListener("keydown", (e) => { if (e.key === "Enter") els.loginPass.focus(); });
+  els.setupBtn.addEventListener("click", setupAccount);
+  els.forgotBtn.addEventListener("click", forgotPassword);
+  els.showForgot.addEventListener("click", () => showAuthPane("forgot"));
+  els.showLogin.addEventListener("click", () => showAuthPane("login"));
+  els.copyRecovery.addEventListener("click", () => {
+    const text = els.recoveryCode.textContent || "";
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => toast("恢复码已复制", "ok"))
+        .catch(() => fallbackCopy(text));
+    } else fallbackCopy(text);
+  });
+  els.recoveryDone.addEventListener("click", () => afterLogin().catch((e) => authError(e.message)));
   els.logoutBtn.addEventListener("click", () => logout(true));
+  els.changePassBtn.addEventListener("click", openPwModal);
+  els.pwSave.addEventListener("click", saveNewPassword);
+  els.pwCancel.addEventListener("click", closePwModal);
+  els.pwClose.addEventListener("click", closePwModal);
+  els.pwMask.addEventListener("click", closePwModal);
   document.querySelectorAll(".nav-item").forEach((btn) => {
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
@@ -810,9 +1023,9 @@
   applyGridSize(localStorage.getItem(GRID_SIZE_KEY) || 150);
   applyDrawerWidth(localStorage.getItem(DRAWER_W_KEY) || 520);
   initDrawerResize();
-  if (state.token) {
-    login();
-  } else {
+  bootAuth().catch((e) => {
     showLogin();
-  }
+    showAuthPane("login");
+    authError(e.message || "无法连接服务端");
+  });
 })();

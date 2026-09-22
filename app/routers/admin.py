@@ -1,23 +1,23 @@
-"""管理后台 API：列表/编辑/封面上传/删除/导入。全部经 Token 鉴权。"""
+"""管理后台 API：列表/编辑/封面上传/删除/导入。全部经会话鉴权。"""
 from __future__ import annotations
 
 import re
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from ..auth import require_admin
+from ..auth import require_admin_dep
 from ..config import CATEGORIES, settings
 from ..database import get_db
 from ..importer import get_import_status, import_all_async
 from ..models import Book
 from ..serializers import admin_book_detail, book_list_item
 
-router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_dep)])
 
 ALLOWED_COVER_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
@@ -161,10 +161,4 @@ def admin_import_status() -> dict:
     return get_import_status()
 
 
-@router.post("/form-check")
-def form_check(token: str = Form(...)) -> dict:
-    """辅助：表单方式提交 token（管理页登录备用）。"""
-    from ..config import settings as st
 
-    ok = token.strip() == st.admin_token
-    return {"ok": ok}

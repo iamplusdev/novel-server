@@ -21,7 +21,6 @@ def _path(key: str, default: Path) -> Path:
 
 class Settings:
     def __init__(self) -> None:
-        self.admin_token: str = _env("ADMIN_TOKEN", "change-me")
         self.public_base_url: str = _env("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
         self.host: str = _env("HOST", "0.0.0.0")
         self.port: int = int(_env("PORT", "8000"))
