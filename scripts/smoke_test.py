@@ -135,7 +135,7 @@ def main() -> int:
     req = urllib.request.Request(BASE + "/")
     with urllib.request.urlopen(req, timeout=10) as resp:
         html = resp.read().decode("utf-8")
-    check("index.html", "小说库" in html or "admin" in html)
+    check("index.html", "爱小说" in html or "admin" in html)
     for asset in ("/admin.css", "/admin.js", "/legado_book_source.json"):
         req = urllib.request.Request(BASE + asset)
         with urllib.request.urlopen(req, timeout=10) as resp:
