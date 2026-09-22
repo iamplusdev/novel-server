@@ -181,5 +181,6 @@ def legado_book_source() -> dict:
     path = Path(__file__).resolve().parents[2] / "legado_book_source.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     data["bookSourceUrl"] = settings.public_base_url
-    data["bookSourceName"] = data.get("bookSourceName") or "本地小说库"
+    data["bookSourceName"] = data.get("bookSourceName") or "爱小说"
+    data["bookSourceGroup"] = data.get("bookSourceGroup") or "本地NAS"
     return data

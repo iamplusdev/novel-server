@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>小说库 · 管理后台</title>
+  <title>爱小说 · 管理后台</title>
   <link rel="stylesheet" href="/admin.css" />
 </head>
 <body>
@@ -13,9 +13,9 @@
   <div id="login" class="login-wrap">
     <div class="login-card">
       <div class="brand">
-        <span class="brand-mark">卷</span>
+        <span class="brand-mark">爱</span>
         <div>
-          <h1>个人小说库</h1>
+          <h1>爱小说</h1>
           <p class="muted">管理后台 · Token 鉴权</p>
         </div>
       </div>
@@ -32,9 +32,9 @@
   <div id="app" class="app" hidden>
     <aside class="sidebar">
       <div class="brand brand-side">
-        <span class="brand-mark">卷</span>
+        <span class="brand-mark">爱</span>
         <div>
-          <strong>小说库</strong>
+          <strong>爱小说</strong>
           <div class="muted tiny" id="base-url-label">—</div>
         </div>
       </div>
@@ -49,6 +49,14 @@
         <div class="stat"><span class="stat-n" id="stat-words">0</span><span class="stat-l">字数</span></div>
       </div>
       <div class="side-foot">
+        <label class="field field-tight">
+          <span>主题</span>
+          <select id="theme-select" class="input select" title="界面主题">
+            <option value="auto">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
         <button id="logout-btn" class="btn btn-ghost btn-sm">退出登录</button>
       </div>
     </aside>
@@ -74,23 +82,18 @@
             </select>
             <select id="view-mode" class="input select" title="显示方式">
               <option value="grid">封面墙</option>
-              <option value="table">列表</option>
+              <option value="list">列表</option>
             </select>
+            <label class="size-ctrl" title="封面墙卡片大小">
+              <span class="muted tiny">大小</span>
+              <input id="grid-size" type="range" min="110" max="240" step="10" value="150" />
+            </label>
             <button id="refresh-btn" class="btn btn-ghost">刷新</button>
           </div>
         </header>
 
         <div id="grid-wrap" class="book-grid"></div>
-        <div id="table-wrap" class="table-wrap" hidden>
-          <table class="table">
-            <thead>
-              <tr>
-                <th>书名</th><th>作者</th><th>分类</th><th>状态</th><th>章节</th><th>字数</th><th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="table-body"></tbody>
-          </table>
-        </div>
+        <div id="list-wrap" class="book-list" hidden></div>
         <div class="pager">
           <button id="prev-page" class="btn btn-ghost btn-sm">上一页</button>
           <span id="page-label" class="muted">1 / 1</span>
@@ -229,6 +232,7 @@
   <!-- 编辑抽屉 -->
   <div id="drawer-mask" class="drawer-mask" hidden></div>
   <aside id="drawer" class="drawer" hidden>
+    <div id="drawer-resize" class="drawer-resize" title="拖动调整宽度"></div>
     <header class="drawer-head">
       <h3 id="drawer-title">编辑书籍</h3>
       <button id="drawer-close" class="icon-btn" aria-label="关闭">✕</button>
@@ -258,7 +262,7 @@
         </select>
       </label>
       <label class="field"><span>标签（逗号分隔）</span><input id="edit-tags" class="input" placeholder="热血, 系统流" /></label>
-      <label class="field"><span>简介</span><textarea id="edit-intro" class="input textarea" rows="6"></textarea></label>
+      <label class="field"><span>简介</span><textarea id="edit-intro" class="input textarea" rows="8"></textarea></label>
       <div class="muted tiny" id="edit-meta"></div>
     </div>
     <footer class="drawer-foot">

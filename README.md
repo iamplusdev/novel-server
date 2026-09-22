@@ -1,4 +1,4 @@
-# Personal Novel Library
+# 爱小说
 
 个人 TXT 小说库服务器：FastAPI + SQLite + 原生 HTML/JS 管理后台 + Legado 书源。
 

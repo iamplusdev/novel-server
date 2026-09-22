@@ -1,8 +1,11 @@
-/* Novel Library Admin SPA — vanilla JS, no framework */
+/* 爱小说 Admin SPA — vanilla JS, no framework */
 (function () {
   "use strict";
 
   const TOKEN_KEY = "novel_admin_token";
+  const THEME_KEY = "novel_theme_mode";
+  const GRID_SIZE_KEY = "novel_grid_size";
+  const DRAWER_W_KEY = "novel_drawer_width";
   const state = {
     token: localStorage.getItem(TOKEN_KEY) || "",
     page: 1,
@@ -10,6 +13,7 @@
     total: 0,
     items: [],
     viewMode: localStorage.getItem("novel_view_mode") || "grid",
+    theme: localStorage.getItem(THEME_KEY) || "auto",
     stats: null,
     sourceJson: null,
   };
@@ -32,10 +36,11 @@
     categoryFilter: $("category-filter"),
     statusFilter: $("status-filter"),
     viewMode: $("view-mode"),
+    gridSize: $("grid-size"),
+    themeSelect: $("theme-select"),
     refreshBtn: $("refresh-btn"),
     gridWrap: $("grid-wrap"),
-    tableWrap: $("table-wrap"),
-    tableBody: $("table-body"),
+    listWrap: $("list-wrap"),
     prevPage: $("prev-page"),
     nextPage: $("next-page"),
     pageLabel: $("page-label"),
@@ -60,6 +65,7 @@
     backupLog: $("backup-log"),
     drawer: $("drawer"),
     drawerMask: $("drawer-mask"),
+    drawerResize: $("drawer-resize"),
     drawerTitle: $("drawer-title"),
     drawerClose: $("drawer-close"),
     editId: $("edit-id"),
@@ -89,6 +95,68 @@
     els.toast.className = "toast " + (type || "");
     clearTimeout(toast._t);
     toast._t = setTimeout(() => { els.toast.hidden = true; }, 2600);
+  }
+
+  function applyTheme(mode) {
+    state.theme = mode || "auto";
+    localStorage.setItem(THEME_KEY, state.theme);
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const dark = state.theme === "dark" || (state.theme === "auto" && prefersDark);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    if (els.themeSelect && els.themeSelect.value !== state.theme) {
+      els.themeSelect.value = state.theme;
+    }
+  }
+
+  function applyGridSize(px) {
+    const n = Math.min(240, Math.max(110, Number(px) || 150));
+    if (els.gridSize) els.gridSize.value = String(n);
+    if (els.gridWrap) els.gridWrap.style.setProperty("--cover-w", n + "px");
+    localStorage.setItem(GRID_SIZE_KEY, String(n));
+  }
+
+  function applyDrawerWidth(px) {
+    const n = Math.min(Math.round(window.innerWidth * 0.9), Math.max(360, Number(px) || 520));
+    document.documentElement.style.setProperty("--drawer-width", n + "px");
+    localStorage.setItem(DRAWER_W_KEY, String(n));
+  }
+
+  function initDrawerResize() {
+    const handle = els.drawerResize;
+    if (!handle) return;
+    let dragging = false;
+    let startX = 0;
+    let startW = 0;
+    const onMove = (e) => {
+      if (!dragging) return;
+      const x = e.touches ? e.touches[0].clientX : e.clientX;
+      const next = startW + (startX - x);
+      applyDrawerWidth(next);
+    };
+    const onUp = () => {
+      dragging = false;
+      handle.classList.remove("active");
+      document.body.style.userSelect = "";
+    };
+    handle.addEventListener("mousedown", (e) => {
+      dragging = true;
+      startX = e.clientX;
+      startW = els.drawer.getBoundingClientRect().width;
+      handle.classList.add("active");
+      document.body.style.userSelect = "none";
+      e.preventDefault();
+    });
+    handle.addEventListener("touchstart", (e) => {
+      dragging = true;
+      startX = e.touches[0].clientX;
+      startW = els.drawer.getBoundingClientRect().width;
+      handle.classList.add("active");
+    }, { passive: true });
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("touchmove", onMove, { passive: true });
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("touchend", onUp);
+    handle.addEventListener("dblclick", () => applyDrawerWidth(520));
   }
 
   async function api(path, options) {
@@ -225,11 +293,12 @@
   function renderLibrary() {
     const grid = state.viewMode === "grid";
     els.gridWrap.hidden = !grid;
-    els.tableWrap.hidden = grid;
+    els.listWrap.hidden = grid;
+    const emptyText = "暂无书籍，请到「导入」页导入 TXT。";
 
     if (grid) {
       if (!state.items.length) {
-        els.gridWrap.innerHTML = '<div class="muted" style="grid-column:1/-1;padding:32px;text-align:center">暂无书籍，请到「导入」页导入 TXT。</div>';
+        els.gridWrap.innerHTML = '<div class="muted" style="grid-column:1/-1;padding:32px;text-align:center">' + emptyText + "</div>";
         return;
       }
       els.gridWrap.innerHTML = state.items.map((b) => {
@@ -254,20 +323,38 @@
       });
     } else {
       if (!state.items.length) {
-        els.tableBody.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">暂无书籍</td></tr>';
+        els.listWrap.innerHTML = '<div class="muted" style="padding:32px;text-align:center">' + emptyText + "</div>";
         return;
       }
-      els.tableBody.innerHTML = state.items.map((b) => `
-        <tr data-id="${b.id}">
-          <td>${escapeHtml(b.name)}</td>
-          <td>${escapeHtml(b.author || "")}</td>
-          <td><span class="chip cat">${escapeHtml(b.category || "")}</span></td>
-          <td>${statusChip(b.status)}</td>
-          <td>${b.chapter_count ?? 0}</td>
-          <td>${fmtWords(b.word_count)}</td>
-          <td class="actions"><button class="btn btn-ghost btn-sm" data-edit="${b.id}">编辑</button></td>
-        </tr>`).join("");
-      els.tableBody.querySelectorAll("[data-edit]").forEach((btn) => {
+      els.listWrap.innerHTML = state.items.map((b) => {
+        const cover = b.cover_url
+          ? `<img src="${escapeAttr(b.cover_url)}" alt="" loading="lazy" />`
+          : `<div class="placeholder">${escapeHtml((b.name || "").slice(0, 6))}</div>`;
+        const intro = b.intro ? escapeHtml(b.intro) : "暂无简介";
+        return `
+          <article class="book-row" data-id="${b.id}">
+            <div class="row-cover">${cover}</div>
+            <div class="row-body">
+              <div class="row-title" title="${escapeAttr(b.name)}">${escapeHtml(b.name)}</div>
+              <div class="row-meta">
+                <span class="chip cat">${escapeHtml(b.category || "—")}</span>
+                ${statusChip(b.status)}
+                <span>${escapeHtml(b.author || "佚名")}</span>
+                ${(b.tags || []).slice(0, 4).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join("")}
+              </div>
+              <div class="row-intro">${intro}</div>
+            </div>
+            <div class="row-side">
+              <span>${fmtWords(b.word_count)}字</span>
+              <span>${b.chapter_count ?? 0} 章</span>
+              <button class="btn btn-ghost btn-sm" data-edit="${b.id}">编辑</button>
+            </div>
+          </article>`;
+      }).join("");
+      els.listWrap.querySelectorAll(".book-row").forEach((row) => {
+        row.addEventListener("click", () => openDrawer(Number(row.dataset.id)));
+      });
+      els.listWrap.querySelectorAll("[data-edit]").forEach((btn) => {
         btn.addEventListener("click", (e) => {
           e.stopPropagation();
           openDrawer(Number(btn.dataset.edit));
@@ -692,6 +779,13 @@
     localStorage.setItem("novel_view_mode", state.viewMode);
     renderLibrary();
   });
+  els.gridSize.addEventListener("input", () => applyGridSize(els.gridSize.value));
+  els.themeSelect.addEventListener("change", () => applyTheme(els.themeSelect.value));
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      if (state.theme === "auto") applyTheme("auto");
+    });
+  }
   els.importBtn.addEventListener("click", startImport);
   els.importRefresh.addEventListener("click", () => refreshImport().catch(toast));
   els.copySource.addEventListener("click", copySource);
@@ -712,6 +806,10 @@
   });
 
   // Boot
+  applyTheme(state.theme);
+  applyGridSize(localStorage.getItem(GRID_SIZE_KEY) || 150);
+  applyDrawerWidth(localStorage.getItem(DRAWER_W_KEY) || 520);
+  initDrawerResize();
   if (state.token) {
     login();
   } else {

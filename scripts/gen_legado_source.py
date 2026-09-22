@@ -13,7 +13,7 @@ from app.config import CATEGORIES  # noqa: E402
 
 def build() -> dict:
     return {
-        "bookSourceName": "本地小说库",
+        "bookSourceName": "爱小说",
         "bookSourceGroup": "本地NAS",
         "bookSourceUrl": "http://127.0.0.1:8000",
         "bookSourceType": 0,

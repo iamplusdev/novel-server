@@ -18,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 app = FastAPI(
     title="Personal Novel Library",
-    description="个人 TXT 小说库：分类浏览 / 搜索 / 阅读 / Legado 书源 / 管理后台",
+    description="爱小说：分类浏览 / 搜索 / 阅读 / Legado 书源 / 管理后台",
     version="1.0.0",
 )
 
