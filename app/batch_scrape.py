@@ -40,10 +40,33 @@ def _log(msg: str) -> None:
     del _status["log"][:-80]
 
 
-def _norm_name(s: str) -> str:
+def _search_keyword(title: str) -> str:
+    """批量搜索用的干净书名：去 《》、（校对版全本）、作者：xxx 等。"""
+    s = (title or "").strip()
+    s = re.sub(r"作者\s*[：:]\s*\S+\s*$", "", s)
+    s = re.sub(r"[（(][^（()）]{0,20}?(校对|精校|全本|修订|完本|作品|著)[^（()）]{0,10}[）)]", "", s)
+    s = re.sub(r"[《》〈〉\[\]【】]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or (title or "").strip()
+
+
+def _author_from_title_field(title: str, fallback: str) -> str:
+    m = re.search(r"作者\s*[：:]\s*([^\s》）)]+)", title or "")
+    if m:
+        return m.group(1).strip()
+    return fallback or ""
     s = (s or "").strip()
     s = re.sub(r"[《》〈〉\[\]【】()（）]", "", s)
     s = re.sub(r"(校对版全本|全本|精校版|修订版)$", "", s)
+    s = re.sub(r"\s+", "", s)
+    return s.lower()
+
+
+def _norm_name(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"作者\s*[：:]\s*\S+\s*$", "", s)
+    s = re.sub(r"[《》〈〉\[\]【】()（）]", "", s)
+    s = re.sub(r"(校对版全本|校对版|精校版|全本|修订版|完本)", "", s)
     s = re.sub(r"\s+", "", s)
     return s.lower()
 
@@ -182,9 +205,12 @@ def run_batch_scrape(
         for book in books:
             _status["done"] += 1
             title, author = book.title, book.author
+            search_kw = _search_keyword(title)
+            match_author = _author_from_title_field(title, author) or author
             try:
-                hits = mod.search(title, limit=8)
-                hit, score = pick_best_hit(book, hits, min_score=min_score)
+                hits = mod.search(search_kw or title, limit=8)
+                fake_book = Book(title=search_kw or title, author=match_author)
+                hit, score = pick_best_hit(fake_book, hits, min_score=min_score)
                 if not hit:
                     _status["skipped"] += 1
                     _log(f"跳过《{title}》无足够匹配（最佳 {score:.2f}）")
@@ -213,7 +239,7 @@ def run_batch_scrape(
                     d.setdefault("source_id", src_id)
                     _log(f"《{title}》详情失败，用搜索结果回退：{e}")
 
-                _apply_hit_to_book(book, db, d)
+                _apply_hit_to_book(db, book, d)
                 db.commit()
                 _status["matched"] += 1
                 _log(f"完成 {preview}")

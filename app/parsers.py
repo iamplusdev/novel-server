@@ -42,19 +42,43 @@ _AUTHOR_SUFFIX = re.compile(r"(著|作品|文)$")
 
 
 def parse_filename_meta(stem: str, category: str) -> tuple[str, str]:
-    """从文件名推断书名与作者。支持：书名、书名(作者)、作者-书名 等。"""
+    """从文件名推断书名与作者。支持《书名》（校对版全本）作者：某某 等。"""
     name = stem.strip()
+    name = re.sub(r"\.txt$", "", name, flags=re.I).strip()
+
+    m = re.search(r"作者\s*[：:]\s*(.+)$", name)
+    author_inline = ""
+    if m:
+        author_inline = m.group(1).strip()
+        name = name[: m.start()].strip()
+
+    def clean_title(t: str) -> str:
+        t = (t or "").strip().strip("《》")
+        t = re.sub(r"[（(][^）)]*?(?:校对|精校|全本|修订|完本)[^）)]*[）)]", "", t)
+        return re.sub(r"\s+", " ", t).strip()
+
+    def clean_author(a: str) -> str:
+        a = (a or "").strip()
+        if re.search(r"(校对|精校|全本|修订|完本)", a):
+            return ""
+        a = re.sub(r"(著|作品|文)$", "", a).strip()
+        return a
+
     for pat in FILENAME_PATTERNS:
         m = pat.match(name)
         if not m:
             continue
         gd = m.groupdict()
-        title = (gd.get("title") or "").strip()
-        author = (gd.get("author") or "").strip()
-        if title and author and len(title) >= 1 and title != author:
-            author = _AUTHOR_SUFFIX.sub("", author).strip() or author
-            return title, author or "佚名"
-    return name, "佚名"
+        title = clean_title(gd.get("title") or "")
+        author = clean_author(gd.get("author") or "")
+        if title and (author or author_inline):
+            return title, (author_inline or author or "佚名").strip() or "佚名"
+        if title and author_inline:
+            return title, clean_author(author_inline) or "佚名"
+
+    if author_inline:
+        return clean_title(name) or stem, clean_author(author_inline) or "佚名"
+    return clean_title(name) or stem, "佚名"
 
 
 def _is_chapter_heading(line: str) -> tuple[bool, str]:
