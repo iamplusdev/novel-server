@@ -29,10 +29,49 @@ class BookUpdate(BaseModel):
     intro: str | None = None
     status: str | None = Field(default=None, pattern=r"^(连载|完结|未知)$")
     tags: str | None = Field(default=None, max_length=300)
+    source: str | None = Field(default=None, max_length=20)
+    source_id: str | None = Field(default=None, max_length=64)
 
 
 @router.get("/stats")
 def admin_stats(db: Session = Depends(get_db)) -> dict:
+    total_books = db.execute(select(func.count(Book.id))).scalar_one()
+    total_words = db.execute(select(func.coalesce(func.sum(Book.word_count), 0))).scalar_one()
+    by_cat = db.execute(select(Book.category, func.count(Book.id)).group_by(Book.category)).all()
+    by_status = db.execute(select(Book.status, func.count(Book.id)).group_by(Book.status)).all()
+    return {
+        "total_books": total_books,
+        "total_words": total_words,
+        "by_category": [{"name": c, "count": n} for c, n in by_cat],
+        "by_status": [{"name": s, "count": n} for s, n in by_status],
+        "categories": CATEGORIES,
+        "import": get_import_status(),
+        "public_base_url": settings.public_base_url,
+    }
+
+
+@router.get("/duplicates")
+def admin_duplicates(db: Session = Depends(get_db)) -> dict:
+    rows = db.execute(
+        select(Book.title, Book.author, func.count(Book.id).label("n"))
+        .group_by(Book.title, Book.author)
+        .having(func.count(Book.id) > 1)
+    ).all()
+    items = []
+    for title, author, n in rows:
+        books = db.execute(
+            select(Book).where(Book.title == title, Book.author == author).order_by(Book.id)
+        ).scalars().all()
+        items.append({
+            "title": title,
+            "author": author,
+            "count": n,
+            "books": [
+                {"id": b.id, "source_path": b.source_path, "source": b.source, "source_id": b.source_id, "chapter_count": b.chapter_count}
+                for b in books
+            ],
+        })
+    return {"items": items, "total": len(items)}
     total_books = db.execute(select(func.count(Book.id))).scalar_one()
     total_words = db.execute(select(func.coalesce(func.sum(Book.word_count), 0))).scalar_one()
     by_cat = db.execute(select(Book.category, func.count(Book.id)).group_by(Book.category)).all()
@@ -103,6 +142,10 @@ def admin_update_book(book_id: int, payload: BookUpdate, db: Session = Depends(g
     if "tags" in data and data["tags"] is not None:
         tags = re.split(r"[,，;；\s]+", data["tags"].strip())
         data["tags"] = ",".join(dict.fromkeys(t for t in tags if t))
+    if "source" in data and data["source"] is not None:
+        data["source"] = data["source"].strip()
+    if "source_id" in data and data["source_id"] is not None:
+        data["source_id"] = data["source_id"].strip()
     if "title" in data and not data["title"].strip():
         raise HTTPException(400, "书名不能为空")
     for k, v in data.items():

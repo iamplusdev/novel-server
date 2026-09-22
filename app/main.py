@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .database import init_db
-from .routers import admin, auth, backup, legado, public
+from .routers import admin, auth, backup, legado, public, scrape
 from .importer import ensure_category_dirs
 from .backup import start_scheduler
 
@@ -36,6 +36,7 @@ app.include_router(public.router)
 app.include_router(legado.router)
 app.include_router(admin.router)
 app.include_router(backup.router)
+app.include_router(scrape.router)
 
 settings.ensure_dirs()
 ensure_category_dirs()

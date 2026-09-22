@@ -40,6 +40,21 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _migrate_books()
+
+
+def _migrate_books() -> None:
+    """给已有库补上刮削来源字段。"""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(books)")).fetchall()
+        cols = {r[1] for r in rows}
+        if "source" not in cols:
+            conn.execute(text("ALTER TABLE books ADD COLUMN source VARCHAR(20) NOT NULL DEFAULT ''"))
+        if "source_id" not in cols:
+            conn.execute(text("ALTER TABLE books ADD COLUMN source_id VARCHAR(64) NOT NULL DEFAULT ''"))
+        conn.commit()
 
 
 def dispose_engine() -> None:
