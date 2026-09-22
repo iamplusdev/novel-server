@@ -205,9 +205,9 @@ def admin_delete_book(book_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/import")
-def admin_import() -> dict:
-    started = import_all_async()
-    return {"started": started, "import": get_import_status()}
+def admin_import(mode: str = Query(default="local", pattern="^(local|webdav|both)$")) -> dict:
+    started = import_all_async(mode)
+    return {"started": started, "mode": mode, "import": get_import_status()}
 
 
 @router.get("/import/status")

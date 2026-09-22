@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from .config import CATEGORIES, settings
 from .database import SessionLocal
 from .models import Book, Chapter
-from .parsers import load_txt_book
+from .parsers import load_txt_book, load_txt_book_from_text
 
 
 @dataclass
@@ -103,26 +103,27 @@ def _find_book_by_title_author(db: Session, title: str, author: str) -> Book | N
     ).scalars().first()
 
 
-def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> tuple[str, str]:
-    """返回 (action, label) action in added|updated|skipped"""
-    rel = str(path)
-    label = f"{category}/{path.stem}"
-    existing = _find_book_by_source(db, rel)
+def _upsert_parsed(
+    db: Session,
+    source_key: str,
+    category: str,
+    parsed,
+    content_hash: str,
+) -> tuple[str, str]:
+    """写入/更新一本书。source_key 为本地路径或 webdav:... 标识。"""
+    label = f"{category}/{parsed.title}"
+    existing = _find_book_by_source(db, source_key)
     if existing and existing.source_hash == content_hash:
         return "skipped", label
 
-    parsed = load_txt_book(path, category)
-
-    # 防重复：同内容哈希，或同书名+作者（避免换路径/刮削改名后再导入变两本）
     if not existing:
         existing = _find_book_by_hash(db, content_hash) or _find_book_by_title_author(
             db, parsed.title, parsed.author
         )
         if existing:
-            # 指向最新路径
-            existing.source_path = rel
+            existing.source_path = source_key
 
-    if existing and existing.source_hash == content_hash and existing.source_path == rel:
+    if existing and existing.source_hash == content_hash and existing.source_path == source_key:
         return "skipped", label
 
     if existing:
@@ -132,8 +133,8 @@ def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> t
         book.category = category
         book.word_count = parsed.word_count
         book.source_hash = content_hash
+        book.source_path = source_key
         book.updated_at = datetime.now().isoformat(timespec="seconds")
-        # 仅当简介为空时自动填充
         if not book.intro:
             book.intro = parsed.intro
         db.query(Chapter).filter(Chapter.book_id == book.id).delete()
@@ -147,7 +148,7 @@ def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> t
             status="完结",
             tags="",
             cover_file="",
-            source_path=rel,
+            source_path=source_key,
             source_hash=content_hash,
             word_count=parsed.word_count,
         )
@@ -170,6 +171,24 @@ def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> t
     return action, f"{category}/{book.title}"
 
 
+def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> tuple[str, str]:
+    parsed = load_txt_book(path, category)
+    return _upsert_parsed(db, str(path), category, parsed, content_hash)
+
+
+def _bytes_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def decode_txt_bytes(raw: bytes) -> str:
+    for enc in ("utf-8", "utf-8-sig", "gb18030", "gbk", "big5"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def import_all(db: Session | None = None) -> ImportResult:
     own = db is None
     if own:
@@ -183,7 +202,7 @@ def import_all(db: Session | None = None) -> ImportResult:
                 digest = file_sha256(path)
                 action, label = _upsert_book(db, path, category, digest)
                 getattr(result, action).append(label)
-            except Exception as exc:  # noqa: BLE001 — 导入器要尽量吞掉单文件错误
+            except Exception as exc:  # noqa: BLE001
                 result.failed.append(f"{path.name}: {exc}")
         db.commit()
     finally:
@@ -192,8 +211,112 @@ def import_all(db: Session | None = None) -> ImportResult:
     return result
 
 
-def import_all_async() -> bool:
-    """后台线程导入，避免阻塞 HTTP。已在跑则返回 False。"""
+def import_from_webdav(db: Session | None = None) -> ImportResult:
+    """从 WebDAV 的 books/<分类>/*.txt 增量导入（章节仍写入 SQLite）。"""
+    from .backup import load_config
+    from .webdav import WebDAVClient, WebDAVError
+
+    cfg = load_config()
+    if not cfg.webdav_url:
+        raise WebDAVError("请先在「备份」页配置 WebDAV 地址")
+
+    client = WebDAVClient(cfg.webdav_url, cfg.username, cfg.password, timeout=120)
+    result = ImportResult()
+    own = db is None
+    if own:
+        db = SessionLocal()
+
+    skip_names = {"readme.txt", "readme.md", "license.txt", ".gitkeep", ".ds_store"}
+    # 书籍根目录可配置：相对 WebDAV 根，如 books / 小说仓库/novels
+    root = (cfg.books_path or "books").strip().strip("/").replace("\\", "/") or "books"
+
+    def _discover() -> str:
+        try:
+            top = client.list_dir_names("")
+            hint = "、".join(top[:20]) if top else "(空)"
+            return f"WebDAV 根目录下有：{hint}"
+        except WebDAVError as e:
+            return f"无法列出 WebDAV 根目录：{e}"
+
+    # 路径探测：逐级尝试，容错尾斜杠/多一层前缀
+    def _resolve_root() -> str:
+        candidates = [root, root.strip("/")]
+        # 去掉重复段
+        seen = []
+        for c in candidates:
+            if c and c not in seen:
+                seen.append(c)
+        for cand in seen:
+            if client.exists(cand):
+                return cand
+        # 尝试在根下查找最后一段
+        last = root.rsplit("/", 1)[-1]
+        try:
+            top = client.list_dir_names("")
+        except WebDAVError:
+            top = []
+        if last in top:
+            return last
+        for name in top:
+            try:
+                subs = client.list_dir_names(name)
+            except WebDAVError:
+                continue
+            if last in subs:
+                return f"{name}/{last}"
+            if root in subs or root.rsplit("/", 1)[-1] in subs:
+                return f"{name}/{root.rsplit('/', 1)[-1]}"
+        raise WebDAVError(
+            f"WebDAV 书籍目录不存在或无权限：{root}。{_discover()}。"
+            f"请在「备份」页把「书籍目录」改成相对 WebDAV 根的路径（不要带 https 与 /dav 前缀）。"
+        )
+
+    try:
+        root = _resolve_root()
+    except WebDAVError as e:
+        result.failed.append(str(e))
+        return result
+
+    def walk(rel_dir: str, category: str) -> None:
+        try:
+            items = client.list_items(rel_dir)
+        except WebDAVError as e:
+            result.failed.append(f"{rel_dir}: {e}")
+            return
+        at_books_root = rel_dir.rstrip("/") in ("", root)
+        for it in items:
+            remote = f"{rel_dir.rstrip('/')}/{it.name}" if rel_dir else it.name
+            if it.is_dir:
+                sub_cat = (it.name.strip() or category) if at_books_root else category
+                walk(remote, sub_cat)
+                continue
+            name_l = it.name.lower()
+            if not name_l.endswith(".txt") or name_l in skip_names:
+                continue
+            src = f"webdav:{remote}"
+            cat = category if category and category != root else "未分类"
+            label = f"{cat}/{Path(it.name).stem}"
+            try:
+                raw = client.get_file(remote)
+                digest = _bytes_sha256(raw)
+                text = decode_txt_bytes(raw)
+                parsed = load_txt_book_from_text(text, Path(it.name).stem, cat)
+                action, lab = _upsert_parsed(db, src, cat, parsed, digest)
+                getattr(result, action).append(lab or label)
+            except Exception as exc:  # noqa: BLE001
+                result.failed.append(f"{label}: {exc}")
+
+    try:
+        walk(root, "未分类")
+        db.commit()
+    finally:
+        if own:
+            db.close()
+    return result
+
+
+def import_all_async(mode: str = "local") -> bool:
+    """后台线程导入。mode: local | webdav | both"""
     global _import_status
     if not _import_lock.acquire(blocking=False):
         return False
@@ -201,15 +324,34 @@ def import_all_async() -> bool:
         _import_lock.release()
         return False
 
+    def _merge(a: ImportResult, b: ImportResult) -> ImportResult:
+        return ImportResult(
+            added=a.added + b.added,
+            updated=a.updated + b.updated,
+            skipped=a.skipped + b.skipped,
+            failed=a.failed + b.failed,
+        )
+
     def _run() -> None:
         global _import_status
-        _import_status = {"running": True, "last": None, "started_at": datetime.now().isoformat(timespec="seconds")}
+        _import_status = {
+            "running": True,
+            "mode": mode,
+            "last": None,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+        }
         try:
-            result = import_all()
-            _import_status = {"running": False, "last": result.to_dict()}
+            if mode == "webdav":
+                result = import_from_webdav()
+            elif mode == "both":
+                result = _merge(import_all(), import_from_webdav())
+            else:
+                result = import_all()
+            _import_status = {"running": False, "mode": mode, "last": result.to_dict()}
         except Exception as exc:  # noqa: BLE001
             _import_status = {
                 "running": False,
+                "mode": mode,
                 "last": {
                     "added": [],
                     "updated": [],

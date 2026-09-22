@@ -161,14 +161,19 @@
         <header class="toolbar">
           <div class="toolbar-left"><h2>导入 TXT</h2></div>
           <div class="toolbar-right">
-            <button id="import-btn" class="btn btn-primary">开始导入</button>
+            <button id="import-btn" class="btn btn-ghost">导入本地 novels</button>
+            <button id="import-webdav-btn" class="btn btn-primary">从 WebDAV books 导入</button>
             <button id="import-refresh" class="btn btn-ghost">刷新状态</button>
           </div>
         </header>
         <div class="panel">
-          <div class="panel-title">扫描路径</div>
+          <div class="panel-title">导入来源</div>
+          <p class="muted">
+            <strong>本地</strong>：扫描服务端 <code>NOVELS_DIR</code>（如 <code>novels/玄幻/书名.txt</code>）。<br/>
+            <strong>WebDAV</strong>：读取 WebDAV「书籍目录」下 <code>&lt;分类&gt;/*.txt</code>（在「备份」页配置地址/账号与书籍目录，默认 <code>books</code>）。
+            章节仍解析进 SQLite，阅读不依赖网盘。内容哈希未变则跳过。
+          </p>
           <p class="mono" id="novels-path">NOVELS_DIR（服务端配置）</p>
-          <p class="muted">将 TXT 按分类放入子目录，例如 <code>novels/玄幻/书名.txt</code>。支持 <code>书名.txt</code>、<code>书名(作者).txt</code>、<code>作者-书名.txt</code>。文件内容未变化会自动跳过。</p>
         </div>
         <div class="panel">
           <div class="panel-title">导入日志</div>
@@ -197,6 +202,9 @@
             </label>
             <label class="field"><span>远程目录</span>
               <input id="dav-path" class="input" placeholder="novel-server-backups" />
+            </label>
+            <label class="field"><span>书籍目录（导入用）</span>
+              <input id="dav-books" class="input" placeholder="books 或 novels/小说 等" />
             </label>
             <label class="field"><span>账号</span>
               <input id="dav-user" class="input" autocomplete="username" />
