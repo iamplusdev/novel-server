@@ -69,6 +69,10 @@ def _query_books(
         stmt = stmt.order_by(Book.title)
     elif sort == "author":
         stmt = stmt.order_by(Book.author, Book.title)
+    elif sort == "words":
+        stmt = stmt.order_by(Book.word_count.desc(), Book.title)
+    elif sort == "chapters":
+        stmt = stmt.order_by(Book.chapter_count.desc(), Book.title)
     else:
         stmt = stmt.order_by(Book.updated_at.desc(), Book.id.desc())
 
