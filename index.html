@@ -41,6 +41,7 @@
       <nav class="nav">
         <button class="nav-item active" data-view="library">书库</button>
         <button class="nav-item" data-view="import">导入</button>
+        <button class="nav-item" data-view="backup">备份</button>
         <button class="nav-item" data-view="api">API / 书源</button>
       </nav>
       <div class="stats" id="stats-box">
@@ -114,6 +115,70 @@
         <div class="panel">
           <div class="panel-title">导入日志</div>
           <pre id="import-log" class="log">尚未运行导入。</pre>
+        </div>
+      </section>
+
+      <!-- 备份 -->
+      <section id="view-backup" class="view" hidden>
+        <header class="toolbar">
+          <div class="toolbar-left">
+            <h2>WebDAV 备份</h2>
+            <span class="pill" id="backup-auto-pill">未启用自动</span>
+          </div>
+          <div class="toolbar-right">
+            <button id="backup-run" class="btn btn-primary">立即备份</button>
+            <button id="backup-list-refresh" class="btn btn-ghost">刷新列表</button>
+          </div>
+        </header>
+
+        <div class="panel">
+          <div class="panel-title">WebDAV 配置</div>
+          <div class="form-grid">
+            <label class="field"><span>WebDAV 地址</span>
+              <input id="dav-url" class="input" placeholder="https://dav.example.com/dav/" />
+            </label>
+            <label class="field"><span>远程目录</span>
+              <input id="dav-path" class="input" placeholder="novel-server-backups" />
+            </label>
+            <label class="field"><span>账号</span>
+              <input id="dav-user" class="input" autocomplete="username" />
+            </label>
+            <label class="field"><span>密码</span>
+              <input id="dav-pass" class="input" type="password" autocomplete="new-password" placeholder="已保存则留空表示不修改" />
+            </label>
+            <label class="field"><span>自动备份间隔（小时）</span>
+              <input id="dav-interval" class="input" type="number" min="1" max="720" value="24" />
+            </label>
+            <label class="field"><span>保留份数</span>
+              <input id="dav-keep" class="input" type="number" min="1" max="100" value="7" />
+            </label>
+          </div>
+          <label class="check-row">
+            <input id="dav-auto" type="checkbox" />
+            <span>启用自动备份（服务运行时按间隔检查）</span>
+          </label>
+          <div class="row">
+            <button id="dav-save" class="btn btn-primary">保存配置</button>
+            <button id="dav-test" class="btn btn-ghost">测试连接</button>
+          </div>
+          <p class="muted tiny">备份内容：SQLite 数据库 + covers 封面 + manifest。不打包 novels/ 源 TXT。密码保存在服务器 <code>data/backup_config.json</code>，接口不会回传明文。</p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">备份列表（WebDAV）</div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr><th>文件名</th><th>大小</th><th>修改时间</th><th>操作</th></tr>
+              </thead>
+              <tbody id="backup-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">状态日志</div>
+          <pre id="backup-log" class="log">尚未操作。</pre>
         </div>
       </section>
 

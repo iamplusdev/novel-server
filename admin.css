@@ -300,6 +300,17 @@ a { color: var(--accent); text-decoration: none; }
 }
 .api-list { margin: 0; padding-left: 18px; color: #b7c0d4; line-height: 1.8; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 14px;
+  margin-bottom: 8px;
+}
+.check-row {
+  display: flex; align-items: center; gap: 8px;
+  margin: 8px 0 4px; color: var(--muted); font-size: 13px; cursor: pointer;
+}
+.check-row input { accent-color: var(--accent); }
 
 /* —— Drawer —— */
 .drawer-mask {

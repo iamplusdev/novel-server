@@ -42,6 +42,20 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def dispose_engine() -> None:
+    """还原备份时关闭连接并释放引擎。"""
+    engine.dispose()
+
+
+def reset_database() -> None:
+    """替换 novels.db 文件后重建引擎与会话工厂。"""
+    global engine, SessionLocal
+    engine.dispose()
+    engine = _make_engine()
+    SessionLocal.configure(bind=engine)
+    init_db()
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
