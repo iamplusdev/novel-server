@@ -89,6 +89,20 @@ def _find_book_by_source(db: Session, source_path: str) -> Book | None:
     return db.execute(select(Book).where(Book.source_path == source_path)).scalar_one_or_none()
 
 
+def _find_book_by_hash(db: Session, content_hash: str) -> Book | None:
+    if not content_hash:
+        return None
+    return db.execute(select(Book).where(Book.source_hash == content_hash)).scalar_one_or_none()
+
+
+def _find_book_by_title_author(db: Session, title: str, author: str) -> Book | None:
+    if not title:
+        return None
+    return db.execute(
+        select(Book).where(Book.title == title, Book.author == (author or "佚名"))
+    ).scalars().first()
+
+
 def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> tuple[str, str]:
     """返回 (action, label) action in added|updated|skipped"""
     rel = str(path)
@@ -98,6 +112,18 @@ def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> t
         return "skipped", label
 
     parsed = load_txt_book(path, category)
+
+    # 防重复：同内容哈希，或同书名+作者（避免换路径/刮削改名后再导入变两本）
+    if not existing:
+        existing = _find_book_by_hash(db, content_hash) or _find_book_by_title_author(
+            db, parsed.title, parsed.author
+        )
+        if existing:
+            # 指向最新路径
+            existing.source_path = rel
+
+    if existing and existing.source_hash == content_hash and existing.source_path == rel:
+        return "skipped", label
 
     if existing:
         book = existing

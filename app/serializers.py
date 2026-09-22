@@ -19,6 +19,8 @@ def book_list_item(book: Book) -> dict:
         "category": book.category,
         "tags": book.tags_list,
         "status": book.status,
+        "source": getattr(book, "source", "") or "",
+        "source_id": getattr(book, "source_id", "") or "",
         "cover_url": cover_abs(book),
         "intro": (book.intro or "")[:160],
         "word_count": book.word_count,
@@ -65,6 +67,8 @@ def admin_book_detail(book: Book) -> dict:
     data = book_detail(book, with_chapters=False)
     data["cover_file"] = book.cover_file
     data["source_hash"] = book.source_hash
+    data["source"] = getattr(book, "source", "") or ""
+    data["source_id"] = getattr(book, "source_id", "") or ""
     data["chapters_preview"] = [
         {"id": c.id, "index": c.index, "title": c.title}
         for c in book.chapters[:30]

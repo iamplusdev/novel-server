@@ -296,12 +296,19 @@
       <input type="hidden" id="edit-id" />
       <div class="cover-edit">
         <img id="cover-preview" alt="封面" />
-        <div class="cover-actions">
-          <label class="btn btn-ghost btn-sm file-label">
-            上传封面
-            <input id="cover-file" type="file" accept="image/*" hidden />
-          </label>
-          <div class="muted tiny">支持 jpg / png / webp / gif</div>
+        <div class="cover-side">
+          <div class="cover-actions">
+            <label class="btn btn-ghost btn-sm file-label">
+              上传封面
+              <input id="cover-file" type="file" accept="image/*" hidden />
+            </label>
+            <div class="muted tiny">支持 jpg / png / webp / gif</div>
+          </div>
+          <div class="scrape-side">
+            <div class="panel-title">自动刮削</div>
+            <div class="muted tiny" id="scrape-origin">来源：未刮削</div>
+            <button id="scrape-open-btn" class="btn btn-primary btn-sm" type="button">刮削…</button>
+          </div>
         </div>
       </div>
       <label class="field"><span>书名</span><input id="edit-title" class="input" /></label>
@@ -352,6 +359,48 @@
       <div class="spacer"></div>
       <button id="pw-cancel" class="btn btn-ghost">取消</button>
       <button id="pw-save" class="btn btn-primary">保存</button>
+    </footer>
+  </div>
+
+  <!-- 刮削弹窗 -->
+  <div id="scrape-mask" class="drawer-mask" hidden></div>
+  <div id="scrape-modal" class="modal modal-lg" hidden>
+    <header class="drawer-head">
+      <h3>刮削元数据</h3>
+      <button id="scrape-close" class="icon-btn" aria-label="关闭">✕</button>
+    </header>
+    <div class="drawer-body">
+      <div class="row" style="margin:0 0 10px">
+        <input id="scrape-keyword" class="input" placeholder="搜索关键词（默认当前书名）" style="flex:1;min-width:160px" />
+        <select id="scrape-source" class="input select" title="刮削源">
+          <option value="qidian">起点</option>
+          <option value="fanqie" disabled>番茄（待抓包）</option>
+        </select>
+        <button id="scrape-search-btn" class="btn btn-primary">搜索</button>
+      </div>
+      <div class="muted tiny" id="scrape-tip" style="margin-bottom:8px">
+        将把结果写入当前编辑中的书籍。多条结果时请核对书名/作者后再点「采用」。
+      </div>
+      <div id="scrape-local" class="scrape-local"></div>
+      <div id="scrape-results" class="scrape-results"></div>
+    </div>
+    <footer class="drawer-foot">
+      <div class="spacer"></div>
+      <button id="scrape-cancel" class="btn btn-ghost">关闭</button>
+    </footer>
+  </div>
+
+  <!-- 刮削确认 -->
+  <div id="scrape-confirm-mask" class="drawer-mask" hidden></div>
+  <div id="scrape-confirm" class="modal" hidden>
+    <header class="drawer-head">
+      <h3>确认采用</h3>
+    </header>
+    <div class="drawer-body" id="scrape-confirm-body"></div>
+    <footer class="drawer-foot">
+      <div class="spacer"></div>
+      <button id="scrape-confirm-no" class="btn btn-ghost">取消</button>
+      <button id="scrape-confirm-yes" class="btn btn-primary">写入数据库</button>
     </footer>
   </div>
 

@@ -46,6 +46,7 @@
     sort: localStorage.getItem("novel_sort") || "updated",
     stats: null,
     sourceJson: null,
+    pendingScrapeHit: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -136,6 +137,23 @@
     editTags: $("edit-tags"),
     editIntro: $("edit-intro"),
     editMeta: $("edit-meta"),
+    scrapeOpenBtn: $("scrape-open-btn"),
+    scrapeKeyword: $("scrape-keyword"),
+    scrapeSource: $("scrape-source"),
+    scrapeSearchBtn: $("scrape-search-btn"),
+    scrapeResults: $("scrape-results"),
+    scrapeOrigin: $("scrape-origin"),
+    scrapeTip: $("scrape-tip"),
+    scrapeLocal: $("scrape-local"),
+    scrapeMask: $("scrape-mask"),
+    scrapeModal: $("scrape-modal"),
+    scrapeClose: $("scrape-close"),
+    scrapeCancel: $("scrape-cancel"),
+    scrapeConfirm: $("scrape-confirm"),
+    scrapeConfirmMask: $("scrape-confirm-mask"),
+    scrapeConfirmBody: $("scrape-confirm-body"),
+    scrapeConfirmYes: $("scrape-confirm-yes"),
+    scrapeConfirmNo: $("scrape-confirm-no"),
     saveBtn: $("save-btn"),
     cancelBtn: $("cancel-btn"),
     deleteBtn: $("delete-btn"),
@@ -553,6 +571,11 @@
     return '<span class="chip">未知</span>';
   }
 
+  function sourceChip(source) {
+    if (!source) return "";
+    return `<span class="chip src" title="刮削来源">${escapeHtml(source)}</span>`;
+  }
+
   function renderLibrary() {
     const grid = state.viewMode === "grid";
     els.gridWrap.hidden = !grid;
@@ -576,6 +599,7 @@
               <div class="book-sub">
                 <span class="chip cat">${escapeHtml(b.category || "—")}</span>
                 ${statusChip(b.status)}
+                ${sourceChip(b.source)}
                 <span>${escapeHtml(b.author || "佚名")}</span>
               </div>
             </div>
@@ -602,6 +626,7 @@
               <div class="row-meta">
                 <span class="chip cat">${escapeHtml(b.category || "—")}</span>
                 ${statusChip(b.status)}
+                ${sourceChip(b.source)}
                 <span>${escapeHtml(b.author || "佚名")}</span>
                 ${(b.tags || []).slice(0, 4).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join("")}
               </div>
@@ -652,10 +677,174 @@
       "ID " + book.id,
       "章节 " + (book.chapter_count || 0),
       "字数 " + fmtWords(book.word_count),
+      book.source ? "来源 " + book.source + (book.source_id ? "#" + book.source_id : "") : "",
       book.source_path ? "源 " + book.source_path : "",
     ].filter(Boolean).join(" · ");
+    els.scrapeKeyword.value = book.name || "";
+    els.scrapeOrigin.textContent = book.source
+      ? ("来源：" + book.source + (book.source_id ? " · " + book.source_id : ""))
+      : "来源：未刮削";
+    els.scrapeResults.innerHTML = "";
     els.drawer.hidden = false;
     els.drawerMask.hidden = false;
+  }
+
+  function openScrapeModal() {
+    const localName = (els.editTitle.value || "").trim();
+    els.scrapeKeyword.value = localName;
+    els.scrapeLocal.innerHTML =
+      "当前书籍：<strong>" + escapeHtml(localName || "(未命名)") + "</strong>" +
+      (els.editAuthor.value ? " · " + escapeHtml(els.editAuthor.value) : "");
+    els.scrapeTip.textContent = "结果只预览，点「采用并写入」才会改当前这本书。请核对书名/作者是否一致。";
+    els.scrapeResults.innerHTML = '<div class="muted tiny">输入关键词后点「搜索」。</div>';
+    els.scrapeModal.hidden = false;
+    els.scrapeMask.hidden = false;
+    els.scrapeKeyword.focus();
+  }
+
+  function closeScrapeModal() {
+    els.scrapeModal.hidden = true;
+    els.scrapeMask.hidden = true;
+    closeScrapeConfirm();
+  }
+
+  function closeScrapeConfirm() {
+    els.scrapeConfirm.hidden = true;
+    els.scrapeConfirmMask.hidden = true;
+    state.pendingScrapeHit = null;
+  }
+
+  function renderScrapeHits(items, localName) {
+    if (!items || !items.length) {
+      els.scrapeResults.innerHTML = '<div class="muted tiny">没有匹配结果，可换关键词再搜。</div>';
+      return;
+    }
+    const local = (localName || "").trim();
+    els.scrapeResults.innerHTML = items.map((it, idx) => {
+      const mismatch = local && it.name && it.name !== local &&
+        !it.name.includes(local) && !local.includes(it.name);
+      return `
+      <div class="scrape-item" data-idx="${idx}">
+        <div class="t">${escapeHtml(it.name || "(无题)")}</div>
+        <div class="m">
+          <span class="chip src">${escapeHtml(it.source || "起点")}</span>
+          <span>${escapeHtml(it.author || "佚名")}</span>
+          <span>ID ${escapeHtml(it.source_id || "")}</span>
+          ${it.status ? `<span class="chip">${escapeHtml(it.status)}</span>` : ""}
+        </div>
+        <div class="ch" title="${escapeAttr(it.latest_chapter || "")}">最新：${escapeHtml(it.latest_chapter || "—")}</div>
+        ${mismatch ? `<div class="diff">⚠ 与当前书名不一致，请确认是否选对</div>` : ""}
+        <div class="ops">
+          <button type="button" class="btn btn-primary btn-sm" data-use="${idx}">采用并写入</button>
+        </div>
+      </div>`;
+    }).join("");
+    els.scrapeResults.querySelectorAll("[data-use]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const it = items[Number(btn.dataset.use)];
+        if (it) askScrapeConfirm(it);
+      });
+    });
+  }
+
+  function askScrapeConfirm(hit) {
+    state.pendingScrapeHit = hit;
+    const localName = els.editTitle.value || "";
+    const localAuthor = els.editAuthor.value || "";
+    const nameDiff = (hit.name || "") !== localName;
+    const authorDiff = hit.author && localAuthor && hit.author !== localAuthor;
+    els.scrapeConfirmBody.innerHTML = `
+      <p style="margin:0 0 10px">确认把<strong>当前这本书</strong>的元数据替换为起点结果？</p>
+      <div class="scrape-local">
+        <div>本地：<strong>${escapeHtml(localName)}</strong>${localAuthor ? " · " + escapeHtml(localAuthor) : ""}</div>
+        <div>起点：<strong>${escapeHtml(hit.name || "")}</strong>${hit.author ? " · " + escapeHtml(hit.author) : ""}</div>
+        <div>ID ${escapeHtml(hit.source_id || "")} · 来源 ${escapeHtml(hit.source || "起点")}</div>
+        ${hit.latest_chapter ? `<div>最新：${escapeHtml(hit.latest_chapter)}</div>` : ""}
+      </div>
+      ${(nameDiff || authorDiff) ? '<p class="error" style="margin:0">书名或作者与本地不一致，请再次确认！</p>' : ""}
+    `;
+    els.scrapeConfirm.hidden = false;
+    els.scrapeConfirmMask.hidden = false;
+  }
+
+  async function runScrapeSearch() {
+    const keyword = (els.scrapeKeyword.value || els.editTitle.value || "").trim();
+    if (!keyword) {
+      toast("请填写搜索关键词", "err");
+      return;
+    }
+    els.scrapeSearchBtn.disabled = true;
+    els.scrapeResults.innerHTML = '<div class="muted tiny">正在搜索…</div>';
+    try {
+      const res = await api("/api/admin/scrape/search", {
+        method: "POST",
+        body: {
+          keyword: keyword,
+          source: els.scrapeSource.value || "qidian",
+          limit: 10,
+        },
+      });
+      renderScrapeHits(res.items || [], els.editTitle.value);
+      if ((res.items || []).length) {
+        toast("找到 " + res.items.length + " 条，请核对后点「采用并写入」", "ok");
+      } else {
+        toast("无匹配结果", "err");
+      }
+    } catch (err) {
+      els.scrapeResults.innerHTML = '<div class="muted tiny">' + escapeHtml(err.message || "搜索失败") + "</div>";
+      toast(err.message || "搜索失败", "err");
+    } finally {
+      els.scrapeSearchBtn.disabled = false;
+    }
+  }
+
+  async function applyScrapeHit(hit) {
+    const bookId = Number(els.editId.value);
+    if (!bookId || !hit || !hit.source_id) return;
+    els.scrapeResults.innerHTML = '<div class="muted tiny">正在拉取详情并写入…</div>';
+    try {
+      const res = await api("/api/admin/scrape/books/" + bookId + "/apply", {
+        method: "POST",
+        body: {
+          source: "qidian",
+          source_book_id: String(hit.source_id),
+          with_cover: true,
+          hint_name: hit.name || null,
+          hint_author: hit.author || null,
+          hint_intro: hit.intro || null,
+          hint_status: hit.status || null,
+          hint_cover_url: hit.cover_url || null,
+          hint_tags: (hit.tags || []).filter(function (t) {
+            return t && !/字$/.test(t) && t !== "连载" && t !== "完结";
+          }),
+        },
+      });
+      els.editTitle.value = res.name || "";
+      els.editAuthor.value = res.author || "";
+      ensureOption(els.editCategory, res.category);
+      els.editCategory.value = res.category || "";
+      els.editStatus.value = res.status || "完结";
+      els.editTags.value = (res.tags || []).join(", ");
+      els.editIntro.value = res.intro || "";
+      if (res.cover_url) els.coverPreview.src = res.cover_url;
+      els.scrapeOrigin.textContent = (res.source || "起点") + (res.source_id ? " · " + res.source_id : "");
+      els.editMeta.textContent = [
+        "ID " + res.id,
+        "章节 " + (res.chapter_count || 0),
+        "字数 " + fmtWords(res.word_count),
+        "来源 " + (res.source || "起点") + (res.source_id ? "#" + res.source_id : ""),
+      ].join(" · ");
+      closeScrapeConfirm();
+      els.scrapeResults.innerHTML = "";
+      closeScrapeModal();
+      toast("已写入（来源：" + (res.source || "起点") + "）", "ok");
+      await Promise.all([loadBooks(), loadStats()]);
+    } catch (err) {
+      closeScrapeConfirm();
+      els.scrapeResults.innerHTML = '<div class="muted tiny">' + escapeHtml(err.message || "刮削失败") + "</div>";
+      toast(err.message || "刮削失败", "err");
+    }
   }
 
   function ensureOption(select, value) {
@@ -1083,6 +1272,18 @@
   els.cancelBtn.addEventListener("click", closeDrawer);
   els.drawerMask.addEventListener("click", closeDrawer);
   els.saveBtn.addEventListener("click", saveBook);
+  els.scrapeOpenBtn.addEventListener("click", openScrapeModal);
+  els.scrapeSearchBtn.addEventListener("click", runScrapeSearch);
+  els.scrapeKeyword.addEventListener("keydown", (e) => { if (e.key === "Enter") runScrapeSearch(); });
+  els.scrapeClose.addEventListener("click", closeScrapeModal);
+  els.scrapeCancel.addEventListener("click", closeScrapeModal);
+  els.scrapeMask.addEventListener("click", closeScrapeModal);
+  els.scrapeConfirmYes.addEventListener("click", () => {
+    const hit = state.pendingScrapeHit;
+    if (hit) applyScrapeHit(hit);
+  });
+  els.scrapeConfirmNo.addEventListener("click", closeScrapeConfirm);
+  els.scrapeConfirmMask.addEventListener("click", closeScrapeConfirm);
   els.deleteBtn.addEventListener("click", deleteBook);
   els.coverFile.addEventListener("change", () => {
     const f = els.coverFile.files && els.coverFile.files[0];

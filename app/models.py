@@ -25,6 +25,8 @@ class Book(Base):
     word_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     chapter_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     latest_chapter: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    source: Mapped[str] = mapped_column(String(20), default="", nullable=False)  # 起点 / 番茄 …
+    source_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)  # 站外 bookId
     created_at: Mapped[str] = mapped_column(String(30), default=lambda: datetime.now().isoformat(timespec="seconds"))
     updated_at: Mapped[str] = mapped_column(String(30), default=lambda: datetime.now().isoformat(timespec="seconds"))
 
