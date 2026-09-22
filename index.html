@@ -95,6 +95,7 @@
       <nav class="nav">
         <button class="nav-item active" data-view="library">书库</button>
         <button class="nav-item" data-view="import">导入</button>
+        <button class="nav-item" data-view="check">体检</button>
         <button class="nav-item" data-view="backup">备份</button>
         <button class="nav-item" data-view="api">API / 书源</button>
       </nav>
@@ -178,6 +179,53 @@
         <div class="panel">
           <div class="panel-title">导入日志</div>
           <pre id="import-log" class="log">尚未运行导入。</pre>
+        </div>
+      </section>
+
+      <!-- 体检 -->
+      <section id="view-check" class="view" hidden>
+        <header class="toolbar">
+          <div class="toolbar-left">
+            <h2>书库体检</h2>
+            <span class="pill" id="check-summary">未检查</span>
+          </div>
+          <div class="toolbar-right">
+            <button id="check-scan" class="btn btn-primary">重新扫描</button>
+            <button id="check-repair-all" class="btn btn-ghost">修复全部问题</button>
+          </div>
+        </header>
+
+        <div class="panel">
+          <div class="panel-title">重复书籍（同书名+作者）</div>
+          <p class="muted tiny" style="margin-top:0">合并规则：保留章节/字数最多的一本，删除其余重复项（章节与多余封面一并删，源 TXT 不动）。</p>
+          <div id="dup-list" class="check-list"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">异常书籍</div>
+          <p class="muted tiny" style="margin-top:0">修复：清理控制字符；若源 TXT 仍可读且未分章/乱码，则重新解析章节。</p>
+          <div id="issue-list" class="check-list"></div>
+        </div>
+      <div class="panel">
+          <div class="panel-title">一键刮削（全库）</div>
+          <p class="muted tiny" style="margin-top:0">
+            按现有刮削源（起点）对书库批量识别：以<strong>书名+作者</strong>相似度取最近匹配，再拉详情写入（含封面/标签/来源）。
+            默认只处理尚未刮削的书；建议先「预览匹配」再「开始写入」。每本间隔约 0.6s，降低风控。
+          </p>
+          <div class="row">
+            <button id="batch-scrape-preview" class="btn btn-ghost">预览匹配</button>
+            <button id="batch-scrape-run" class="btn btn-primary">开始一键刮削</button>
+            <button id="batch-scrape-status" class="btn btn-ghost">刷新进度</button>
+            <label class="check-row" style="margin:0">
+              <input id="batch-only-missing" type="checkbox" checked />
+              <span>仅未刮削</span>
+            </label>
+            <label class="field field-tight" style="margin:0;flex-direction:row;align-items:center;gap:6px">
+              <span>匹配阈值</span>
+              <input id="batch-min-score" class="input" type="number" min="0.3" max="1" step="0.05" value="0.55" style="width:72px" />
+            </label>
+          </div>
+          <pre id="batch-scrape-log" class="log">尚未运行。</pre>
         </div>
       </section>
 
