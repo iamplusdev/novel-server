@@ -141,3 +141,23 @@ def load_txt_book(path: Path, category: str) -> ParsedBook:
         word_count=word_count,
         intro=intro,
     )
+
+
+def load_txt_book_from_text(text: str, stem: str, category: str) -> ParsedBook:
+    """从内存文本构建书籍（WebDAV 导入用）。"""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
+    title, author = parse_filename_meta(stem, category)
+    chapters = parse_txt_text(text, default_title=title)
+    word_count = sum(len(c.content) for c in chapters)
+    intro = ""
+    if chapters:
+        head = chapters[0].content.strip().replace("\n", " ")
+        intro = head[:200] + ("…" if len(head) > 200 else "")
+    return ParsedBook(
+        title=title,
+        author=author,
+        category=category,
+        chapters=chapters,
+        word_count=word_count,
+        intro=intro,
+    )

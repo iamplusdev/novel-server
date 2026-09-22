@@ -6,7 +6,7 @@ import posixpath
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 DAV_NS = "d"
@@ -52,8 +52,8 @@ class WebDAVClient:
 
     def _url(self, rel_path: str) -> str:
         rel = (rel_path or "").lstrip("/")
-        # 保留中文/空格，路径段分别编码
-        parts = [quote(p, safe="") for p in rel.split("/") if p not in ("", ".")]
+        # 先解码再编码，避免 %E7%… 被二次转义成 %25E7%…
+        parts = [quote(unquote(p), safe="") for p in rel.split("/") if p not in ("", ".")]
         suffix = "/".join(parts)
         return urljoin(self.base_url, suffix) if suffix else self.base_url
 
@@ -91,14 +91,21 @@ class WebDAVClient:
             return False
 
     def exists(self, rel_path: str) -> bool:
+        probe = rel_path
+        if rel_path and not rel_path.endswith("/"):
+            probe = rel_path + "/"
         try:
-            status, _, _ = self.request("PROPFIND", rel_path, data=PROPFIND_BODY.encode(), headers={
+            status, _, _ = self.request("PROPFIND", probe, data=PROPFIND_BODY.encode(), headers={
                 "Depth": "0",
                 "Content-Type": "application/xml; charset=utf-8",
             })
             return status in (200, 207)
         except WebDAVError:
             return False
+
+    def list_dir_names(self, rel_path: str = "") -> list[str]:
+        """只返回子目录名，便于路径探测。"""
+        return sorted(i.name for i in self.list_items(rel_path) if i.is_dir)
 
     def mkdir(self, rel_path: str) -> None:
         """递归创建集合（已存在则忽略）。"""
@@ -122,9 +129,13 @@ class WebDAVClient:
                     raise
 
     def list_items(self, rel_path: str = "") -> list[DavItem]:
+        # 集合 PROPFIND 带尾斜杠，兼容只认 path/ 的网盘
+        probe = rel_path
+        if rel_path and not rel_path.endswith("/"):
+            probe = rel_path + "/"
         status, body, _ = self.request(
             "PROPFIND",
-            rel_path,
+            probe,
             data=PROPFIND_BODY.encode(),
             headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
         )
@@ -136,7 +147,9 @@ class WebDAVClient:
             raise WebDAVError(f"WebDAV 响应解析失败: {e}") from e
 
         base_path = self._url(rel_path)
-        base_parsed = urlparse(base_path).path.rstrip("/") + "/"
+        self_norm = posixpath.normpath(unquote(urlparse(base_path).path)).replace("\\", "/")
+        if not self_norm.startswith("/"):
+            self_norm = "/" + self_norm
         items: list[DavItem] = []
 
         for resp in root.findall(f"{{{ 'DAV:' }}}response"):
@@ -144,18 +157,15 @@ class WebDAVClient:
             if href_el is None or not href_el.text:
                 continue
             href = href_el.text
-            href_path = urlparse(href).path
-            # 标准化并比较是否为集合自身
+            href_path = unquote(urlparse(href).path)
             norm = posixpath.normpath(href_path).replace("\\", "/")
             if not norm.startswith("/"):
                 norm = "/" + norm
-            self_norm = posixpath.normpath(urlparse(base_path).path).replace("\\", "/")
-            if not self_norm.startswith("/"):
-                self_norm = "/" + self_norm
+            # 跳过集合自身，避免 novels/科幻/科幻 这种重复下钻
             if norm.rstrip("/") == self_norm.rstrip("/"):
                 continue
 
-            name = posixpath.basename(norm.rstrip("/"))
+            name = unquote(posixpath.basename(norm.rstrip("/")))
             if not name:
                 continue
 

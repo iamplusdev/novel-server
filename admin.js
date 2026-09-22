@@ -104,6 +104,7 @@
     nextPage: $("next-page"),
     pageLabel: $("page-label"),
     importBtn: $("import-btn"),
+    importWebdavBtn: $("import-webdav-btn"),
     importRefresh: $("import-refresh"),
     importLog: $("import-log"),
     sourcePreview: $("source-preview"),
@@ -113,6 +114,7 @@
     backupListRefresh: $("backup-list-refresh"),
     davUrl: $("dav-url"),
     davPath: $("dav-path"),
+    davBooks: $("dav-books"),
     davUser: $("dav-user"),
     davPass: $("dav-pass"),
     davInterval: $("dav-interval"),
@@ -955,10 +957,10 @@
     els.importLog.textContent = lines.join("\n");
   }
 
-  async function startImport() {
+  async function startImport(mode) {
     try {
-      const res = await api("/api/admin/import", { method: "POST" });
-      toast(res.started ? "导入已开始" : "导入已在进行中", "ok");
+      const res = await api("/api/admin/import?mode=" + (mode || "local"), { method: "POST" });
+      toast(res.started ? (mode === "webdav" ? "WebDAV 导入已开始" : "本地导入已开始") : "导入已在进行中", "ok");
       renderImportLog(res.import);
       pollImport();
     } catch (err) {
@@ -1053,6 +1055,7 @@
     const cfg = await api("/api/admin/backup/config");
     els.davUrl.value = cfg.webdav_url || "";
     els.davPath.value = cfg.remote_path || "novel-server-backups";
+    if (els.davBooks) els.davBooks.value = cfg.books_path || "books";
     els.davUser.value = cfg.username || "";
     els.davPass.placeholder = cfg.password_set ? "已保存，留空表示不修改" : "输入 WebDAV 密码";
     els.davInterval.value = cfg.interval_hours || 24;
@@ -1068,6 +1071,7 @@
       webdav_url: els.davUrl.value.trim(),
       username: els.davUser.value.trim(),
       remote_path: els.davPath.value.trim() || "novel-server-backups",
+      books_path: (els.davBooks && els.davBooks.value.trim()) || "books",
       auto_enabled: els.davAuto.checked,
       interval_hours: Number(els.davInterval.value) || 24,
       keep_count: Number(els.davKeep.value) || 7,
@@ -1261,7 +1265,8 @@
       if (state.theme === "auto") applyTheme("auto");
     });
   }
-  els.importBtn.addEventListener("click", startImport);
+  els.importBtn.addEventListener("click", () => startImport("local"));
+  els.importWebdavBtn.addEventListener("click", () => startImport("webdav"));
   els.importRefresh.addEventListener("click", () => refreshImport().catch(toast));
   els.copySource.addEventListener("click", copySource);
   els.backupRun.addEventListener("click", runBackupNow);

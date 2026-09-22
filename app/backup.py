@@ -45,6 +45,7 @@ class BackupConfig:
     username: str = ""
     password: str = ""
     remote_path: str = "novel-server-backups"
+    books_path: str = "books"
     auto_enabled: bool = False
     interval_hours: int = 24
     keep_count: int = 7
@@ -57,6 +58,7 @@ class BackupConfig:
             "username": self.username,
             "password_set": bool(self.password),
             "remote_path": self.remote_path,
+            "books_path": self.books_path,
             "auto_enabled": self.auto_enabled,
             "interval_hours": self.interval_hours,
             "keep_count": self.keep_count,
@@ -69,6 +71,7 @@ class BackupConfig:
             "username": self.username,
             "password": self.password,
             "remote_path": self.remote_path,
+            "books_path": self.books_path,
             "auto_enabled": self.auto_enabled,
             "interval_hours": self.interval_hours,
             "keep_count": self.keep_count,
@@ -94,6 +97,7 @@ def load_config() -> BackupConfig:
         username=str(data.get("username") or ""),
         password=str(data.get("password") or ""),
         remote_path=str(data.get("remote_path") or "novel-server-backups").strip("/") or "novel-server-backups",
+        books_path=(str(data.get("books_path") or "books").strip("/").replace("\\", "/") or "books"),
         auto_enabled=bool(data.get("auto_enabled")),
         interval_hours=max(1, int(data.get("interval_hours") or 24)),
         keep_count=max(1, int(data.get("keep_count") or 7)),

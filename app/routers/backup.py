@@ -25,6 +25,7 @@ class BackupConfigIn(BaseModel):
     username: str = Field(default="", max_length=100)
     password: str | None = Field(default=None, max_length=200)  # null 表示保持原密码
     remote_path: str = Field(default="novel-server-backups", max_length=200)
+    books_path: str = Field(default="books", max_length=200)
     auto_enabled: bool = False
     interval_hours: int = Field(default=24, ge=1, le=24 * 30)
     keep_count: int = Field(default=7, ge=1, le=100)
@@ -54,6 +55,7 @@ def put_backup_config(payload: BackupConfigIn) -> dict:
     if payload.password is not None:
         cfg.password = payload.password
     cfg.remote_path = (payload.remote_path or "novel-server-backups").strip("/").replace("\\", "/") or "novel-server-backups"
+    cfg.books_path = (payload.books_path or "books").strip("/").replace("\\", "/") or "books"
     cfg.auto_enabled = payload.auto_enabled
     cfg.interval_hours = payload.interval_hours
     cfg.keep_count = payload.keep_count
