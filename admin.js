@@ -124,6 +124,17 @@
     davTest: $("dav-test"),
     backupTableBody: $("backup-table-body"),
     backupLog: $("backup-log"),
+    checkSummary: $("check-summary"),
+    dupList: $("dup-list"),
+    issueList: $("issue-list"),
+    checkScan: $("check-scan"),
+    checkRepairAll: $("check-repair-all"),
+    batchScrapePreview: $("batch-scrape-preview"),
+    batchScrapeRun: $("batch-scrape-run"),
+    batchScrapeStatus: $("batch-scrape-status"),
+    batchOnlyMissing: $("batch-only-missing"),
+    batchMinScore: $("batch-min-score"),
+    batchScrapeLog: $("batch-scrape-log"),
     drawer: $("drawer"),
     drawerMask: $("drawer-mask"),
     drawerResize: $("drawer-resize"),
@@ -1195,11 +1206,187 @@
     renderBackupStatus(st);
   }
 
+  // —— 书库体检 ——
+  function kindLabel(kind) {
+    const map = {
+      chapter_parse: "未分章",
+      encoding: "乱码",
+      control_chars: "控制符",
+      empty_chapters: "空章节",
+      source_missing: "缺源文件",
+    };
+    return map[kind] || kind;
+  }
+
+  function renderLibraryReport(rep) {
+    const dups = rep.duplicates || [];
+    const issues = rep.issues || [];
+    els.checkSummary.textContent = `重复 ${rep.duplicate_groups || 0} 组 · 异常 ${rep.issue_count || 0}`;
+
+    // 重复
+    if (!dups.length) {
+      els.dupList.innerHTML = '<div class="muted tiny">没有发现重复书。</div>';
+    } else {
+      els.dupList.innerHTML = dups.map((g, gi) => {
+        const keep = g.keep_id;
+        const del = (g.books || []).filter((b) => b.id !== keep).map((b) => b.id);
+        const rows = (g.books || []).map((b) => {
+          const tag = b.id === keep ? '<span class="chip ok">保留</span>' : '<span class="chip">待删</span>';
+          return `<div class="muted tiny">${tag} ID ${b.id} · ${b.chapter_count} 章 · ${fmtWords(b.word_count)} · <span class="mono">${escapeHtml(b.source_path || "")}</span></div>`;
+        }).join("");
+        return `
+          <div class="check-item" data-g="${gi}">
+            <div class="body">
+              <div class="t">${escapeHtml(g.title)}${g.author ? " · " + escapeHtml(g.author) : ""}</div>
+              <div class="m">${rows}</div>
+            </div>
+            <div class="ops">
+              <button class="btn btn-primary btn-sm" data-merge="${gi}">一键合并</button>
+            </div>
+          </div>`;
+      }).join("");
+      els.dupList.querySelectorAll("[data-merge]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const g = dups[Number(btn.dataset.merge)];
+          if (!g) return;
+          const del = (g.books || []).filter((b) => b.id !== g.keep_id).map((b) => b.id);
+          if (!confirm(`合并《${g.title}》：保留 ID ${g.keep_id}，删除 ${del.join(", ")}？`)) return;
+          mergeDup(g.keep_id, del);
+        });
+      });
+    }
+
+    // 异常
+    if (!issues.length) {
+      els.issueList.innerHTML = '<div class="muted tiny">没有发现异常，书库健康。</div>';
+    } else {
+      els.issueList.innerHTML = issues.map((it) => `
+        <div class="check-item">
+          <div class="body">
+            <div class="t">${escapeHtml(it.title)} <span class="chip kind-${escapeAttr(it.kind)}">${escapeHtml(kindLabel(it.kind))}</span></div>
+            <div class="m">${escapeHtml(it.message)} · ID ${it.book_id}</div>
+          </div>
+          <div class="ops">
+            <button class="btn btn-ghost btn-sm" data-repair="${it.book_id}">修复</button>
+            <button class="btn btn-ghost btn-sm" data-edit-book="${it.book_id}">编辑</button>
+          </div>
+        </div>`).join("");
+      els.issueList.querySelectorAll("[data-repair]").forEach((btn) => {
+        btn.addEventListener("click", () => repairOne(Number(btn.dataset.repair)));
+      });
+      els.issueList.querySelectorAll("[data-edit-book]").forEach((btn) => {
+        btn.addEventListener("click", () => openDrawer(Number(btn.dataset.editBook)));
+      });
+    }
+  }
+
+  async function loadLibraryReport() {
+    const rep = await api("/api/admin/library/report");
+    renderLibraryReport(rep);
+  }
+
+  async function mergeDup(keepId, deleteIds) {
+    try {
+      const res = await api("/api/admin/library/merge", {
+        method: "POST",
+        body: { keep_id: keepId, delete_ids: deleteIds },
+      });
+      toast("已合并，删除 " + (res.deleted || []).length + " 本", "ok");
+      await Promise.all([loadLibraryReport(), loadBooks(), loadStats()]);
+    } catch (err) {
+      toast(err.message || "合并失败", "err");
+    }
+  }
+
+  async function repairOne(bookId, mode) {
+    try {
+      const res = await api("/api/admin/library/repair/" + bookId + "?mode=" + (mode || "auto"), {
+        method: "POST",
+      });
+      toast((res.title || "") + "：" + (res.actions || []).join("；"), "ok");
+      await Promise.all([loadLibraryReport(), loadBooks(), loadStats()]);
+    } catch (err) {
+      toast(err.message || "修复失败", "err");
+    }
+  }
+
+  async function repairAll() {
+    if (!confirm("对所有异常书执行自动修复？（清理字符，必要时从源 TXT 重解析）")) return;
+    try {
+      const res = await api("/api/admin/library/repair", {
+        method: "POST",
+        body: { mode: "auto" },
+      });
+      toast("已修复 " + (res.count || 0) + " 本", "ok");
+      await Promise.all([loadLibraryReport(), loadBooks(), loadStats()]);
+    } catch (err) {
+      toast(err.message || "修复失败", "err");
+    }
+  }
+
+  function renderBatchStatus(st) {
+    if (!st) return;
+    const lines = [];
+    if (st.running) lines.push("运行中… 进度 " + (st.done || 0) + "/" + (st.total || 0));
+    else lines.push("进度 " + (st.done || 0) + "/" + (st.total || 0) + (st.dry_run ? "（预览）" : ""));
+    lines.push("写入 " + (st.matched || 0) + " · 跳过 " + (st.skipped || 0) + " · 失败 " + (st.failed || 0));
+    if (st.last_error) lines.push("错误: " + st.last_error);
+    if ((st.log || []).length) {
+      lines.push("");
+      (st.log || []).slice(-40).forEach((e) => lines.push(e.time + "  " + e.message));
+    }
+    els.batchScrapeLog.textContent = lines.join("\n") || "尚未运行。";
+    els.batchScrapeLog.scrollTop = els.batchScrapeLog.scrollHeight;
+  }
+
+  async function startBatchScrape(dryRun) {
+    try {
+      const res = await api("/api/admin/scrape/batch/start", {
+        method: "POST",
+        body: {
+          source: "qidian",
+          only_missing: !!els.batchOnlyMissing.checked,
+          min_score: Number(els.batchMinScore.value) || 0.55,
+          dry_run: !!dryRun,
+        },
+      });
+      toast(res.started ? (dryRun ? "预览匹配已开始" : "一键刮削已开始") : "批处理已在运行", "ok");
+      renderBatchStatus(res.status);
+      pollBatchScrape();
+    } catch (err) {
+      toast(err.message || "启动失败", "err");
+    }
+  }
+
+  function pollBatchScrape() {
+    let n = 0;
+    const timer = setInterval(async () => {
+      n += 1;
+      try {
+        const st = await api("/api/admin/scrape/batch/status");
+        renderBatchStatus(st);
+        if (!st.running) {
+          clearInterval(timer);
+          await Promise.all([loadBooks(), loadStats(), loadLibraryReport().catch(() => {})]);
+          toast("批处理完成", "ok");
+        }
+      } catch (_) {
+        clearInterval(timer);
+      }
+      if (n > 180) clearInterval(timer);
+    }, 1500);
+  }
+
+  async function refreshBatchStatus() {
+    const st = await api("/api/admin/scrape/batch/status");
+    renderBatchStatus(st);
+  }
+
   function switchView(name) {
     document.querySelectorAll(".nav-item").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.view === name);
     });
-    ["library", "import", "backup", "api"].forEach((v) => {
+    ["library", "import", "check", "backup", "api"].forEach((v) => {
       const el = $("view-" + v);
       if (el) el.hidden = v !== name;
     });
@@ -1207,6 +1394,10 @@
       loadBackupConfig().catch(() => {});
       loadBackupList().catch(() => {});
       loadBackupStatus().catch(() => {});
+    }
+    if (name === "check") {
+      loadLibraryReport().catch((e) => toast(e.message, "err"));
+      refreshBatchStatus().catch(() => {});
     }
   }
 
@@ -1273,6 +1464,14 @@
   els.backupListRefresh.addEventListener("click", () => loadBackupList().catch((e) => toast(e.message, "err")));
   els.davSave.addEventListener("click", saveBackupConfig);
   els.davTest.addEventListener("click", testBackupConn);
+  els.checkScan.addEventListener("click", () => loadLibraryReport().catch((e) => toast(e.message, "err")));
+  els.checkRepairAll.addEventListener("click", repairAll);
+  els.batchScrapePreview.addEventListener("click", () => startBatchScrape(true));
+  els.batchScrapeRun.addEventListener("click", () => {
+    if (!confirm("开始对全库一键刮削？将按书名/作者最近匹配写入元数据。")) return;
+    startBatchScrape(false);
+  });
+  els.batchScrapeStatus.addEventListener("click", () => refreshBatchStatus().catch(toast));
   els.drawerClose.addEventListener("click", closeDrawer);
   els.cancelBtn.addEventListener("click", closeDrawer);
   els.drawerMask.addEventListener("click", closeDrawer);
