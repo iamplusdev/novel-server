@@ -11,13 +11,17 @@ import urllib.request
 from pathlib import Path
 
 BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
-TOKEN = os.environ.get("ADMIN_TOKEN", "test-token-12345")
+USERNAME = os.environ.get("ADMIN_USER", "admin")
+PASSWORD = os.environ.get("ADMIN_PASS", "test-pass-12345")
+TOKEN = os.environ.get("ADMIN_SESSION", "")
 
 
 def fetch(path: str, method: str = "GET", data: dict | None = None, token: str | None = None):
     url = BASE + path
     headers = {"Accept": "application/json"}
     body = None
+    if token is None:
+        token = TOKEN
     if token:
         headers["Authorization"] = f"Bearer {token}"
     if data is not None:
@@ -36,6 +40,24 @@ def fetch(path: str, method: str = "GET", data: dict | None = None, token: str |
             return e.code, {"raw": raw}
 
 
+def ensure_session() -> str:
+    global TOKEN
+    st, st_data = fetch("/api/auth/status", token="")
+    if st_data and st_data.get("setup_required"):
+        st, res = fetch("/api/auth/setup", "POST", {"username": USERNAME, "password": PASSWORD}, token="")
+        if st != 200:
+            raise RuntimeError(f"setup failed: {res}")
+        TOKEN = res["token"]
+        return TOKEN
+    if TOKEN:
+        return TOKEN
+    st, res = fetch("/api/auth/login", "POST", {"username": USERNAME, "password": PASSWORD}, token="")
+    if st != 200:
+        raise RuntimeError(f"login failed: {res}")
+    TOKEN = res["token"]
+    return TOKEN
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     ok = True
@@ -48,6 +70,7 @@ def main() -> int:
             ok = False
         checks.append(f"[{status}] {name}" + (f" — {detail}" if detail else ""))
 
+    ensure_session()
     st, health = fetch("/health")
     check("health", st == 200 and health.get("ok") is True, str(health))
 
@@ -107,8 +130,11 @@ def main() -> int:
         check("book-source", st == 200 and src.get("bookSourceUrl", "").startswith("http"), src.get("bookSourceUrl", ""))
         check("book-source explore", bool(src.get("exploreUrl")))
 
-        st, unauth = fetch("/api/admin/stats")
-        check("admin 401 without token", st == 401)
+        st, unauth = fetch("/api/admin/stats", token="")
+        check("admin 401 without session", st == 401)
+
+        st, me = fetch("/api/auth/me")
+        check("auth me", st == 200 and bool(me.get("username")), str(me))
 
         st, stats = fetch("/api/admin/stats", token=TOKEN)
         check("admin stats", st == 200 and stats.get("total_books", 0) >= 3)

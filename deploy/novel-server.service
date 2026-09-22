@@ -9,8 +9,6 @@ WorkingDirectory=/opt/novel-server
 User=novel
 Group=novel
 EnvironmentFile=-/opt/novel-server/.env
-# 若不用 .env，也可直接写 Environment=
-# Environment=ADMIN_TOKEN=your-token
 # Environment=PUBLIC_BASE_URL=http://192.168.1.100:8000
 ExecStart=/opt/novel-server/.venv/bin/python run.py
 Restart=on-failure
