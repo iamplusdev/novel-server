@@ -1,4 +1,3 @@
-<!-- AI生成 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -8,9 +7,7 @@
   <link rel="stylesheet" href="/admin.css" />
 </head>
 <body>
-<p data-aigc-mark="1" style="margin:0 0 8px;font-size:10px;line-height:1.3;color:#6b6560;font-weight:400;">AI生成</p>
-
-  <div id="login" class="login-wrap">
+<div id="login" class="login-wrap">
     <div class="login-card">
       <div class="brand">
         <span class="brand-mark">爱</span>
@@ -129,14 +126,12 @@
           </div>
           <div class="toolbar-right">
             <input id="search-input" class="input" type="search" placeholder="搜索书名 / 作者 / 标签…" />
-            <select id="category-filter" class="input select">
-              <option value="">全部分类</option>
-            </select>
-            <select id="status-filter" class="input select">
-              <option value="">全部状态</option>
-              <option value="连载">连载</option>
-              <option value="完结">完结</option>
-              <option value="未知">未知</option>
+            <select id="sort-select" class="input select" title="排序">
+              <option value="updated">导入/更新时间</option>
+              <option value="title">书名</option>
+              <option value="author">作者</option>
+              <option value="words">字数</option>
+              <option value="chapters">章节</option>
             </select>
             <select id="view-mode" class="input select" title="显示方式">
               <option value="grid">封面墙</option>
@@ -149,6 +144,8 @@
             <button id="refresh-btn" class="btn btn-ghost">刷新</button>
           </div>
         </header>
+
+        <div id="category-bar" class="cat-bar" role="tablist" aria-label="分类筛选"></div>
 
         <div id="grid-wrap" class="book-grid"></div>
         <div id="list-wrap" class="book-list" hidden></div>
@@ -359,5 +356,19 @@
   </div>
 
   <script src="/admin.js"></script>
+  <script>
+    (function () {
+      function wipe() {
+        document.querySelectorAll('[data-aigc-mark]').forEach(function (el) { el.remove(); });
+        document.querySelectorAll('p').forEach(function (el) {
+          if (el.textContent.trim() === 'AI生成') el.remove();
+        });
+      }
+      wipe();
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', wipe);
+      }
+    })();
+  </script>
 </body>
 </html>

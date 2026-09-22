@@ -2,6 +2,34 @@
 (function () {
   "use strict";
 
+  // 移除预览/注入的 AI 水印，避免占位与滚动条
+  (function stripAigc() {
+    function wipe(root) {
+      (root || document).querySelectorAll("[data-aigc-mark]").forEach((el) => el.remove());
+      (root || document).querySelectorAll("p").forEach((el) => {
+        if ((el.textContent || "").trim() === "AI生成") el.remove();
+      });
+    }
+    wipe();
+    const style = document.createElement("style");
+    style.textContent = "[data-aigc-mark],p[data-aigc-mark='1']{display:none!important;margin:0!important;height:0!important;overflow:hidden!important;position:absolute!important;left:-9999px!important}";
+    document.documentElement.appendChild(style);
+    if (window.MutationObserver) {
+      const mo = new MutationObserver((muts) => {
+        for (const m of muts) {
+          m.addedNodes && m.addedNodes.forEach((n) => {
+            if (n.nodeType === 1) {
+              if (n.hasAttribute && n.hasAttribute("data-aigc-mark")) n.remove();
+              else wipe(n.parentNode || document);
+            }
+          });
+        }
+        wipe();
+      });
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  })();
+
   const TOKEN_KEY = "novel_admin_token";
   const THEME_KEY = "novel_theme_mode";
   const GRID_SIZE_KEY = "novel_grid_size";
@@ -14,6 +42,8 @@
     items: [],
     viewMode: localStorage.getItem("novel_view_mode") || "grid",
     theme: localStorage.getItem(THEME_KEY) || "auto",
+    category: "",
+    sort: localStorage.getItem("novel_sort") || "updated",
     stats: null,
     sourceJson: null,
   };
@@ -61,8 +91,8 @@
     statWords: $("stat-words"),
     libCount: $("lib-count"),
     searchInput: $("search-input"),
-    categoryFilter: $("category-filter"),
-    statusFilter: $("status-filter"),
+    categoryBar: $("category-bar"),
+    sortSelect: $("sort-select"),
     viewMode: $("view-mode"),
     gridSize: $("grid-size"),
     themeSelect: $("theme-select"),
@@ -219,6 +249,8 @@
     els.login.hidden = true;
     els.app.hidden = false;
     els.viewMode.value = state.viewMode;
+    if (els.sortSelect) els.sortSelect.value = state.sort || "updated";
+    renderCategoryBar();
   }
 
   function showAuthPane(name) {
@@ -285,9 +317,15 @@
   }
 
   async function afterLogin() {
-    await loadStats();
+    // 先切换界面，避免加载失败卡在登录页
     showApp();
-    await Promise.all([loadBooks(), loadSourceJson()]);
+    try {
+      await loadStats();
+      renderCategoryBar();
+      await Promise.all([loadBooks(), loadSourceJson()]);
+    } catch (err) {
+      toast(err.message || "加载数据失败", "err");
+    }
   }
 
   async function login() {
@@ -423,15 +461,10 @@
     const names = (categories && categories.length)
       ? categories.map((c) => (typeof c === "string" ? c : c.name))
       : FALLBACK_CATEGORIES;
-    function fill(select, keepAll) {
+    function fill(select) {
+      if (!select) return;
       const current = select.value;
       select.innerHTML = "";
-      if (keepAll) {
-        const opt = document.createElement("option");
-        opt.value = "";
-        opt.textContent = "全部分类";
-        select.appendChild(opt);
-      }
       names.forEach((n) => {
         const opt = document.createElement("option");
         opt.value = n;
@@ -440,8 +473,7 @@
       });
       if (current && names.includes(current)) select.value = current;
     }
-    fill(els.categoryFilter, true);
-    fill(els.editCategory, false);
+    fill(els.editCategory);
   }
 
   async function loadStats() {
@@ -452,6 +484,7 @@
     els.baseUrlLabel.textContent = data.public_base_url || location.origin;
     els.apiBase.textContent = data.public_base_url || location.origin;
     fillCategorySelects(data.categories);
+    renderCategoryBar();
     renderImportLog(data.import);
   }
 
@@ -459,10 +492,46 @@
     const params = new URLSearchParams();
     params.set("page", String(state.page));
     params.set("page_size", String(state.pageSize));
+    params.set("sort", state.sort || "updated");
     if (els.searchInput.value.trim()) params.set("q", els.searchInput.value.trim());
-    if (els.categoryFilter.value) params.set("category", els.categoryFilter.value);
-    if (els.statusFilter.value) params.set("status", els.statusFilter.value);
+    if (state.category) params.set("category", state.category);
     return params.toString();
+  }
+
+  function renderCategoryBar() {
+    const cats = (state.stats && state.stats.by_category) || [];
+    const names = [];
+    const seen = new Set();
+    // 固定分类顺序 + 有书的其它分类
+    const fallback = (state.stats && state.stats.categories) || FALLBACK_CATEGORIES;
+    fallback.forEach((n) => {
+      if (!seen.has(n)) { seen.add(n); names.push(n); }
+    });
+    cats.forEach((c) => {
+      if (c && c.name && !seen.has(c.name)) { seen.add(c.name); names.push(c.name); }
+    });
+    const countMap = {};
+    cats.forEach((c) => { countMap[c.name] = c.count || 0; });
+    const total = (state.stats && state.stats.total_books) || 0;
+
+    const chips = [];
+    chips.push(`<button type="button" class="cat-chip${state.category === "" ? " active" : ""}" data-cat="">全部<span class="n">${total}</span></button>`);
+    names.forEach((n) => {
+      const cnt = countMap[n] || 0;
+      if (!cnt && n !== state.category) return; // 无书且未选中则不展示
+      chips.push(
+        `<button type="button" class="cat-chip${state.category === n ? " active" : ""}" data-cat="${escapeAttr(n)}">${escapeHtml(n)}<span class="n">${cnt}</span></button>`
+      );
+    });
+    els.categoryBar.innerHTML = chips.join("");
+    els.categoryBar.querySelectorAll(".cat-chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.category = btn.dataset.cat || "";
+        state.page = 1;
+        renderCategoryBar();
+        loadBooks().catch((e) => toast(e.message, "err"));
+      });
+    });
   }
 
   async function loadBooks() {
@@ -985,8 +1054,12 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { state.page = 1; loadBooks().catch(() => {}); }, 300);
   });
-  els.categoryFilter.addEventListener("change", () => { state.page = 1; loadBooks().catch(() => {}); });
-  els.statusFilter.addEventListener("change", () => { state.page = 1; loadBooks().catch(() => {}); });
+  els.sortSelect.addEventListener("change", () => {
+    state.sort = els.sortSelect.value || "updated";
+    localStorage.setItem("novel_sort", state.sort);
+    state.page = 1;
+    loadBooks().catch((e) => toast(e.message, "err"));
+  });
   els.viewMode.addEventListener("change", () => {
     state.viewMode = els.viewMode.value;
     localStorage.setItem("novel_view_mode", state.viewMode);
@@ -1023,6 +1096,7 @@
   applyGridSize(localStorage.getItem(GRID_SIZE_KEY) || 150);
   applyDrawerWidth(localStorage.getItem(DRAWER_W_KEY) || 520);
   initDrawerResize();
+  if (els.sortSelect) els.sortSelect.value = state.sort || "updated";
   bootAuth().catch((e) => {
     showLogin();
     showAuthPane("login");

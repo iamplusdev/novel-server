@@ -53,6 +53,7 @@ def admin_list_books(
     q: str | None = Query(default=None),
     category: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    sort: str = Query(default="updated"),  # updated|title|author|words|chapters
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -69,8 +70,18 @@ def admin_list_books(
             or_(Book.title.like(like), Book.author.like(like), Book.tags.like(like))
         )
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    if sort == "title":
+        order = (Book.title.asc(), Book.id.asc())
+    elif sort == "author":
+        order = (Book.author.asc(), Book.title.asc())
+    elif sort == "words":
+        order = (Book.word_count.desc(), Book.title.asc())
+    elif sort == "chapters":
+        order = (Book.chapter_count.desc(), Book.title.asc())
+    else:
+        order = (Book.updated_at.desc(), Book.id.desc())
     books = db.execute(
-        stmt.order_by(Book.updated_at.desc(), Book.id.desc()).offset(offset).limit(page_size)
+        stmt.order_by(*order).offset(offset).limit(page_size)
     ).scalars().all()
     return {"total": total, "page": page, "page_size": page_size, "items": [book_list_item(b) for b in books]}
 
