@@ -254,7 +254,16 @@ def fetch_detail(book_id: str) -> ScrapeHit:
         if m:
             hit.intro = _clean(m.group(1))[:500]
     if not hit.intro:
-        m = re.search(r'>([^<]{20,400})</p></div><div class="page-directory-header"', page)
+        m = re.search(
+            r'作品简介</(?:span|h3|div|p)>\s*([\s\S]{20,800}?)(?:</p></div><div class="page-directory-header"|<div class="page-directory-header")',
+            page,
+        )
+        if m:
+            hit.intro = _clean(m.group(1))[:500]
+    if not hit.intro:
+        m = re.search(
+            r'>([^<]{20,400})</p></div><div class="page-directory-header"', page
+        )
         if m:
             hit.intro = _clean(m.group(1))[:500]
     if not hit.intro:
@@ -283,6 +292,11 @@ def fetch_detail(book_id: str) -> ScrapeHit:
             hit.status = _status_from_code(m.group(1))
     if not hit.tags and hit.category:
         hit.tags = [clean_tag_token(x) for x in re.split(r"[,，]", hit.category) if clean_tag_token(x)]
+    # 简介兜底：目录前长段落
+    if not hit.intro or hit.intro.strip() in ("作品简介", "简介"):
+        m = re.search(r">([^<]{30,600})</p></div><div class=\"page-directory-header\"", page)
+        if m:
+            hit.intro = _clean(m.group(1))[:500]
     return hit
 
 
