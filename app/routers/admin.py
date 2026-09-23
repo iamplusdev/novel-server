@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_admin_dep
 from ..config import CATEGORIES, settings
-from ..database import get_db
+from ..database import escape_like, get_db
 from ..importer import get_import_status, import_all_async
 from ..models import Book
 from ..serializers import admin_book_detail, book_list_item, resolve_base_url
@@ -20,6 +21,23 @@ from ..serializers import admin_book_detail, book_list_item, resolve_base_url
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_dep)])
 
 ALLOWED_COVER_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+# 封面上传上限：个人库封面不需要很大
+MAX_COVER_BYTES = 5 * 1024 * 1024
+
+
+def _detect_image_ext(data: bytes) -> str | None:
+    """按魔数识别图片类型，防止改扩展名伪造上传。"""
+    if not data:
+        return None
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
 
 
 class BookUpdate(BaseModel):
@@ -93,9 +111,13 @@ def admin_list_books(
     if status:
         stmt = stmt.where(Book.status == status)
     if q:
-        like = f"%{q.strip()}%"
+        like = f"%{escape_like(q.strip())}%"
         stmt = stmt.where(
-            or_(Book.title.like(like), Book.author.like(like), Book.tags.like(like))
+            or_(
+                Book.title.like(like, escape="\\"),
+                Book.author.like(like, escape="\\"),
+                Book.tags.like(like, escape="\\"),
+            )
         )
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     if sort == "title":
@@ -146,6 +168,8 @@ def admin_update_book(
         raise HTTPException(400, "书名不能为空")
     for k, v in data.items():
         setattr(book, k, v)
+    # 元数据变更后刷新更新时间，保证「导入/更新」排序准确
+    book.updated_at = datetime.now().isoformat(timespec="seconds")
     db.commit()
     db.refresh(book)
     return admin_book_detail(book, resolve_base_url(request))
@@ -165,6 +189,15 @@ def admin_upload_cover(
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_COVER_EXT:
         raise HTTPException(400, f"不支持的封面格式，请使用 {', '.join(sorted(ALLOWED_COVER_EXT))}")
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(400, "封面文件为空")
+    if len(raw) > MAX_COVER_BYTES:
+        raise HTTPException(400, f"封面过大，请控制在 {MAX_COVER_BYTES // (1024 * 1024)}MB 以内")
+    # 以文件魔数为准，扩展名伪造会被拒绝
+    magic_ext = _detect_image_ext(raw)
+    if magic_ext is None:
+        raise HTTPException(400, "不是有效的图片文件（支持 jpg / png / webp / gif）")
     settings.covers_dir.mkdir(parents=True, exist_ok=True)
     # 删除旧封面
     if book.cover_file:
@@ -174,9 +207,10 @@ def admin_upload_cover(
                 old.unlink()
             except OSError:
                 pass
-    new_name = f"{book.id}_{int(time.time())}{ext}"
+    # 统一用魔数识别的扩展名落盘
+    new_name = f"{book.id}_{int(time.time())}{magic_ext}"
     dest = settings.covers_dir / new_name
-    dest.write_bytes(file.file.read())
+    dest.write_bytes(raw)
     book.cover_file = new_name
     db.commit()
     db.refresh(book)

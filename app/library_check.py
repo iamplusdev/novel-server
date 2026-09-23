@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -36,31 +36,65 @@ def _clean_text(s: str) -> str:
 
 
 def scan_issues(db: Session) -> list[BookIssue]:
+    """体检扫描：统计走 SQL 聚合，控制字符按批流式扫，避免整库正文进内存。"""
     issues: list[BookIssue] = []
     books = db.execute(select(Book)).scalars().all()
+
+    # 每本书章节级聚合：数量 / 总字数 / 乱码符 / 空章，不加载正文
+    stats_rows = db.execute(
+        select(
+            Chapter.book_id,
+            func.count(Chapter.id).label("n"),
+            func.coalesce(func.sum(func.length(Chapter.content)), 0).label("total_len"),
+            func.coalesce(
+                func.sum(
+                    func.length(Chapter.content)
+                    - func.length(func.replace(Chapter.content, "�", ""))
+                ),
+                0,
+            ).label("repl"),
+            func.coalesce(
+                func.sum(case((func.trim(Chapter.content) == "", 1), else_=0)), 0
+            ).label("empty_n"),
+        ).group_by(Chapter.book_id)
+    ).all()
+    stats = {
+        r.book_id: {"n": r.n, "total_len": r.total_len, "repl": r.repl, "empty_n": r.empty_n}
+        for r in stats_rows
+    }
+
+    # 控制字符：流式按批处理，内存与批大小相关而非全库
+    ctrl_counts: dict[int, int] = {}
+    stream = db.execute(
+        select(Chapter.book_id, Chapter.content).execution_options(yield_per=200)
+    )
+    for bid, content in stream:
+        if not content:
+            continue
+        n = len(_CTRL_RE.findall(content))
+        if n:
+            ctrl_counts[bid] = ctrl_counts.get(bid, 0) + n
+
     for book in books:
-        chapters = db.execute(
-            select(Chapter).where(Chapter.book_id == book.id).order_by(Chapter.index)
-        ).scalars().all()
-        if not chapters:
+        st = stats.get(book.id)
+        if not st or st["n"] == 0:
             issues.append(BookIssue(book.id, book.title, "empty_chapters", "没有任何章节"))
             continue
 
-        total_len = sum(len(c.content or "") for c in chapters)
+        total_len = st["total_len"] or 0
         # 大体量却只有 1 章 → 多半章节标题没识别
-        if book.word_count >= 5000 and len(chapters) <= 1:
+        if book.word_count >= 5000 and st["n"] <= 1:
             issues.append(
                 BookIssue(
                     book.id,
                     book.title,
                     "chapter_parse",
-                    f"疑似未分章（仅 {len(chapters)} 章 / {book.word_count} 字）",
-                    {"chapter_count": len(chapters), "word_count": book.word_count},
+                    f"疑似未分章（仅 {st['n']} 章 / {book.word_count} 字）",
+                    {"chapter_count": st["n"], "word_count": book.word_count},
                 )
             )
 
-        joined = "\n".join(c.content or "" for c in chapters)
-        repl = joined.count("�")
+        repl = st["repl"] or 0
         if repl >= 5:
             issues.append(
                 BookIssue(
@@ -71,7 +105,7 @@ def scan_issues(db: Session) -> list[BookIssue]:
                     {"replacements": repl},
                 )
             )
-        ctrl = len(_CTRL_RE.findall(joined))
+        ctrl = ctrl_counts.get(book.id, 0)
         if ctrl >= 10:
             issues.append(
                 BookIssue(
@@ -83,15 +117,15 @@ def scan_issues(db: Session) -> list[BookIssue]:
                 )
             )
 
-        empty_n = sum(1 for c in chapters if not (c.content or "").strip())
-        if empty_n and empty_n >= max(1, len(chapters) // 3):
+        empty_n = st["empty_n"] or 0
+        if empty_n and empty_n >= max(1, st["n"] // 3):
             issues.append(
                 BookIssue(
                     book.id,
                     book.title,
                     "empty_chapters",
-                    f"空章节 {empty_n}/{len(chapters)}",
-                    {"empty": empty_n, "total": len(chapters)},
+                    f"空章节 {empty_n}/{st['n']}",
+                    {"empty": empty_n, "total": st["n"]},
                 )
             )
 

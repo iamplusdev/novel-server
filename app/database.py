@@ -77,3 +77,13 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def escape_like(text: str) -> str:
+    """转义 SQL LIKE 通配符，避免用户输入改变匹配语义。配合 like(..., escape='\\\\')。"""
+    return (
+        (text or "")
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )

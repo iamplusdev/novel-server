@@ -2,34 +2,6 @@
 (function () {
   "use strict";
 
-  // 移除预览/注入的 AI 水印，避免占位与滚动条
-  (function stripAigc() {
-    function wipe(root) {
-      (root || document).querySelectorAll("[data-aigc-mark]").forEach((el) => el.remove());
-      (root || document).querySelectorAll("p").forEach((el) => {
-        if ((el.textContent || "").trim() === "AI生成") el.remove();
-      });
-    }
-    wipe();
-    const style = document.createElement("style");
-    style.textContent = "[data-aigc-mark],p[data-aigc-mark='1']{display:none!important;margin:0!important;height:0!important;overflow:hidden!important;position:absolute!important;left:-9999px!important}";
-    document.documentElement.appendChild(style);
-    if (window.MutationObserver) {
-      const mo = new MutationObserver((muts) => {
-        for (const m of muts) {
-          m.addedNodes && m.addedNodes.forEach((n) => {
-            if (n.nodeType === 1) {
-              if (n.hasAttribute && n.hasAttribute("data-aigc-mark")) n.remove();
-              else wipe(n.parentNode || document);
-            }
-          });
-        }
-        wipe();
-      });
-      mo.observe(document.documentElement, { childList: true, subtree: true });
-    }
-  })();
-
   const TOKEN_KEY = "novel_admin_token";
   const THEME_KEY = "novel_theme_mode";
   const GRID_SIZE_KEY = "novel_grid_size";
@@ -632,16 +604,18 @@
     els.gridWrap.hidden = !grid;
     els.listWrap.hidden = grid;
     const emptyText = "暂无书籍，请到「导入」页导入 TXT。";
+    // 空状态统一样式，避免只有灰字不显眼
+    const emptyHtml = '<div class="empty-hint">' + emptyText + "</div>";
 
     if (grid) {
       if (!state.items.length) {
-        els.gridWrap.innerHTML = '<div class="muted" style="grid-column:1/-1;padding:32px;text-align:center">' + emptyText + "</div>";
+        els.gridWrap.innerHTML = emptyHtml;
         return;
       }
       els.gridWrap.innerHTML = state.items.map((b) => {
         const coverSrc = b.cover_path || b.cover_url;
         const cover = coverSrc
-          ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" />`
+          ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" data-fallback="${escapeAttr(b.name || "")}" />`
           : `<div class="placeholder">${escapeHtml(b.name)}</div>`;
         return `
           <article class="book-card" data-id="${b.id}">
@@ -654,6 +628,9 @@
             </div>
           </article>`;
       }).join("");
+      els.gridWrap.querySelectorAll(".book-card img").forEach((img) => {
+        bindCoverFallback(img, img.dataset.fallback || "");
+      });
       els.gridWrap.querySelectorAll(".book-card").forEach((card) => {
         card.addEventListener("click", () => openDrawer(Number(card.dataset.id)));
       });
@@ -662,13 +639,13 @@
 
     // 列表模式：有数据才渲染卡片，空列表给提示
     if (!state.items.length) {
-      els.listWrap.innerHTML = '<div class="muted" style="padding:32px;text-align:center">' + emptyText + "</div>";
+      els.listWrap.innerHTML = emptyHtml;
       return;
     }
     els.listWrap.innerHTML = state.items.map((b) => {
       const coverSrc = b.cover_path || b.cover_url;
       const cover = coverSrc
-        ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" />`
+        ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" data-fallback="${escapeAttr((b.name || "").slice(0, 6))}" />`
         : `<div class="placeholder">${escapeHtml((b.name || "").slice(0, 6))}</div>`;
       return `
         <article class="book-row" data-id="${b.id}">
@@ -679,6 +656,9 @@
           </div>
         </article>`;
     }).join("");
+    els.listWrap.querySelectorAll(".book-row img").forEach((img) => {
+      bindCoverFallback(img, img.dataset.fallback || "");
+    });
     els.listWrap.querySelectorAll(".book-row").forEach((row) => {
       row.addEventListener("click", () => openDrawer(Number(row.dataset.id)));
     });
@@ -706,6 +686,7 @@
     els.editIntro.value = book.intro || "";
     els.coverPreview.src = book.cover_path || book.cover_url || placeholderDataUri(book.name || "");
     els.coverPreview.alt = book.name || "封面";
+    bindCoverFallback(els.coverPreview, book.name || "");
     els.editMeta.textContent = [
       "ID " + book.id,
       "章节 " + (book.chapter_count || 0),
@@ -934,23 +915,25 @@
       tags: els.editTags.value,
       intro: els.editIntro.value,
     };
-    try {
-      if (els.coverFile.files && els.coverFile.files[0]) {
-        const fd = new FormData();
-        fd.append("file", els.coverFile.files[0]);
-        await api("/api/admin/books/" + id + "/cover", { method: "POST", body: fd });
+    await withBusy(els.saveBtn, async () => {
+      try {
+        if (els.coverFile.files && els.coverFile.files[0]) {
+          const fd = new FormData();
+          fd.append("file", els.coverFile.files[0]);
+          await api("/api/admin/books/" + id + "/cover", { method: "POST", body: fd });
+        }
+        const updated = await api("/api/admin/books/" + id, {
+          method: "PATCH",
+          body: payload,
+        });
+        els.coverPreview.src = updated.cover_path || updated.cover_url || placeholderDataUri(updated.name);
+        els.coverFile.value = "";
+        toast("已保存", "ok");
+        await Promise.all([loadBooks(), loadStats()]);
+      } catch (err) {
+        toast(err.message || "保存失败", "err");
       }
-      const updated = await api("/api/admin/books/" + id, {
-        method: "PATCH",
-        body: payload,
-      });
-      els.coverPreview.src = updated.cover_path || updated.cover_url || placeholderDataUri(updated.name);
-      els.coverFile.value = "";
-      toast("已保存", "ok");
-      await Promise.all([loadBooks(), loadStats()]);
-    } catch (err) {
-      toast(err.message || "保存失败", "err");
-    }
+    }, "保存中…");
   }
 
   async function deleteBook() {
@@ -958,14 +941,16 @@
     const name = els.editTitle.value;
     if (!id) return;
     if (!confirm("确认删除《" + name + "》？章节与封面将一并删除，源 TXT 文件保留。")) return;
-    try {
-      await api("/api/admin/books/" + id, { method: "DELETE" });
-      toast("已删除《" + name + "》", "ok");
-      closeDrawer();
-      await Promise.all([loadBooks(), loadStats()]);
-    } catch (err) {
-      toast(err.message || "删除失败", "err");
-    }
+    await withBusy(els.deleteBtn, async () => {
+      try {
+        await api("/api/admin/books/" + id, { method: "DELETE" });
+        toast("已删除《" + name + "》", "ok");
+        closeDrawer();
+        await Promise.all([loadBooks(), loadStats()]);
+      } catch (err) {
+        toast(err.message || "删除失败", "err");
+      }
+    }, "删除中…");
   }
 
   function renderImportLog(importStatus) {
@@ -1010,14 +995,18 @@
   }
 
   async function startImport(mode) {
-    try {
-      const res = await api("/api/admin/import?mode=" + (mode || "local"), { method: "POST" });
-      toast(res.started ? (mode === "webdav" ? "WebDAV 导入已开始" : "本地导入已开始") : "导入已在进行中", "ok");
-      renderImportLog(res.import);
-      pollImport();
-    } catch (err) {
-      toast(err.message || "导入失败", "err");
-    }
+    // 导入按钮加忙态，避免重复触发
+    const btn = mode === "webdav" ? els.importWebdavBtn : els.importBtn;
+    await withBusy(btn, async () => {
+      try {
+        const res = await api("/api/admin/import?mode=" + (mode || "local"), { method: "POST" });
+        toast(res.started ? (mode === "webdav" ? "WebDAV 导入已开始" : "本地导入已开始") : "导入已在进行中", "ok");
+        renderImportLog(res.import);
+        pollImport();
+      } catch (err) {
+        toast(err.message || "导入失败", "err");
+      }
+    }, "启动中…");
   }
 
   function pollImport() {
@@ -1141,36 +1130,40 @@
   }
 
   async function saveBackupConfig() {
-    try {
-      const payload = await collectBackupConfig();
-      const saved = await api("/api/admin/backup/config", { method: "PUT", body: payload });
-      els.davPass.value = "";
-      els.davPass.placeholder = saved.password_set ? "已保存，留空表示不修改" : "输入 WebDAV 密码";
-      els.backupAutoPill.textContent = saved.auto_enabled
-        ? ("自动备份 · 每 " + saved.interval_hours + "h")
-        : "未启用自动";
-      appendBackupLog("配置已保存");
-      toast("备份配置已保存", "ok");
-    } catch (err) {
-      toast(err.message || "保存失败", "err");
-    }
+    await withBusy(els.davSave, async () => {
+      try {
+        const payload = await collectBackupConfig();
+        const saved = await api("/api/admin/backup/config", { method: "PUT", body: payload });
+        els.davPass.value = "";
+        els.davPass.placeholder = saved.password_set ? "已保存，留空表示不修改" : "输入 WebDAV 密码";
+        els.backupAutoPill.textContent = saved.auto_enabled
+          ? ("自动备份 · 每 " + saved.interval_hours + "h")
+          : "未启用自动";
+        appendBackupLog("配置已保存");
+        toast("备份配置已保存", "ok");
+      } catch (err) {
+        toast(err.message || "保存失败", "err");
+      }
+    }, "保存中…");
   }
 
   async function testBackupConn() {
-    try {
-      const payload = await collectBackupConfig();
-      const res = await api("/api/admin/backup/test", { method: "POST", body: payload });
-      appendBackupLog("测试连接: " + res.message);
-      toast(res.message || "连接成功", "ok");
-    } catch (err) {
-      appendBackupLog("测试失败: " + (err.message || err));
-      toast(err.message || "连接失败", "err");
-    }
+    await withBusy(els.davTest, async () => {
+      try {
+        const payload = await collectBackupConfig();
+        const res = await api("/api/admin/backup/test", { method: "POST", body: payload });
+        appendBackupLog("测试连接: " + res.message);
+        toast(res.message || "连接成功", "ok");
+      } catch (err) {
+        appendBackupLog("测试失败: " + (err.message || err));
+        toast(err.message || "连接失败", "err");
+      }
+    }, "测试中…");
   }
 
   function renderBackupList(items) {
     if (!items || !items.length) {
-      els.backupTableBody.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;padding:18px">暂无备份，点「立即备份」创建</td></tr>';
+      els.backupTableBody.innerHTML = '<tr><td colspan="4"><div class="empty-hint">暂无备份，点「立即备份」创建</div></td></tr>';
       return;
     }
     els.backupTableBody.innerHTML = items.map((it) => `
@@ -1273,7 +1266,7 @@
 
     // 重复
     if (!dups.length) {
-      els.dupList.innerHTML = '<div class="muted tiny">没有发现重复书。</div>';
+      els.dupList.innerHTML = '<div class="empty-hint">没有发现重复书。</div>';
     } else {
       els.dupList.innerHTML = dups.map((g, gi) => {
         const keep = g.keep_id;
@@ -1306,7 +1299,7 @@
 
     // 异常
     if (!issues.length) {
-      els.issueList.innerHTML = '<div class="muted tiny">没有发现异常，书库健康。</div>';
+      els.issueList.innerHTML = '<div class="empty-hint">没有发现异常，书库健康。</div>';
     } else {
       els.issueList.innerHTML = issues.map((it) => `
         <div class="check-item">
@@ -1360,34 +1353,38 @@
 
   async function repairAll() {
     if (!confirm("对所有异常书执行自动修复？（清理字符，必要时从源 TXT 重解析）")) return;
-    try {
-      const res = await api("/api/admin/library/repair", {
-        method: "POST",
-        body: { mode: "auto" },
-      });
-      toast("已修复 " + (res.count || 0) + " 本", "ok");
-      await Promise.all([loadLibraryReport(), loadBooks(), loadStats()]);
-    } catch (err) {
-      toast(err.message || "修复失败", "err");
-    }
+    await withBusy(els.checkRepairAll, async () => {
+      try {
+        const res = await api("/api/admin/library/repair", {
+          method: "POST",
+          body: { mode: "auto" },
+        });
+        toast("已修复 " + (res.count || 0) + " 本", "ok");
+        await Promise.all([loadLibraryReport(), loadBooks(), loadStats()]);
+      } catch (err) {
+        toast(err.message || "修复失败", "err");
+      }
+    }, "修复中…");
   }
 
   // 按分类归位：把源 TXT 移到与书籍分类一致的文件夹（本地 + WebDAV）
   async function relocateAll() {
     if (!confirm("按书籍分类归位源 TXT？\n将把本地与 WebDAV「未分类」等目录中的文件移到对应分类文件夹（只移动位置，不改内容）。")) return;
-    try {
-      const res = await api("/api/admin/library/relocate", {
-        method: "POST",
-        body: {},
-      });
-      toast(
-        "归位完成：移动 " + (res.moved || 0) + " 本 · 失败 " + (res.failed || 0) + " 本",
-        res.failed ? "err" : "ok"
-      );
-      await Promise.all([loadLibraryReport(), loadBooks(), loadStats()]);
-    } catch (err) {
-      toast(err.message || "归位失败", "err");
-    }
+    await withBusy(els.checkRelocate, async () => {
+      try {
+        const res = await api("/api/admin/library/relocate", {
+          method: "POST",
+          body: {},
+        });
+        toast(
+          "归位完成：移动 " + (res.moved || 0) + " 本 · 失败 " + (res.failed || 0) + " 本",
+          res.failed ? "err" : "ok"
+        );
+        await Promise.all([loadLibraryReport(), loadBooks(), loadStats()]);
+      } catch (err) {
+        toast(err.message || "归位失败", "err");
+      }
+    }, "归位中…");
   }
 
   function renderBatchStatus(st) {
@@ -1406,22 +1403,25 @@
   }
 
   async function startBatchScrape(dryRun) {
-    try {
-      const res = await api("/api/admin/scrape/batch/start", {
-        method: "POST",
-        body: {
-          source: "qidian",
-          only_missing: !!els.batchOnlyMissing.checked,
-          min_score: Number(els.batchMinScore.value) || 0.55,
-          dry_run: !!dryRun,
-        },
-      });
-      toast(res.started ? (dryRun ? "预览匹配已开始" : "一键刮削已开始") : "批处理已在运行", "ok");
-      renderBatchStatus(res.status);
-      pollBatchScrape();
-    } catch (err) {
-      toast(err.message || "启动失败", "err");
-    }
+    const btn = dryRun ? els.batchScrapePreview : els.batchScrapeRun;
+    await withBusy(btn, async () => {
+      try {
+        const res = await api("/api/admin/scrape/batch/start", {
+          method: "POST",
+          body: {
+            source: "qidian",
+            only_missing: !!els.batchOnlyMissing.checked,
+            min_score: Number(els.batchMinScore.value) || 0.55,
+            dry_run: !!dryRun,
+          },
+        });
+        toast(res.started ? (dryRun ? "预览匹配已开始" : "一键刮削已开始") : "批处理已在运行", "ok");
+        renderBatchStatus(res.status);
+        pollBatchScrape();
+      } catch (err) {
+        toast(err.message || "启动失败", "err");
+      }
+    }, dryRun ? "预览中…" : "启动中…");
   }
 
   function pollBatchScrape() {
@@ -1469,6 +1469,32 @@
 
   function on(el, ev, fn) {
     if (el && el.addEventListener) el.addEventListener(ev, fn);
+  }
+
+  // 按钮忙碌态：禁用 + 文案提示，防止连点重复提交
+  async function withBusy(btn, fn, busyText) {
+    if (!btn) return await fn();
+    const oldText = btn.textContent;
+    const oldDisabled = btn.disabled;
+    btn.disabled = true;
+    btn.classList.add("is-loading");
+    if (busyText) btn.textContent = busyText;
+    try {
+      return await fn();
+    } finally {
+      btn.classList.remove("is-loading");
+      btn.disabled = oldDisabled;
+      btn.textContent = oldText;
+    }
+  }
+
+  // 封面加载失败时回退占位
+  function bindCoverFallback(img, name) {
+    if (!img) return;
+    img.addEventListener("error", function onErr() {
+      img.removeEventListener("error", onErr);
+      img.src = placeholderDataUri(name || "");
+    });
   }
 
   // Events
@@ -1534,7 +1560,9 @@
   on(els.backupListRefresh, "click", () => loadBackupList().catch((e) => toast(e.message, "err")));
   on(els.davSave, "click", saveBackupConfig);
   on(els.davTest, "click", testBackupConn);
-  on(els.checkScan, "click", () => loadLibraryReport().catch((e) => toast(e.message, "err")));
+  on(els.checkScan, "click", () => {
+    withBusy(els.checkScan, () => loadLibraryReport().catch((e) => toast(e.message, "err")), "扫描中…");
+  });
   on(els.checkRepairAll, "click", repairAll);
   on(els.checkRelocate, "click", relocateAll);
   on(els.batchScrapePreview, "click", () => startBatchScrape(true));
