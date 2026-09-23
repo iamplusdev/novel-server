@@ -8,7 +8,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
-from .config import settings
+from .config import normalize_source, parse_category_label, settings
 from .models import Book, Chapter
 
 
@@ -107,6 +107,13 @@ def admin_book_detail(book: Book, base: str | None = None) -> dict:
     data["source_hash"] = book.source_hash
     data["source"] = getattr(book, "source", "") or ""
     data["source_id"] = getattr(book, "source_id", "") or ""
+    # 两级分类：category 合成串 + 拆开的书源/栏目（编辑页下拉用）
+    src_name, cat_name = parse_category_label(book.category or "")
+    if not src_name:
+        src_name = normalize_source(getattr(book, "source", "") or "")
+    data["category"] = book.category or ""
+    data["category_source"] = src_name  # ""=本地 / 起点 / 番茄
+    data["category_name"] = cat_name
     # 只取前 30 章标题做预览，避免 lazy 加载全部章节正文
     session = object_session(book)
     preview: list[dict] = []

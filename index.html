@@ -102,7 +102,10 @@
       </nav>
       
       <div class="side-foot">
-        
+        <div class="user-chip">
+          <div class="muted tiny" id="side-user">—</div>
+          <button type="button" id="side-logout" class="btn btn-ghost btn-sm btn-block">退出登录</button>
+        </div>
       </div>
     </aside>
 
@@ -123,22 +126,18 @@
               <option value="words">字数</option>
               <option value="chapters">章节</option>
             </select>
-            <select id="view-mode" class="input select" title="显示方式">
-              <option value="grid">封面墙</option>
-              <option value="list">列表</option>
-            </select>
             <label class="size-ctrl" title="封面墙卡片大小">
               <span class="muted tiny">大小</span>
               <input id="grid-size" type="range" min="110" max="240" step="10" value="150" />
-              <input id="list-size" type="range" min="160" max="360" step="10" value="220" hidden />
             </label>
           </div>
         </header>
 
+        <!-- 书源行 + 分类行（默认全部/全部） -->
+        <div id="source-bar" class="cat-bar" role="tablist" aria-label="书源筛选"></div>
         <div id="category-bar" class="cat-bar" role="tablist" aria-label="分类筛选"></div>
 
         <div id="grid-wrap" class="book-grid"></div>
-        <div id="list-wrap" class="book-list" hidden></div>
         <div class="pager">
           <button type="button" id="prev-page" class="btn btn-ghost btn-sm">上一页</button>
           <span id="page-label" class="muted">1 / 1</span>
@@ -151,8 +150,8 @@
         <header class="toolbar">
           <div class="toolbar-left"><h2>导入 TXT</h2></div>
           <div class="toolbar-right tools">
-            <button type="button" id="import-btn" class="btn btn-ghost">导入本地 novels</button>
-            <button type="button" id="import-webdav-btn" class="btn btn-primary">从 WebDAV books 导入</button>
+            <button type="button" id="import-btn" class="btn btn-primary">导入本地 novels</button>
+            <button type="button" id="import-cancel" class="btn btn-danger">停止</button>
             <button type="button" id="import-refresh" class="btn btn-ghost">刷新状态</button>
           </div>
         </header>
@@ -160,8 +159,7 @@
           <div class="panel-title">导入来源</div>
           <p class="muted">
             <strong>本地</strong>：扫描服务端 <code>NOVELS_DIR</code>（如 <code>novels/玄幻/书名.txt</code>）。<br/>
-            <strong>WebDAV</strong>：读取 WebDAV「书籍目录」下 <code>&lt;分类&gt;/*.txt</code>（在「备份」页配置地址/账号与书籍目录，默认 <code>books</code>）。
-            章节仍解析进 SQLite，阅读不依赖网盘。内容哈希未变则跳过。
+            章节解析进 SQLite，阅读不依赖网盘。内容哈希未变则跳过。
           </p>
           <p class="mono" id="novels-path">NOVELS_DIR（服务端配置）</p>
         </div>
@@ -199,12 +197,20 @@
       <div class="panel">
           <div class="panel-title">一键刮削（全库）</div>
           <p class="muted tiny" style="margin-top:0">
-            按现有刮削源（起点）对书库批量识别：以<strong>书名+作者</strong>相似度取最近匹配，再拉详情写入（含封面/标签/来源）。
+            按所选刮削源对书库批量识别：以<strong>书名+作者</strong>相似度取最近匹配，再拉详情写入（含封面/标签/来源）。
             默认只处理尚未刮削的书；建议先「预览匹配」再「开始写入」。每本间隔约 0.6s，降低风控。
           </p>
           <div class="row">
+            <label class="field field-tight" style="margin:0;flex-direction:row;align-items:center;gap:6px">
+              <span>刮削源</span>
+              <select id="batch-scrape-source" class="input select" title="刮削源">
+                <option value="qidian">起点</option>
+                <option value="fanqie">番茄</option>
+              </select>
+            </label>
             <button type="button" id="batch-scrape-preview" class="btn btn-ghost">预览匹配</button>
             <button type="button" id="batch-scrape-run" class="btn btn-primary">开始一键刮削</button>
+            <button type="button" id="batch-scrape-cancel" class="btn btn-danger">停止</button>
             <button type="button" id="batch-scrape-status" class="btn btn-ghost">刷新进度</button>
             
             <label class="check-row" style="margin:0">
@@ -347,10 +353,15 @@
         </div>
         <div class="panel card">
           <div class="panel-title">账号</div>
+          <p class="muted tiny" id="settings-user" style="margin:0 0 10px">当前用户：—</p>
           <div class="row">
             <button type="button" id="change-pass-btn" class="btn btn-primary">修改密码</button>
             <button type="button" id="logout-btn" class="btn btn-ghost">退出登录</button>
           </div>
+        </div>
+        <div class="panel card">
+          <div class="panel-title">运行环境</div>
+          <div class="muted tiny mono" id="settings-env" style="line-height:1.8;white-space:pre-wrap">加载中…</div>
         </div>
       </section>
     </main>
@@ -385,6 +396,10 @@
       </div>
       <label class="field"><span>书名</span><input id="edit-title" class="input" /></label>
       <label class="field"><span>作者</span><input id="edit-author" class="input" /></label>
+      <!-- 两级分类：书源 + 站内分类（不要合成一个下拉） -->
+      <label class="field"><span>书源</span>
+        <select id="edit-source" class="input select"></select>
+      </label>
       <label class="field"><span>分类</span>
         <select id="edit-category" class="input select"></select>
       </label>
@@ -408,6 +423,20 @@
   </aside>
 
   <div id="toast" class="toast" hidden></div>
+
+  <!-- 统一确认框（替代原生 confirm） -->
+  <div id="confirm-mask" class="drawer-mask" hidden></div>
+  <div id="confirm-modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <header class="drawer-head">
+      <h3 id="confirm-title">确认操作</h3>
+    </header>
+    <div class="drawer-body" id="confirm-body"></div>
+    <footer class="drawer-foot">
+      <div class="spacer"></div>
+      <button type="button" id="confirm-no" class="btn btn-ghost">取消</button>
+      <button type="button" id="confirm-yes" class="btn btn-danger">确认</button>
+    </footer>
+  </div>
 
   <div id="pw-mask" class="drawer-mask" hidden></div>
   <div id="pw-modal" class="modal" hidden>
@@ -490,6 +519,7 @@
   
   
   
+  <script src="/admin.ui.js?v=1"></script>
   <script src="/admin.js?v=1790128895"></script>
 </body>
 </html>

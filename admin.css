@@ -165,11 +165,13 @@ a { color: var(--accent); text-decoration: none; }
 .nav-item {
   text-align: left; background: transparent; border: 1px solid transparent;
   color: var(--muted); padding: 9px 12px; border-radius: 8px; cursor: pointer;
+  display: block; text-decoration: none;
 }
 .nav-item:hover { color: var(--ink); background: var(--elevated); }
 .nav-item.active { color: var(--ink); background: var(--accent-soft); border-color: var(--accent-border); }
 .side-foot { margin-top: auto; }
 .user-chip { padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; }
+.user-chip .btn { margin-top: 6px; }
 
 .main { padding: 20px 24px 40px; min-width: 0; overflow-x: hidden; }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
@@ -189,7 +191,8 @@ a { color: var(--accent); text-decoration: none; }
 }
 .size-ctrl input[type="range"] { width: 88px; accent-color: var(--accent); cursor: pointer; }
 
-.cat-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; align-items: center; }
+.cat-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; align-items: center; }
+.cat-bar + .cat-bar { margin-bottom: 14px; }
 .cat-chip {
   border: 1px solid var(--border); background: var(--surface); color: var(--muted);
   border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer;

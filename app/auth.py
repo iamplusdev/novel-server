@@ -164,7 +164,8 @@ def change_password(username: str, old_password: str, new_password: str) -> None
     save_auth(data)
 
 
-def reset_with_recovery(recovery_code: str, new_username: str, new_password: str) -> None:
+def reset_with_recovery(recovery_code: str, new_username: str, new_password: str) -> str:
+    """恢复码重置账号，返回新的一次性恢复码（直接返回，避免共享状态）。"""
     data = load_auth()
     if not data:
         raise HTTPException(400, "尚未设置账号")
@@ -180,12 +181,7 @@ def reset_with_recovery(recovery_code: str, new_username: str, new_password: str
     data["recovery_hash"] = hash_recovery(recovery)
     data["secret"] = secrets.token_hex(32)  # 轮换密钥，旧会话失效
     save_auth(data)
-    # 由调用方返回新恢复码
-    reset_with_recovery.last_recovery = recovery  # type: ignore[attr-defined]
-
-
-def get_new_recovery_code() -> str | None:
-    return getattr(reset_with_recovery, "last_recovery", None)
+    return recovery
 
 
 def login(username: str, password: str) -> dict:
@@ -250,10 +246,10 @@ def extract_token(
     return ainovel_session
 
 
-def require_admin(token: str | None = None) -> str:
-    """手动调用时校验会话并返回用户名。"""
-    if token is None:
-        token = extract_token()
+def require_admin(token: str) -> str:
+    """显式传入 Token 时校验并返回用户名；请勿无参调用（拿不到请求头）。"""
+    if not token:
+        raise HTTPException(401, "未登录")
     return verify_token(token)
 
 
@@ -273,6 +269,8 @@ def set_session_cookie(response: Response, token: str) -> None:
         max_age=TOKEN_TTL_SEC,
         httponly=True,
         samesite="lax",
+        # HTTPS 部署时由配置打开，防止明文 HTTP 泄露
+        secure=settings.cookie_secure,
         path="/",
     )
 

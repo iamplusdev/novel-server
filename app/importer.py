@@ -1,23 +1,36 @@
-"""扫描 novels/<分类>/*.txt 并写入 SQLite。文件内容哈希未变则跳过。"""
+"""扫描 novels/<书源>/<分类>/*.txt（兼容旧 novels/<分类>/*.txt）并写入 SQLite。
+
+目录格式（本地与 WebDAV 一致）：
+  novels/起点/都市/书名.txt
+  novels/番茄/西方奇幻/书名.txt
+  novels/未分类/书名.txt
+"""
 from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .config import CATEGORIES, settings
+from .config import (
+    SOURCE_CATEGORIES,
+    UNCATEGORIZED,
+    category_rel_parts,
+    parse_category_label,
+    settings,
+)
 from .database import SessionLocal
 from .models import Book, Chapter
 from .parsers import load_txt_book, load_txt_book_from_text
 
-# 「未分类」既是分类名，也是导入时打在 tags 上的标记，便于后续筛选/归位
-UNCATEGORIZED = "未分类"
+# 兼容旧导入
+CATEGORIES = list(SOURCE_CATEGORIES.keys())
 
 
 @dataclass
@@ -47,10 +60,22 @@ class ImportResult:
 
 _import_lock = threading.Lock()
 _import_status: dict = {"running": False, "last": None}
+# 请求中止导入（A6）
+_import_cancel = threading.Event()
 
 
 def get_import_status() -> dict:
-    return dict(_import_status)
+    out = dict(_import_status)
+    out["cancel_requested"] = _import_cancel.is_set()
+    return out
+
+
+def request_import_cancel() -> bool:
+    """请求停止当前导入；运行中才有效。"""
+    if not _import_status.get("running"):
+        return False
+    _import_cancel.set()
+    return True
 
 
 def file_sha256(path: Path) -> str:
@@ -71,21 +96,41 @@ _SKIP_NAMES = {
 
 
 def _iter_txt_files(root: Path):
-    """yield (category, path)。分类 = novels 下的子目录名，根目录散落文件归「未分类」。"""
+    """yield (category_label, path)。
+
+    优先识别两级「书源/分类」，兼容旧一级「分类」；根目录散落文件归「未分类」。
+    """
     if not root.exists():
         return
+
+    def _walk_dir(d: Path, label: str):
+        for f in sorted(d.rglob("*.txt")):
+            if f.is_file() and f.name.lower() not in _SKIP_NAMES:
+                yield label, f
+
     for child in sorted(root.iterdir()):
         if child.is_file() and child.suffix.lower() == ".txt":
             if child.name.lower() in _SKIP_NAMES:
                 continue
-            yield "未分类", child
-        elif child.is_dir():
-            if child.name.startswith("."):
+            yield UNCATEGORIZED, child
+            continue
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        name = child.name.strip() or UNCATEGORIZED
+        # 两级：novels/起点/都市/、novels/番茄/西方奇幻/
+        if name in SOURCE_CATEGORIES:
+            subs = [p for p in sorted(child.iterdir()) if p.is_dir() and not p.name.startswith(".")]
+            if subs:
+                for sub in subs:
+                    label = f"{name}-{sub.name.strip() or UNCATEGORIZED}"
+                    yield from _walk_dir(sub, label)
+                # 书源目录下散落 txt
+                for f in sorted(child.glob("*.txt")):
+                    if f.is_file() and f.name.lower() not in _SKIP_NAMES:
+                        yield f"{name}-{UNCATEGORIZED}", f
                 continue
-            cat = child.name.strip() or "未分类"
-            for f in sorted(child.rglob("*.txt")):
-                if f.is_file() and f.name.lower() not in _SKIP_NAMES:
-                    yield cat, f
+        # 兼容旧一级分类目录（含书源目录下无子分类时）
+        yield from _walk_dir(child, name)
 
 
 def _find_book_by_source(db: Session, source_path: str) -> Book | None:
@@ -106,13 +151,17 @@ def _find_book_by_title_author(db: Session, title: str, author: str) -> Book | N
     ).scalars().first()
 
 
-def _ensure_category_tag(tags: str, category: str) -> str:
+def ensure_category_tag(tags: str, category: str) -> str:
     """按分类维护「未分类」标记：归入未分类则补上，已正式分类则去掉。"""
     items = [t.strip() for t in (tags or "").split(",") if t.strip()]
     items = [t for t in items if t != UNCATEGORIZED]
     if category == UNCATEGORIZED:
         items.insert(0, UNCATEGORIZED)
     return ",".join(items[:12])
+
+
+# 兼容旧内部调用
+_ensure_category_tag = ensure_category_tag
 
 
 def _upsert_parsed(
@@ -143,6 +192,10 @@ def _upsert_parsed(
         book.title = parsed.title or book.title
         book.author = parsed.author or book.author
         book.category = category
+        # 目录含书源前缀时同步 source（番茄-西方奇幻 → 番茄）
+        src_name, _rest = parse_category_label(category)
+        if src_name:
+            book.source = src_name
         book.word_count = parsed.word_count
         book.source_hash = content_hash
         book.source_path = source_key
@@ -151,9 +204,11 @@ def _upsert_parsed(
         book.tags = _ensure_category_tag(book.tags, category)
         if not book.intro:
             book.intro = parsed.intro
-        db.query(Chapter).filter(Chapter.book_id == book.id).delete()
+        # 先清旧章节再写入（SQLAlchemy 2.x 风格）
+        db.execute(delete(Chapter).where(Chapter.book_id == book.id))
         action = "updated"
     else:
+        src_name, _rest = parse_category_label(category)
         book = Book(
             title=parsed.title,
             author=parsed.author,
@@ -166,6 +221,7 @@ def _upsert_parsed(
             source_path=source_key,
             source_hash=content_hash,
             word_count=parsed.word_count,
+            source=src_name,
         )
         db.add(book)
         db.flush()
@@ -184,6 +240,77 @@ def _upsert_parsed(
     book.chapter_count = len(parsed.chapters)
     book.latest_chapter = parsed.chapters[-1].title[:200] if parsed.chapters else ""
     return action, f"{category}/{book.title}"
+
+
+def relocate_local_txt(book: Book) -> bool:
+    """把 TXT 归位到 <书源>/<分类>/（本地 novels/ 与 WebDAV books/ 同构），并更新 source_path。
+
+    支持本地路径与 webdav: 相对路径；返回是否发生了移动。
+    """
+    sp = (book.source_path or "").strip()
+    if not sp:
+        return False
+    parts = category_rel_parts(book.category or UNCATEGORIZED)
+    if sp.startswith("webdav:"):
+        return _relocate_webdav_txt(book, sp[len("webdav:") :].lstrip("/"), parts)
+    return _relocate_local_txt(book, Path(sp), parts)
+
+
+def _relocate_local_txt(book: Book, src: Path, parts: tuple[str, ...]) -> bool:
+    """本地 TXT → novels/<书源>/<分类>/。"""
+    if not src.is_file():
+        return False
+    dest_dir = settings.novels_dir.joinpath(*parts)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    try:
+        if dest.resolve() == src.resolve():
+            return False
+        if dest.exists():
+            dest = dest_dir / f"{src.stem}_{book.id}{src.suffix}"
+        shutil.move(str(src), str(dest))
+    except OSError:
+        return False
+    book.source_path = str(dest)
+    return True
+
+
+def _relocate_webdav_txt(book: Book, src_rel: str, parts: tuple[str, ...]) -> bool:
+    """WebDAV TXT → books/<书源>/<分类>/（MOVE），成功则更新 source_path。"""
+    if not src_rel:
+        return False
+    try:
+        from .backup import load_config
+        from .webdav import WebDAVClient
+    except Exception:  # noqa: BLE001
+        return False
+    cfg = load_config()
+    if not cfg.webdav_url:
+        return False
+    try:
+        client = WebDAVClient(cfg.webdav_url, cfg.username, cfg.password, timeout=120)
+        root = (cfg.books_path or "books").strip().strip("/").replace("\\", "/") or "books"
+        fname = src_rel.rsplit("/", 1)[-1]
+        if not fname:
+            return False
+        dest_parent = "/".join([root, *parts])
+        src_parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
+        # 已在目标目录则跳过
+        if src_parent.rstrip("/") == dest_parent.rstrip("/"):
+            return False
+        dest_rel = f"{dest_parent}/{fname}"
+        # 目标已存在则改名，避免 MOVE 冲突
+        if client.exists(dest_rel):
+            stem, dot, ext = fname.rpartition(".")
+            if not dot:
+                stem, ext = fname, ""
+            dest_rel = f"{dest_parent}/{stem}_{book.id}{dot}{ext}"
+        client.move(src_rel, dest_rel, overwrite=False)
+        book.source_path = f"webdav:{dest_rel}"
+        return True
+    except Exception:  # noqa: BLE001
+        # 远端失败不阻断库内写入
+        return False
 
 
 def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> tuple[str, str]:
@@ -210,164 +337,61 @@ def import_all(db: Session | None = None) -> ImportResult:
         db = SessionLocal()
     result = ImportResult()
     root = settings.novels_dir
+    # 分批提交：大库中途崩溃时已入库部分不丢
+    batch_size = 10
+    pending = 0
     try:
         files = list(_iter_txt_files(root))
         for category, path in files:
+            # 支持中途取消（A6）
+            if _import_cancel.is_set():
+                result.failed.append("（已取消）")
+                break
             try:
                 digest = file_sha256(path)
                 action, label = _upsert_book(db, path, category, digest)
                 getattr(result, action).append(label)
+                pending += 1
+                if pending >= batch_size:
+                    db.commit()
+                    pending = 0
             except Exception as exc:  # noqa: BLE001
                 result.failed.append(f"{path.name}: {exc}")
+                # 单本失败不影响整批，回滚脏对象后继续
+                db.rollback()
+                pending = 0
         db.commit()
     finally:
-        if own:
-            db.close()
-    return result
-
-
-def import_from_webdav(db: Session | None = None) -> ImportResult:
-    """从 WebDAV 的 books/<分类>/*.txt 增量导入（章节仍写入 SQLite）。"""
-    from .backup import load_config
-    from .webdav import WebDAVClient, WebDAVError
-
-    cfg = load_config()
-    if not cfg.webdav_url:
-        raise WebDAVError("请先在「备份」页配置 WebDAV 地址")
-
-    client = WebDAVClient(cfg.webdav_url, cfg.username, cfg.password, timeout=120)
-    result = ImportResult()
-    own = db is None
-    if own:
-        db = SessionLocal()
-
-    skip_names = {"readme.txt", "readme.md", "license.txt", ".gitkeep", ".ds_store"}
-    # 书籍根目录可配置：相对 WebDAV 根，如 books / 小说仓库/novels
-    root = (cfg.books_path or "books").strip().strip("/").replace("\\", "/") or "books"
-
-    def _discover() -> str:
-        try:
-            top = client.list_dir_names("")
-            hint = "、".join(top[:20]) if top else "(空)"
-            return f"WebDAV 根目录下有：{hint}"
-        except WebDAVError as e:
-            return f"无法列出 WebDAV 根目录：{e}"
-
-    # 路径探测：逐级尝试，容错尾斜杠/多一层前缀
-    def _resolve_root() -> str:
-        candidates = [root, root.strip("/")]
-        # 去掉重复段
-        seen = []
-        for c in candidates:
-            if c and c not in seen:
-                seen.append(c)
-        for cand in seen:
-            if client.exists(cand):
-                return cand
-        # 尝试在根下查找最后一段
-        last = root.rsplit("/", 1)[-1]
-        try:
-            top = client.list_dir_names("")
-        except WebDAVError:
-            top = []
-        if last in top:
-            return last
-        for name in top:
-            try:
-                subs = client.list_dir_names(name)
-            except WebDAVError:
-                continue
-            if last in subs:
-                return f"{name}/{last}"
-            if root in subs or root.rsplit("/", 1)[-1] in subs:
-                return f"{name}/{root.rsplit('/', 1)[-1]}"
-        raise WebDAVError(
-            f"WebDAV 书籍目录不存在或无权限：{root}。{_discover()}。"
-            f"请在「备份」页把「书籍目录」改成相对 WebDAV 根的路径（不要带 https 与 /dav 前缀）。"
-        )
-
-    try:
-        try:
-            root = _resolve_root()
-        except WebDAVError as e:
-            result.failed.append(str(e))
-            return result
-
-        def walk(rel_dir: str, category: str) -> None:
-            try:
-                items = client.list_items(rel_dir)
-            except WebDAVError as e:
-                result.failed.append(f"{rel_dir}: {e}")
-                return
-            at_books_root = rel_dir.rstrip("/") in ("", root)
-            for it in items:
-                remote = f"{rel_dir.rstrip('/')}/{it.name}" if rel_dir else it.name
-                if it.is_dir:
-                    sub_cat = (it.name.strip() or category) if at_books_root else category
-                    walk(remote, sub_cat)
-                    continue
-                name_l = it.name.lower()
-                if not name_l.endswith(".txt") or name_l in skip_names:
-                    continue
-                src = f"webdav:{remote}"
-                cat = category if category and category != root else "未分类"
-                label = f"{cat}/{Path(it.name).stem}"
-                try:
-                    raw = client.get_file(remote)
-                    digest = _bytes_sha256(raw)
-                    text = decode_txt_bytes(raw)
-                    parsed = load_txt_book_from_text(text, Path(it.name).stem, cat)
-                    action, lab = _upsert_parsed(db, src, cat, parsed, digest)
-                    getattr(result, action).append(lab or label)
-                except Exception as exc:  # noqa: BLE001
-                    result.failed.append(f"{label}: {exc}")
-
-        walk(root, "未分类")
-        db.commit()
-    finally:
-        # 路径探测失败也必须关闭自建会话，避免连接泄漏
         if own:
             db.close()
     return result
 
 
 def import_all_async(mode: str = "local") -> bool:
-    """后台线程导入。mode: local | webdav | both"""
+    """后台线程导入（仅本地 NOVELS_DIR；WebDAV 导入已移除）。"""
     global _import_status
     if not _import_lock.acquire(blocking=False):
         return False
     if _import_status.get("running"):
         _import_lock.release()
         return False
-
-    def _merge(a: ImportResult, b: ImportResult) -> ImportResult:
-        return ImportResult(
-            added=a.added + b.added,
-            updated=a.updated + b.updated,
-            skipped=a.skipped + b.skipped,
-            failed=a.failed + b.failed,
-        )
+    _import_cancel.clear()
 
     def _run() -> None:
         global _import_status
         _import_status = {
             "running": True,
-            "mode": mode,
+            "mode": "local",
             "last": None,
             "started_at": datetime.now().isoformat(timespec="seconds"),
         }
         try:
-            if mode == "webdav":
-                result = import_from_webdav()
-            elif mode == "both":
-                result = _merge(import_all(), import_from_webdav())
-            else:
-                result = import_all()
-            _import_status = {"running": False, "mode": mode, "last": result.to_dict()}
+            result = import_all()
+            _import_status = {"running": False, "mode": "local", "last": result.to_dict()}
         except Exception as exc:  # noqa: BLE001
             _import_status = {
                 "running": False,
-                "mode": mode,
+                "mode": "local",
                 "last": {
                     "added": [],
                     "updated": [],
@@ -384,8 +408,10 @@ def import_all_async(mode: str = "local") -> bool:
     return True
 
 
-# 供 CLI / 测试使用：确保分类文件夹存在
+# 供 CLI / 测试使用：确保「书源/分类」文件夹存在
 def ensure_category_dirs() -> None:
     settings.novels_dir.mkdir(parents=True, exist_ok=True)
-    for c in CATEGORIES:
-        (settings.novels_dir / c).mkdir(parents=True, exist_ok=True)
+    for src, cats in SOURCE_CATEGORIES.items():
+        for c in cats:
+            (settings.novels_dir / src / c).mkdir(parents=True, exist_ok=True)
+    (settings.novels_dir / UNCATEGORIZED).mkdir(parents=True, exist_ok=True)

@@ -61,9 +61,13 @@ def _asset_ver(name: str) -> str:
 def _render_index() -> HTMLResponse:
     """读入 index.html，并把 css/js 的 ?v= 换成当前 mtime。"""
     html = (BASE_DIR / "index.html").read_text(encoding="utf-8")
-    ver = _asset_ver("admin.js") + _asset_ver("admin.css")
+    ver = (
+        _asset_ver("admin.js")
+        + _asset_ver("admin.css")
+        + _asset_ver("admin.ui.js")
+    )
     html = re.sub(
-        r"(admin\.(?:css|js))\?v=[^\"']+",
+        r"(admin(?:\.ui)?\.js|admin\.css)\?v=[^\"']+",
         lambda m: f"{m.group(1)}?v={ver}",
         html,
     )
@@ -89,6 +93,11 @@ def admin_css() -> FileResponse:
 @app.get("/admin.js", include_in_schema=False)
 def admin_js() -> FileResponse:
     return FileResponse(BASE_DIR / "admin.js", media_type="application/javascript")
+
+
+@app.get("/admin.ui.js", include_in_schema=False)
+def admin_ui_js() -> FileResponse:
+    return FileResponse(BASE_DIR / "admin.ui.js", media_type="application/javascript")
 
 
 @app.get("/legado_book_source.json", include_in_schema=False)

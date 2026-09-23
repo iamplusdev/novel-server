@@ -2,19 +2,21 @@
 (function () {
   "use strict";
 
-  const TOKEN_KEY = "novel_admin_token";
+  const TOKEN_KEY = "novel_admin_token"; // 历史键名；会话已改为 Cookie（A7），不再写入
   const THEME_KEY = "novel_theme_mode";
   const GRID_SIZE_KEY = "novel_grid_size";
   const DRAWER_W_KEY = "novel_drawer_width";
   const state = {
-    token: localStorage.getItem(TOKEN_KEY) || "",
+    // 会话优先 HttpOnly Cookie；token 仅存内存（A7）
+    token: "",
     page: 1,
     pageSize: 24,
     total: 0,
     items: [],
-    viewMode: localStorage.getItem("novel_view_mode") || "grid",
     theme: localStorage.getItem(THEME_KEY) || "auto",
+    source: "", // 书源行："" 全部 / 起点 / 番茄
     category: "",
+    tag: "",
     sort: localStorage.getItem("novel_sort") || "updated",
     stats: null,
     sourceJson: null,
@@ -48,6 +50,16 @@
     recoveryDone: $("recovery-done"),
     loginError: $("login-error"),
     logoutBtn: $("logout-btn"),
+    sideUser: $("side-user"),
+    sideLogout: $("side-logout"),
+    settingsUser: $("settings-user"),
+    settingsEnv: $("settings-env"),
+    confirmMask: $("confirm-mask"),
+    confirmModal: $("confirm-modal"),
+    confirmTitle: $("confirm-title"),
+    confirmBody: $("confirm-body"),
+    confirmYes: $("confirm-yes"),
+    confirmNo: $("confirm-no"),
     changePassBtn: $("change-pass-btn"),
     pwMask: $("pw-mask"),
     pwModal: $("pw-modal"),
@@ -63,18 +75,16 @@
     libCount: $("lib-count"),
     searchInput: $("search-input"),
     categoryBar: $("category-bar"),
+    sourceBar: $("source-bar"),
     sortSelect: $("sort-select"),
-    viewMode: $("view-mode"),
-    gridSize: $("grid-size"),
-    listSize: $("list-size"),
     themeSelect: $("theme-select"),
+    gridSize: $("grid-size"),
     gridWrap: $("grid-wrap"),
-    listWrap: $("list-wrap"),
     prevPage: $("prev-page"),
     nextPage: $("next-page"),
     pageLabel: $("page-label"),
     importBtn: $("import-btn"),
-    importWebdavBtn: $("import-webdav-btn"),
+    importCancel: $("import-cancel"),
     importRefresh: $("import-refresh"),
     importLog: $("import-log"),
     sourcePreview: $("source-preview"),
@@ -101,7 +111,9 @@
     checkRepairAll: $("check-repair-all"),
     checkRelocate: $("check-relocate"),
     batchScrapePreview: $("batch-scrape-preview"),
+    batchScrapeSource: $("batch-scrape-source"),
     batchScrapeRun: $("batch-scrape-run"),
+    batchScrapeCancel: $("batch-scrape-cancel"),
     batchScrapeStatus: $("batch-scrape-status"),
     batchOnlyMissing: $("batch-only-missing"),
     batchMinScore: $("batch-min-score"),
@@ -116,6 +128,7 @@
     coverFile: $("cover-file"),
     editTitle: $("edit-title"),
     editAuthor: $("edit-author"),
+    editSource: $("edit-source"),
     editCategory: $("edit-category"),
     editStatus: $("edit-status"),
     editTags: $("edit-tags"),
@@ -144,7 +157,15 @@
     toast: $("toast"),
   };
 
+  // 书源两级分类：起点-都市 / 番茄-西方奇幻（与 novels/<书源>/<分类>/ 一致）
   const FALLBACK_CATEGORIES = [
+    "起点-玄幻", "起点-奇幻", "起点-武侠", "起点-仙侠", "起点-都市", "起点-现实",
+    "起点-军事", "起点-历史", "起点-游戏", "起点-体育", "起点-科幻", "起点-诸天无限",
+    "起点-悬疑灵异", "起点-轻小说", "起点-短篇",
+    "番茄-西方奇幻", "番茄-东方仙侠", "番茄-科幻末世", "番茄-都市日常", "番茄-都市修真",
+    "番茄-都市高武", "番茄-历史古代", "番茄-战神赘婿", "番茄-都市种田", "番茄-传统玄幻",
+    "番茄-历史脑洞", "番茄-悬疑脑洞", "番茄-都市脑洞", "番茄-玄幻脑洞", "番茄-悬疑灵异",
+    "番茄-抗战谍战", "番茄-游戏体育", "番茄-动漫衍生", "番茄-男频衍生",
     "玄幻", "奇幻", "武侠", "仙侠", "都市", "现实", "军事", "历史",
     "游戏", "体育", "科幻", "诸天无限", "悬疑灵异", "轻小说", "短篇", "未分类",
   ];
@@ -177,13 +198,6 @@
     if (els.gridSize) els.gridSize.value = String(n);
     if (els.gridWrap) els.gridWrap.style.setProperty("--cover-w", n + "px");
     localStorage.setItem(GRID_SIZE_KEY, String(n));
-  }
-
-  function applyListSize(px) {
-    const n = Math.min(360, Math.max(160, Number(px) || 220));
-    if (els.listSize) els.listSize.value = String(n);
-    if (els.listWrap) els.listWrap.style.setProperty("--list-w", n + "px");
-    localStorage.setItem("novel_list_size", String(n));
   }
 
   function applyDrawerWidth(px) {
@@ -233,7 +247,7 @@
   async function api(path, options) {
     const headers = Object.assign({ Accept: "application/json" }, (options && options.headers) || {});
     if (state.token && !options?.skipAuth) headers.Authorization = "Bearer " + state.token;
-    const opts = Object.assign({}, options, { headers });
+    const opts = Object.assign({ credentials: "same-origin" }, options, { headers });
     if (opts.body && !(opts.body instanceof FormData) && typeof opts.body !== "string") {
       headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(opts.body);
@@ -264,8 +278,8 @@
     try {
       if (els.login) els.login.hidden = true;
       if (els.app) els.app.hidden = false;
-      if (els.viewMode) els.viewMode.value = state.viewMode;
       if (els.sortSelect) els.sortSelect.value = state.sort || "updated";
+      if (els.sourceBar) renderSourceBar();
       if (els.categoryBar) renderCategoryBar();
     } catch (e) {
       if (els.login) els.login.hidden = true;
@@ -301,9 +315,9 @@
   }
 
   function saveSession(payload) {
+    // A7：token 只放内存，持久化交给 HttpOnly Cookie
     if (payload && payload.token) {
       state.token = payload.token;
-      localStorage.setItem(TOKEN_KEY, payload.token);
     }
   }
 
@@ -338,15 +352,24 @@
   }
 
   async function afterLogin() {
-    // 先切换界面，避免加载失败卡在登录页
+    try {
+      const me = await api("/api/auth/me");
+      state.username = me.username;
+      applyUserUI();
+    } catch (_) { /* 会话仍在则继续 */ }
     showApp();
     try {
-      await loadStats();
-      renderCategoryBar();
-      await Promise.all([loadBooks(), loadSourceJson()]);
-    } catch (err) {
-      toast(err.message || "加载数据失败", "err");
+      await Promise.all([loadStats(), loadBooks(), loadSourceJson()]);
+    } catch (e) {
+      toast(e.message || "加载数据失败", "err");
     }
+  }
+
+  // 侧栏 / 设置页展示当前用户
+  function applyUserUI() {
+    const name = state.username || "—";
+    if (els.sideUser) setText(els.sideUser, name);
+    if (els.settingsUser) setText(els.settingsUser, "当前用户：" + name);
   }
 
   async function login() {
@@ -360,7 +383,6 @@
     els.loginError.hidden = true;
     try {
       state.token = "";
-      localStorage.removeItem(TOKEN_KEY);
       const res = await api("/api/auth/login", {
         method: "POST",
         skipAuth: true,
@@ -368,6 +390,7 @@
       });
       saveSession(res);
       state.username = res.username;
+      applyUserUI();
       if (els.loginPass) els.loginPass.value = "";
       showApp();
       try { await afterLogin(); } catch (e) { toast(e.message || '加载数据失败', 'err'); }
@@ -401,6 +424,7 @@
       });
       saveSession(res);
       state.username = res.username;
+      applyUserUI();
       if (res.recovery_code) {
         pendingRecovery(res.recovery_code);
         toast("账号已创建，请保存恢复码", "ok");
@@ -433,6 +457,7 @@
       });
       saveSession(res);
       state.username = res.username;
+      applyUserUI();
       if (res.recovery_code) {
         pendingRecovery(res.recovery_code);
         toast("已重设账号，恢复码已更换", "ok");
@@ -483,7 +508,8 @@
       await api("/api/auth/logout", { method: "POST" });
     } catch (_) { /* ignore */ }
     state.token = "";
-    localStorage.removeItem(TOKEN_KEY);
+    state.username = "";
+    applyUserUI();
     showLogin();
     showAuthPane("login");
     if (notify !== false) toast("已退出登录");
@@ -496,23 +522,127 @@
     return String(n);
   }
 
-  function fillCategorySelects(categories) {
-    const names = (categories && categories.length)
-      ? categories.map((c) => (typeof c === "string" ? c : c.name))
-      : FALLBACK_CATEGORIES;
-    function fill(select) {
-      if (!select) return;
-      const current = select.value;
-      select.innerHTML = "";
-      names.forEach((n) => {
-        const opt = document.createElement("option");
-        opt.value = n;
-        opt.textContent = n;
-        select.appendChild(opt);
-      });
-      if (current && names.includes(current)) select.value = current;
+  // —— 两级分类：书源 + 站内分类 ——
+  const CATEGORY_TREE = {
+    "": {
+      label: "本地",
+      categories: [
+        "玄幻", "奇幻", "武侠", "仙侠", "都市", "现实", "军事", "历史",
+        "游戏", "体育", "科幻", "诸天无限", "悬疑灵异", "轻小说", "短篇", "未分类",
+      ],
+    },
+    "起点": {
+      label: "起点",
+      categories: [
+        "玄幻", "奇幻", "武侠", "仙侠", "都市", "现实", "军事", "历史",
+        "游戏", "体育", "科幻", "诸天无限", "悬疑灵异", "轻小说", "短篇",
+      ],
+    },
+    "番茄": {
+      label: "番茄",
+      categories: [
+        "西方奇幻", "东方仙侠", "科幻末世", "都市日常", "都市修真", "都市高武",
+        "历史古代", "战神赘婿", "都市种田", "传统玄幻", "历史脑洞", "悬疑脑洞",
+        "都市脑洞", "玄幻脑洞", "悬疑灵异", "抗战谍战", "游戏体育", "动漫衍生", "男频衍生",
+      ],
+    },
+  };
+
+  function sourceKeys() {
+    return Object.keys(CATEGORY_TREE);
+  }
+
+  function fillSourceSelect(current) {
+    const sel = els.editSource;
+    if (!sel) return;
+    const cur = current == null ? sel.value : current;
+    sel.innerHTML = "";
+    sourceKeys().forEach((k) => {
+      const opt = document.createElement("option");
+      opt.value = k;
+      opt.textContent = (CATEGORY_TREE[k] && CATEGORY_TREE[k].label) || k || "本地";
+      sel.appendChild(opt);
+    });
+    if (cur != null) sel.value = cur;
+    if (sel.value !== cur && cur != null) {
+      // 未知书源落到本地
+      sel.value = "";
     }
-    fill(els.editCategory);
+  }
+
+  function categoryListFor(srcKey) {
+    const node = CATEGORY_TREE[srcKey] || CATEGORY_TREE[""];
+    return node.categories.slice();
+  }
+
+  function fillCategorySelect(srcKey, currentCat) {
+    const sel = els.editCategory;
+    if (!sel) return;
+    const names = categoryListFor(srcKey);
+    sel.innerHTML = "";
+    names.forEach((n) => {
+      const opt = document.createElement("option");
+      opt.value = n;
+      opt.textContent = n;
+      sel.appendChild(opt);
+    });
+    let cur = currentCat != null ? currentCat : sel.value;
+    if (cur && !names.includes(cur)) {
+      // 刮削来的细分/未知分类：临时选项，保证能选中
+      ensureOption(sel, cur);
+    }
+    if (cur) sel.value = cur;
+  }
+
+  // 切换书源时刷新分类列表（尽量保留原分类）
+  function bindSourceCategoryLink() {
+    if (!els.editSource || els.editSource._linked) return;
+    els.editSource._linked = true;
+    els.editSource.addEventListener("change", () => {
+      fillCategorySelect(els.editSource.value, els.editCategory.value);
+    });
+  }
+
+  function setTwoLevelCategory(srcKey, catName) {
+    bindSourceCategoryLink();
+    fillSourceSelect(srcKey || "");
+    fillCategorySelect(els.editSource.value || "", catName || "");
+  }
+
+  function getTwoLevelCategory() {
+    return {
+      category_source: els.editSource ? els.editSource.value : "",
+      category_name: els.editCategory ? els.editCategory.value : "",
+    };
+  }
+
+  // 从合成串/字段拆两级（兼容旧数据）
+  function splitCategory(combo, source) {
+    const s = (combo || "").trim();
+    const keys = sourceKeys().filter((k) => k);
+    for (let i = 0; i < keys.length; i++) {
+      const p = keys[i];
+      for (const sep of ["-", "/", "·"]) {
+        if (s.startsWith(p + sep) && s.length > p.length + 1) {
+          return { category_source: p, category_name: s.slice(p.length + 1).trim() };
+        }
+      }
+    }
+    const src = (source || "").trim();
+    return {
+      category_source: CATEGORY_TREE[src] ? src : "",
+      category_name: s || "未分类",
+    };
+  }
+
+  function fillCategorySelects(_categories) {
+    // 保留接口兼容；两级下拉在 openDrawer / setTwoLevelCategory 里填
+    bindSourceCategoryLink();
+    if (els.editSource && !els.editSource.options.length) {
+      const lv = splitCategory(els.editCategory.value, "");
+      fillSourceSelect(lv.category_source);
+      fillCategorySelect(lv.category_source, lv.category_name);
+    }
   }
 
   async function loadStats() {
@@ -522,8 +652,25 @@
     setText(els.baseUrlLabel, data.public_base_url || location.origin);
     setText(els.apiBase, data.public_base_url || location.origin);
     fillCategorySelects(data.categories);
+    renderSourceBar();
     renderCategoryBar();
     renderImportLog(data.import);
+    // 设置页 · 运行环境
+    if (els.settingsEnv) {
+      const lines = [
+        "对外地址  " + (data.public_base_url || location.origin),
+        "书籍目录  " + (data.novels_dir || "—"),
+        "数据库    " + (data.database_path || "—"),
+        "封面目录  " + (data.covers_dir || "—"),
+      ];
+      setText(els.settingsEnv, lines.join("\n"));
+    }
+    applyUserUI();
+  }
+
+  // 标签筛选已从界面移除
+  function loadTagBar() {
+    return Promise.resolve();
   }
 
   function currentQuery() {
@@ -531,38 +678,68 @@
     params.set("page", String(state.page));
     params.set("page_size", String(state.pageSize));
     params.set("sort", state.sort || "updated");
-    if (els.searchInput.value.trim()) params.set("q", els.searchInput.value.trim());
-    if (state.category) params.set("category", state.category);
+    if (els.searchInput && els.searchInput.value.trim()) {
+      params.set("q", els.searchInput.value.trim());
+    }
+    // 书源 + 分类：分开传；分类传纯名（后端兼容合成串）
+    const src = (state.source || "").trim();
+    const cat = (state.category || "").trim();
+    if (src) params.set("source", src);
+    if (cat) params.set("category", cat);
     return params.toString();
   }
 
-  function renderCategoryBar() {
-    const cats = (state.stats && state.stats.by_category) || [];
-    const names = [];
-    const seen = new Set();
-    // 固定分类顺序 + 有书的其它分类
-    const fallback = (state.stats && state.stats.categories) || FALLBACK_CATEGORIES;
-    fallback.forEach((n) => {
-      if (!seen.has(n)) { seen.add(n); names.push(n); }
-    });
-    cats.forEach((c) => {
-      if (c && c.name && !seen.has(c.name)) { seen.add(c.name); names.push(c.name); }
-    });
-    const countMap = {};
-    cats.forEach((c) => { countMap[c.name] = c.count || 0; });
-    const total = (state.stats && state.stats.total_books) || 0;
+  // —— 书源行：全部 / 起点 / 番茄 ——
+  const SOURCE_OPTS = ["", "起点", "番茄"];
+  const SOURCE_LABEL = { "": "全部", "起点": "起点", "番茄": "番茄" };
 
-    const chips = [];
-    chips.push(`<button type="button" class="cat-chip${state.category === "" ? " active" : ""}" data-cat="">全部<span class="n">${total}</span></button>`);
+  function catListForSource(src) {
+    // 默认（全部）只展示第一个书源的分类，避免并集过长；
+    // 点选书源后再切换到对应栏目
+    if (src === "番茄") return CATEGORY_TREE["番茄"].categories.slice();
+    return CATEGORY_TREE["起点"].categories.slice();
+  }
+
+  function renderSourceBar() {
+    const bar = els.sourceBar;
+    if (!bar) return;
+    bar.innerHTML = SOURCE_OPTS.map((s) => {
+      const on = (state.source || "") === s;
+      // 用 data-v 避免与元素 src 属性语义混淆
+      return (
+        '<button type="button" class="cat-chip' + (on ? " active" : "") +
+        '" data-v="' + escapeAttr(s) + '">' + escapeHtml(SOURCE_LABEL[s] || s || "全部") + "</button>"
+      );
+    }).join("");
+    bar.querySelectorAll("[data-v]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.source = btn.getAttribute("data-v") || "";
+        // 换书源后分类回到「全部」
+        state.category = "";
+        state.page = 1;
+        renderSourceBar();
+        renderCategoryBar();
+        loadBooks().catch((e) => toast(e.message, "err"));
+      });
+    });
+  }
+
+  function renderCategoryBar() {
+    const bar = els.categoryBar;
+    if (!bar) return;
+    const names = catListForSource(state.source || "");
+    const chips = [
+      '<button type="button" class="cat-chip' + (state.category ? "" : " active") +
+      '" data-cat="">全部</button>',
+    ];
     names.forEach((n) => {
-      const cnt = countMap[n] || 0;
-      if (!cnt && n !== state.category) return; // 无书且未选中则不展示
       chips.push(
-        `<button type="button" class="cat-chip${state.category === n ? " active" : ""}" data-cat="${escapeAttr(n)}">${escapeHtml(n)}<span class="n">${cnt}</span></button>`
+        '<button type="button" class="cat-chip' + (state.category === n ? " active" : "") +
+        '" data-cat="' + escapeAttr(n) + '">' + escapeHtml(n) + "</button>"
       );
     });
-    els.categoryBar.innerHTML = chips.join("");
-    els.categoryBar.querySelectorAll(".cat-chip").forEach((btn) => {
+    bar.innerHTML = chips.join("");
+    bar.querySelectorAll("[data-cat]").forEach((btn) => {
       btn.addEventListener("click", () => {
         state.category = btn.dataset.cat || "";
         state.page = 1;
@@ -597,70 +774,55 @@
   }
 
   function renderLibrary() {
-    const grid = state.viewMode === "grid";
-    // 封面墙/列表共用同一套大小滑条显隐
-    if (els.gridSize) els.gridSize.hidden = !grid;
-    if (els.listSize) els.listSize.hidden = grid;
-    els.gridWrap.hidden = !grid;
-    els.listWrap.hidden = grid;
+    // 书库仅封面墙（列表展示已移除）
     const emptyText = "暂无书籍，请到「导入」页导入 TXT。";
-    // 空状态统一样式，避免只有灰字不显眼
     const emptyHtml = '<div class="empty-hint">' + emptyText + "</div>";
-
-    if (grid) {
-      if (!state.items.length) {
-        els.gridWrap.innerHTML = emptyHtml;
-        return;
-      }
-      els.gridWrap.innerHTML = state.items.map((b) => {
-        const coverSrc = b.cover_path || b.cover_url;
-        const cover = coverSrc
-          ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" data-fallback="${escapeAttr(b.name || "")}" />`
-          : `<div class="placeholder">${escapeHtml(b.name)}</div>`;
-        return `
-          <article class="book-card" data-id="${b.id}">
-            <div class="book-cover">${cover}</div>
-            <div class="book-meta">
-              <div class="book-name" title="${escapeAttr(b.name)}">${escapeHtml(b.name)}</div>
-              <div class="book-sub">
-                <span>${escapeHtml(b.author || "佚名")}</span>
-              </div>
+    if (!state.items.length) {
+      els.gridWrap.innerHTML = emptyHtml;
+      return;
+    }
+    const cardHtml = (b) => {
+      const coverSrc = b.cover_path || b.cover_url;
+      const cover = coverSrc
+        ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" data-fallback="${escapeAttr(b.name || "")}" />`
+        : `<div class="placeholder">${escapeHtml(b.name)}</div>`;
+      return `
+        <article class="book-card" data-id="${b.id}" tabindex="0" role="link">
+          <div class="book-cover">${cover}</div>
+          <div class="book-meta">
+            <div class="book-name" title="${escapeAttr(b.name)}">${escapeHtml(b.name)}</div>
+            <div class="book-sub">
+              <span>${escapeHtml(b.author || "佚名")}</span>
             </div>
-          </article>`;
-      }).join("");
+          </div>
+        </article>`;
+    };
+    if (window.AinovelUI && window.AinovelUI.renderVirtualGrid) {
+      window.AinovelUI.renderVirtualGrid(
+        els.gridWrap,
+        state.items,
+        cardHtml,
+        (id) => openDrawer(id),
+        240
+      );
       els.gridWrap.querySelectorAll(".book-card img").forEach((img) => {
         bindCoverFallback(img, img.dataset.fallback || "");
       });
-      els.gridWrap.querySelectorAll(".book-card").forEach((card) => {
-        card.addEventListener("click", () => openDrawer(Number(card.dataset.id)));
-      });
       return;
     }
-
-    // 列表模式：有数据才渲染卡片，空列表给提示
-    if (!state.items.length) {
-      els.listWrap.innerHTML = emptyHtml;
-      return;
-    }
-    els.listWrap.innerHTML = state.items.map((b) => {
-      const coverSrc = b.cover_path || b.cover_url;
-      const cover = coverSrc
-        ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" data-fallback="${escapeAttr((b.name || "").slice(0, 6))}" />`
-        : `<div class="placeholder">${escapeHtml((b.name || "").slice(0, 6))}</div>`;
-      return `
-        <article class="book-row" data-id="${b.id}">
-          <div class="row-cover">${cover}</div>
-          <div class="row-body">
-            <div class="row-title">${escapeHtml(b.name)}</div>
-            <div class="row-meta">${escapeHtml(b.author || "佚名")}</div>
-          </div>
-        </article>`;
-    }).join("");
-    els.listWrap.querySelectorAll(".book-row img").forEach((img) => {
+    els.gridWrap.innerHTML = state.items.map(cardHtml).join("");
+    els.gridWrap.querySelectorAll(".book-card img").forEach((img) => {
       bindCoverFallback(img, img.dataset.fallback || "");
     });
-    els.listWrap.querySelectorAll(".book-row").forEach((row) => {
-      row.addEventListener("click", () => openDrawer(Number(row.dataset.id)));
+    els.gridWrap.querySelectorAll(".book-card").forEach((card) => {
+      const open = () => openDrawer(Number(card.dataset.id));
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      });
     });
   }
 
@@ -679,8 +841,11 @@
     els.drawerTitle.textContent = "编辑 · " + book.name;
     els.editTitle.value = book.name || "";
     els.editAuthor.value = book.author || "";
-    ensureOption(els.editCategory, book.category);
-    els.editCategory.value = book.category || "";
+    // 两级分类：优先 API 拆分字段，否则从合成串解析
+    const lv = (book.category_source !== undefined || book.category_name !== undefined)
+      ? { category_source: book.category_source || "", category_name: book.category_name || "" }
+      : splitCategory(book.category, book.source);
+    setTwoLevelCategory(lv.category_source, lv.category_name);
     els.editStatus.value = book.status || "完结";
     els.editTags.value = (book.tags || []).join(", ");
     els.editIntro.value = book.intro || "";
@@ -698,6 +863,11 @@
     els.scrapeOrigin.textContent = book.source
       ? ("来源：" + book.source + (book.source_id ? " · " + book.source_id : ""))
       : "来源：未刮削";
+    // 刮削弹窗书源默认与当前书源一致
+    if (els.scrapeSource) {
+      const map = { "起点": "qidian", "番茄": "fanqie", "qidian": "qidian", "fanqie": "fanqie" };
+      els.scrapeSource.value = map[book.source] || map[lv.category_source] || "qidian";
+    }
     els.scrapeResults.innerHTML = "";
     els.drawer.hidden = false;
     els.drawerMask.hidden = false;
@@ -706,10 +876,15 @@
   function openScrapeModal() {
     const localName = (els.editTitle.value || "").trim();
     els.scrapeKeyword.value = localName;
+    // 选择书源后第一级（书源）自动匹配
+    const srcKey = (els.editSource && els.editSource.value) || "";
+    const map = { "起点": "qidian", "番茄": "fanqie" };
+    if (els.scrapeSource && map[srcKey]) els.scrapeSource.value = map[srcKey];
     els.scrapeLocal.innerHTML =
       "当前书籍：<strong>" + escapeHtml(localName || "(未命名)") + "</strong>" +
-      (els.editAuthor.value ? " · " + escapeHtml(els.editAuthor.value) : "");
-    els.scrapeTip.textContent = "结果只预览，点「采用并写入」才会改当前这本书。请核对书名/作者是否一致。";
+      (els.editAuthor.value ? " · " + escapeHtml(els.editAuthor.value) : "") +
+      (srcKey ? " · 书源 " + escapeHtml(srcKey) : "");
+    els.scrapeTip.textContent = "结果只预览，点「采用并写入」才会改当前这本书。采用后书源自动匹配，分类按刮削结果填入。";
     els.scrapeResults.innerHTML = '<div class="muted tiny">输入关键词后点「搜索」。</div>';
     els.scrapeModal.hidden = false;
     els.scrapeMask.hidden = false;
@@ -769,10 +944,10 @@
     const nameDiff = (hit.name || "") !== localName;
     const authorDiff = hit.author && localAuthor && hit.author !== localAuthor;
     els.scrapeConfirmBody.innerHTML = `
-      <p style="margin:0 0 10px">确认把<strong>当前这本书</strong>的元数据替换为起点结果？</p>
+      <p style="margin:0 0 10px">确认把<strong>当前这本书</strong>的元数据替换为${escapeHtml(hit.source || "站外")}结果？</p>
       <div class="scrape-local">
         <div>本地：<strong>${escapeHtml(localName)}</strong>${localAuthor ? " · " + escapeHtml(localAuthor) : ""}</div>
-        <div>起点：<strong>${escapeHtml(hit.name || "")}</strong>${hit.author ? " · " + escapeHtml(hit.author) : ""}</div>
+        <div>${escapeHtml(hit.source || "站外")}：<strong>${escapeHtml(hit.name || "")}</strong>${hit.author ? " · " + escapeHtml(hit.author) : ""}</div>
         <div>ID ${escapeHtml(hit.source_id || "")} · 来源 ${escapeHtml(hit.source || "起点")}</div>
         ${hit.latest_chapter ? `<div>最新：${escapeHtml(hit.latest_chapter)}</div>` : ""}
       </div>
@@ -853,12 +1028,20 @@
           hint_tags: (hit.tags || []).filter(function (t) {
             return t && !/字$/.test(t) && t !== "连载" && t !== "完结";
           }),
+          hint_word_count: Number(hit.word_count) || 0,
         },
       });
       els.editTitle.value = res.name || "";
       els.editAuthor.value = res.author || "";
-      ensureOption(els.editCategory, res.category);
-      els.editCategory.value = res.category || "";
+      // 手动刮削：书源自动匹配 + 按刮削具体分类填入二级
+      const lv = (res.category_source !== undefined || res.category_name !== undefined)
+        ? { category_source: res.category_source || "", category_name: res.category_name || "" }
+        : splitCategory(res.category, res.source);
+      setTwoLevelCategory(lv.category_source, lv.category_name);
+      if (els.scrapeSource) {
+        const map = { "起点": "qidian", "番茄": "fanqie" };
+        if (map[lv.category_source]) els.scrapeSource.value = map[lv.category_source];
+      }
       els.editStatus.value = res.status || "完结";
       els.editTags.value = (res.tags || []).join(", ");
       els.editIntro.value = res.intro || "";
@@ -904,13 +1087,79 @@
     els.drawerMask.hidden = true;
   }
 
+  // —— 统一确认框：替代原生 confirm，支持 Esc / 焦点回收 ——
+  let confirmResolver = null;
+  function openConfirm(message, title) {
+    return new Promise((resolve) => {
+      confirmResolver = resolve;
+      if (els.confirmTitle) els.confirmTitle.textContent = title || "确认操作";
+      if (els.confirmBody) {
+        els.confirmBody.innerHTML = "";
+        // 保留换行，同时避免注入 HTML
+        message.split("\n").forEach((line, i) => {
+          if (i) els.confirmBody.appendChild(document.createElement("br"));
+          els.confirmBody.appendChild(document.createTextNode(line));
+        });
+      }
+      els.confirmModal.hidden = false;
+      els.confirmMask.hidden = false;
+      if (els.confirmYes) els.confirmYes.focus();
+    });
+  }
+  function closeConfirm(ok) {
+    els.confirmModal.hidden = true;
+    els.confirmMask.hidden = true;
+    const r = confirmResolver;
+    confirmResolver = null;
+    if (r) r(!!ok);
+  }
+
+  // —— 弹层焦点陷阱 + Esc 关闭 ——
+  function trapFocus(container, e) {
+    if (e.key !== "Tab" || !container) return;
+    const nodes = container.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const list = Array.prototype.filter.call(nodes, (n) => !n.disabled && n.offsetParent !== null);
+    if (!list.length) return;
+    const first = list[0];
+    const last = list[list.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  function activeOverlay() {
+    if (els.confirmModal && !els.confirmModal.hidden) return els.confirmModal;
+    if (els.pwModal && !els.pwModal.hidden) return els.pwModal;
+    if (els.scrapeConfirm && !els.scrapeConfirm.hidden) return els.scrapeConfirm;
+    if (els.scrapeModal && !els.scrapeModal.hidden) return els.scrapeModal;
+    if (els.drawer && !els.drawer.hidden) return els.drawer;
+    return null;
+  }
+
+  function closeTopOverlay() {
+    if (els.confirmModal && !els.confirmModal.hidden) { closeConfirm(false); return true; }
+    if (els.pwModal && !els.pwModal.hidden) { closePwModal(); return true; }
+    if (els.scrapeConfirm && !els.scrapeConfirm.hidden) { closeScrapeConfirm(); return true; }
+    if (els.scrapeModal && !els.scrapeModal.hidden) { closeScrapeModal(); return true; }
+    if (els.drawer && !els.drawer.hidden) { closeDrawer(); return true; }
+    return false;
+  }
+
   async function saveBook() {
     const id = Number(els.editId.value);
     if (!id) return;
+    const lv = getTwoLevelCategory();
     const payload = {
       title: els.editTitle.value.trim(),
       author: els.editAuthor.value.trim() || "佚名",
-      category: els.editCategory.value,
+      category_source: lv.category_source,
+      category_name: lv.category_name,
       status: els.editStatus.value,
       tags: els.editTags.value,
       intro: els.editIntro.value,
@@ -940,7 +1189,7 @@
     const id = Number(els.editId.value);
     const name = els.editTitle.value;
     if (!id) return;
-    if (!confirm("确认删除《" + name + "》？章节与封面将一并删除，源 TXT 文件保留。")) return;
+    if (!await openConfirm("确认删除《" + name + "》？\n章节与封面将一并删除，源 TXT 文件保留。", "删除书籍")) return;
     await withBusy(els.deleteBtn, async () => {
       try {
         await api("/api/admin/books/" + id, { method: "DELETE" });
@@ -995,12 +1244,11 @@
   }
 
   async function startImport(mode) {
-    // 导入按钮加忙态，避免重复触发
-    const btn = mode === "webdav" ? els.importWebdavBtn : els.importBtn;
-    await withBusy(btn, async () => {
+    // 仅本地导入（WebDAV 导入已移除）
+    await withBusy(els.importBtn, async () => {
       try {
-        const res = await api("/api/admin/import?mode=" + (mode || "local"), { method: "POST" });
-        toast(res.started ? (mode === "webdav" ? "WebDAV 导入已开始" : "本地导入已开始") : "导入已在进行中", "ok");
+        const res = await api("/api/admin/import?mode=local", { method: "POST" });
+        toast(res.started ? "本地导入已开始" : "导入已在进行中", "ok");
         renderImportLog(res.import);
         pollImport();
       } catch (err) {
@@ -1009,7 +1257,45 @@
     }, "启动中…");
   }
 
+  // A6：请求停止导入
+  async function cancelImport() {
+    try {
+      const res = await api("/api/admin/import/cancel", { method: "POST" });
+      toast(res.ok ? "已请求停止导入" : "当前没有进行中的导入", res.ok ? "ok" : "err");
+      renderImportLog(res.import);
+    } catch (err) {
+      toast(err.message || "停止失败", "err");
+    }
+  }
+
   function pollImport() {
+    // C5：优先 SSE，失败回退轮询
+    if (window.EventSource) {
+      try {
+        const es = new EventSource("/api/admin/import/stream");
+        es.onmessage = (ev) => {
+          try {
+            const st = JSON.parse(ev.data);
+            renderImportLog(st);
+            if (!st.running) {
+              es.close();
+              loadBooks().catch(() => {});
+              loadStats().catch(() => {});
+              toast("导入完成", "ok");
+            }
+          } catch (_) {}
+        };
+        es.onerror = () => {
+          es.close();
+          pollImportFallback();
+        };
+        return;
+      } catch (_) { /* fallthrough */ }
+    }
+    pollImportFallback();
+  }
+
+  function pollImportFallback() {
     let n = 0;
     const timer = setInterval(async () => {
       n += 1;
@@ -1205,7 +1491,7 @@
   }
 
   async function restoreBackup(filename) {
-    if (!confirm("确认从备份「" + filename + "」还原？当前数据库与封面将被覆盖，操作不可撤销。")) return;
+    if (!await openConfirm("确认从备份「" + filename + "」还原？\n当前数据库与封面将被覆盖，操作不可撤销。", "还原备份")) return;
     els.backupRun.disabled = true;
     try {
       appendBackupLog("还原 " + filename + " …");
@@ -1287,11 +1573,11 @@
           </div>`;
       }).join("");
       els.dupList.querySelectorAll("[data-merge]").forEach((btn) => {
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", async () => {
           const g = dups[Number(btn.dataset.merge)];
           if (!g) return;
           const del = (g.books || []).filter((b) => b.id !== g.keep_id).map((b) => b.id);
-          if (!confirm(`合并《${g.title}》：保留 ID ${g.keep_id}，删除 ${del.join(", ")}？`)) return;
+          if (!await openConfirm(`合并《${g.title}》\n保留 ID ${g.keep_id}，删除 ${del.join(", ")}？`, "合并重复书")) return;
           mergeDup(g.keep_id, del);
         });
       });
@@ -1352,7 +1638,7 @@
   }
 
   async function repairAll() {
-    if (!confirm("对所有异常书执行自动修复？（清理字符，必要时从源 TXT 重解析）")) return;
+    if (!await openConfirm("对所有异常书执行自动修复？\n（清理字符，必要时从源 TXT 重解析）", "修复全部")) return;
     await withBusy(els.checkRepairAll, async () => {
       try {
         const res = await api("/api/admin/library/repair", {
@@ -1369,7 +1655,7 @@
 
   // 按分类归位：把源 TXT 移到与书籍分类一致的文件夹（本地 + WebDAV）
   async function relocateAll() {
-    if (!confirm("按书籍分类归位源 TXT？\n将把本地与 WebDAV「未分类」等目录中的文件移到对应分类文件夹（只移动位置，不改内容）。")) return;
+    if (!await openConfirm("按书籍分类归位源 TXT？\n将把本地与 WebDAV「未分类」等目录中的文件移到对应分类文件夹（只移动位置，不改内容）。", "按分类归位")) return;
     await withBusy(els.checkRelocate, async () => {
       try {
         const res = await api("/api/admin/library/relocate", {
@@ -1409,7 +1695,8 @@
         const res = await api("/api/admin/scrape/batch/start", {
           method: "POST",
           body: {
-            source: "qidian",
+            // 按面板所选刮削源（起点/番茄）批量写入元数据
+            source: (els.batchScrapeSource && els.batchScrapeSource.value) || "qidian",
             only_missing: !!els.batchOnlyMissing.checked,
             min_score: Number(els.batchMinScore.value) || 0.55,
             dry_run: !!dryRun,
@@ -1425,6 +1712,35 @@
   }
 
   function pollBatchScrape() {
+    // C5：优先 SSE
+    if (window.EventSource) {
+      try {
+        const es = new EventSource("/api/admin/scrape/batch/stream");
+        es.onmessage = (ev) => {
+          try {
+            const st = JSON.parse(ev.data);
+            renderBatchStatus(st);
+            if (!st.running) {
+              es.close();
+              Promise.all([
+                loadBooks(),
+                loadStats(),
+                loadLibraryReport().catch(() => {}),
+              ]).then(() => toast("批处理完成", "ok"));
+            }
+          } catch (_) {}
+        };
+        es.onerror = () => {
+          es.close();
+          pollBatchFallback();
+        };
+        return;
+      } catch (_) { /* fallthrough */ }
+    }
+    pollBatchFallback();
+  }
+
+  function pollBatchFallback() {
     let n = 0;
     const timer = setInterval(async () => {
       n += 1;
@@ -1441,6 +1757,17 @@
       }
       if (n > 180) clearInterval(timer);
     }, 1500);
+  }
+
+  // A6：请求停止批量刮削
+  async function cancelBatchScrape() {
+    try {
+      const res = await api("/api/admin/scrape/batch/cancel", { method: "POST" });
+      toast(res.ok ? "已请求停止刮削" : "当前没有进行中的任务", res.ok ? "ok" : "err");
+      renderBatchStatus(res.status);
+    } catch (err) {
+      toast(err.message || "停止失败", "err");
+    }
   }
 
   async function refreshBatchStatus() {
@@ -1515,6 +1842,19 @@
   });
   on(els.recoveryDone, "click", () => afterLogin().catch((e) => authError(e.message)));
   on(els.logoutBtn, "click", () => logout(true));
+  on(els.sideLogout, "click", () => logout(true));
+  on(els.confirmYes, "click", () => closeConfirm(true));
+  on(els.confirmNo, "click", () => closeConfirm(false));
+  on(els.confirmMask, "click", () => closeConfirm(false));
+  // Esc 关闭顶层弹层；Tab 在打开的弹层内循环
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (closeTopOverlay()) e.preventDefault();
+      return;
+    }
+    const overlay = activeOverlay();
+    if (overlay) trapFocus(overlay, e);
+  });
   on(els.changePassBtn, "click", openPwModal);
   on(els.pwSave, "click", saveNewPassword);
   on(els.pwCancel, "click", closePwModal);
@@ -1539,13 +1879,7 @@
     state.page = 1;
     loadBooks().catch((e) => toast(e.message, "err"));
   });
-  on(els.viewMode, "change", () => {
-    state.viewMode = els.viewMode.value;
-    localStorage.setItem("novel_view_mode", state.viewMode);
-    renderLibrary();
-  });
   on(els.gridSize, "input", () => applyGridSize(els.gridSize.value));
-  els.listSize && on(els.listSize, "input", () => applyListSize(els.listSize.value));
   on(els.themeSelect, "change", () => applyTheme(els.themeSelect.value));
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
@@ -1553,7 +1887,7 @@
     });
   }
   on(els.importBtn, "click", () => startImport("local"));
-  on(els.importWebdavBtn, "click", () => startImport("webdav"));
+  on(els.importCancel, "click", cancelImport);
   on(els.importRefresh, "click", () => refreshImport().catch(toast));
   on(els.copySource, "click", copySource);
   on(els.backupRun, "click", runBackupNow);
@@ -1566,17 +1900,26 @@
   on(els.checkRepairAll, "click", repairAll);
   on(els.checkRelocate, "click", relocateAll);
   on(els.batchScrapePreview, "click", () => startBatchScrape(true));
-  on(els.batchScrapeRun, "click", () => {
-    if (!confirm("开始对全库一键刮削？将按书名/作者最近匹配写入元数据。")) return;
+  on(els.batchScrapeRun, "click", async () => {
+    if (!await openConfirm("开始对全库一键刮削？\n将按书名/作者最近匹配写入元数据。", "一键刮削")) return;
     startBatchScrape(false);
   });
   on(els.batchScrapeStatus, "click", () => refreshBatchStatus().catch(toast));
+  on(els.batchScrapeCancel, "click", cancelBatchScrape);
   on(els.drawerClose, "click", closeDrawer);
   on(els.cancelBtn, "click", closeDrawer);
   on(els.drawerMask, "click", closeDrawer);
   on(els.saveBtn, "click", saveBook);
   on(els.scrapeOpenBtn, "click", openScrapeModal);
   on(els.scrapeSearchBtn, "click", runScrapeSearch);
+  // 刮削源变更 → 同步编辑页第一级书源
+  on(els.scrapeSource, "change", () => {
+    const map = { qidian: "起点", fanqie: "番茄" };
+    const want = map[els.scrapeSource.value] || "";
+    if (els.editSource && els.editSource.value !== want) {
+      setTwoLevelCategory(want, els.editCategory.value);
+    }
+  });
   on(els.scrapeKeyword, "keydown", (e) => { if (e.key === "Enter") runScrapeSearch(); });
   on(els.scrapeClose, "click", closeScrapeModal);
   on(els.scrapeCancel, "click", closeScrapeModal);
@@ -1601,7 +1944,6 @@
   // Boot
   applyTheme(state.theme);
   applyGridSize(localStorage.getItem(GRID_SIZE_KEY) || 150);
-  applyListSize(localStorage.getItem('novel_list_size') || 220);
   applyDrawerWidth(localStorage.getItem(DRAWER_W_KEY) || 520);
   initDrawerResize();
   if (els.sortSelect) els.sortSelect.value = state.sort || "updated";

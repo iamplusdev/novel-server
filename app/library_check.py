@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.orm import Session
 
-from .config import settings
+from .config import category_rel_parts, settings
 from .importer import UNCATEGORIZED, decode_txt_bytes
 from .models import Book, Chapter
 from .parsers import load_txt_book_from_text
@@ -306,7 +306,7 @@ def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
             if len(parsed.chapters) <= 1 and len(chapters) > 1:
                 actions.append("源文件仍无法分章，保留原章节结构")
             else:
-                db.query(Chapter).filter(Chapter.book_id == book.id).delete()
+                db.execute(delete(Chapter).where(Chapter.book_id == book.id))
                 for i, ch in enumerate(parsed.chapters):
                     db.add(
                         Chapter(
@@ -368,15 +368,17 @@ def _rel_path_parts(rel: str) -> tuple[str, str]:
 
 
 def relocate_book(book: Book) -> dict:
-    """把源 TXT 归位到与 book.category 一致的分类文件夹（本地 + WebDAV 各自尝试）。
+    """把源 TXT 归位到 novels/<书源>/<分类>/ 或 books/<书源>/<分类>/。
 
     只移动文件位置并回写 source_path，不改章节内容。
-    目标夹名 = category（空则「未分类」），与项目「分类=文件夹名」约定一致。
+    目标层级 = category_rel_parts(book.category)，与本地/WebDAV 同构。
     """
     from .backup import load_config
     from .webdav import WebDAVClient, WebDAVError
 
     target = (book.category or "").strip() or UNCATEGORIZED
+    parts = category_rel_parts(target)
+    target_disp = "/".join(parts)
     sp = book.source_path or ""
     is_dav = sp.startswith("webdav:")
     actions: list[str] = []
@@ -399,23 +401,21 @@ def relocate_book(book: Book) -> dict:
                 local_src = guess
 
     if local_src is not None:
-        parent_name = local_src.parent.name
-        if parent_name == target:
-            actions.append(f"本地已在 {target}/")
-        else:
-            dest_dir = settings.novels_dir / target
-            dest = dest_dir / local_src.name
-            try:
+        dest_dir = settings.novels_dir.joinpath(*parts)
+        try:
+            if local_src.parent.resolve() == dest_dir.resolve():
+                actions.append(f"本地已在 {target_disp}/")
+            else:
+                dest = dest_dir / local_src.name
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 if dest.exists() and dest.resolve() != local_src.resolve():
-                    failed.append(f"本地目标已存在: {target}/{dest.name}")
-                else:
-                    local_src.replace(dest)
-                    actions.append(f"本地 {parent_name}/{local_src.name} → {target}/{dest.name}")
-                    if sp and not is_dav:
-                        book.source_path = str(dest)
-            except OSError as e:
-                failed.append(f"本地移动失败: {e}")
+                    dest = dest_dir / f"{local_src.stem}_{book.id}{local_src.suffix}"
+                local_src.replace(dest)
+                actions.append(f"本地 → {target_disp}/{dest.name}")
+                if sp and not is_dav:
+                    book.source_path = str(dest)
+        except OSError as e:
+            failed.append(f"本地移动失败: {e}")
 
     # —— WebDAV ——
     cfg = load_config()
@@ -432,12 +432,19 @@ def relocate_book(book: Book) -> dict:
                 if name:
                     dav_src = f"{root}/{UNCATEGORIZED}/{name}"
             if dav_src and client.exists(dav_src):
-                parent_name, fname = _rel_path_parts(dav_src)
-                if parent_name == target:
-                    actions.append(f"WebDAV 已在 {target}/")
+                fname = dav_src.rsplit("/", 1)[-1]
+                dest_parent = "/".join([root, *parts])
+                src_parent = dav_src.rsplit("/", 1)[0] if "/" in dav_src else ""
+                if src_parent.rstrip("/") == dest_parent.rstrip("/"):
+                    actions.append(f"WebDAV 已在 {target_disp}/")
                 else:
-                    dest_rel = f"{root}/{target}/{fname}"
+                    dest_rel = f"{dest_parent}/{fname}"
                     try:
+                        if client.exists(dest_rel):
+                            stem, dot, ext = fname.rpartition(".")
+                            if not dot:
+                                stem, ext = fname, ""
+                            dest_rel = f"{dest_parent}/{stem}_{book.id}{dot}{ext}"
                         client.move(dav_src, dest_rel, overwrite=False)
                         actions.append(f"WebDAV {dav_src} → {dest_rel}")
                         if is_dav:
@@ -453,7 +460,7 @@ def relocate_book(book: Book) -> dict:
     return {
         "id": book.id,
         "title": book.title,
-        "category": target,
+        "category": target_disp,
         "source_path": book.source_path,
         "actions": actions,
         "failed": failed,

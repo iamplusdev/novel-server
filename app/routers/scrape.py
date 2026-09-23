@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,13 +11,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import require_admin_dep
-from ..config import CATEGORIES, settings
+from ..config import UNCATEGORIZED, make_category_label, map_site_category, normalize_source, settings
 from ..database import get_db
-from ..importer import UNCATEGORIZED, _ensure_category_tag
+from ..importer import ensure_category_tag, relocate_local_txt
 from ..models import Book
 from ..scrapers import REGISTRY, SOURCE_LABELS
 from ..scrapers.qidian import ScrapeError, download_cover
 from ..serializers import admin_book_detail
+
+
+def category_label_from_hit(source: str, raw: str) -> str:
+    """站内分类 → 存储用「书源-分类」（自动/手动刮削共用匹配）。"""
+    src, cat = map_site_category(source, raw)
+    return make_category_label(src, cat)
+
 
 router = APIRouter(prefix="/api/admin/scrape", tags=["scrape"], dependencies=[Depends(require_admin_dep)])
 
@@ -39,6 +47,7 @@ class ApplyIn(BaseModel):
     hint_status: str | None = Field(default=None, max_length=20)
     hint_cover_url: str | None = Field(default=None, max_length=500)
     hint_tags: list[str] | None = None
+    hint_word_count: int = Field(default=0, ge=0)
 
 
 def _mod(source: str):
@@ -93,7 +102,7 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
     if taken:
         raise HTTPException(
             409,
-            f"起点 ID {sid} 已绑定到《{taken.title}》(ID {taken.id})，请勿重复刮削到多本书",
+            f"{label} ID {sid} 已绑定到《{taken.title}》(ID {taken.id})，请勿重复刮削到多本书",
         )
 
     hit = None
@@ -125,6 +134,8 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         hit.status = "完结" if s in ("完结", "已完结", "完本") else ("连载" if s.startswith("连载") else s)
     if not hit.cover_url and payload.hint_cover_url:
         hit.cover_url = payload.hint_cover_url
+    if not getattr(hit, "word_count", 0) and payload.hint_word_count:
+        hit.word_count = int(payload.hint_word_count or 0)
 
     if not hit.name and not hit.author:
         raise HTTPException(502, detail_err or "未能获取书籍信息")
@@ -139,14 +150,25 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         book.status = hit.status
     if hit.latest_chapter:
         book.latest_chapter = hit.latest_chapter[:200]
-    # 分类仅接受既定分类表；不一致则归「未分类」。刮削只写库，不移动文件。
+    # 站外字数写入（0 表示未取到，保留本地统计）
+    if getattr(hit, "word_count", 0):
+        try:
+            wc = int(hit.word_count or 0)
+            if wc > 0:
+                book.word_count = wc
+        except (TypeError, ValueError):
+            pass
+    # 分类写成「书源-站内分类」；刮削成功后 TXT 归位到 novels/<书源>/<分类>/
     if getattr(hit, "category", ""):
         raw_cat = (hit.category or "").strip()[:50]
-        book.category = raw_cat if raw_cat in CATEGORIES else UNCATEGORIZED
+        book.category = category_label_from_hit(label, raw_cat)
+    elif not book.category:
+        book.category = UNCATEGORIZED
 
     # 标签：以详情 all-label 为准整体替换，避免残留旧的错误标签
     from ..scrapers.qidian import clean_tag_token
 
+    # 标签：详情优先，否则用搜索 hint
     raw_tags = list(hit.tags or []) or list(payload.hint_tags or [])
     cleaned = []
     for t in raw_tags:
@@ -154,10 +176,13 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         if tok and tok not in cleaned and tok != label and tok != UNCATEGORIZED:
             cleaned.append(tok)
     # 已正式分类则去掉「未分类」标记
-    book.tags = _ensure_category_tag(",".join(cleaned[:12]), book.category)
+    book.tags = ensure_category_tag(",".join(cleaned[:12]), book.category)
 
     book.source = label
     book.source_id = hit.source_id or payload.source_book_id
+
+    # 本地 TXT 移到 novels/<书源>/<分类>/（WebDAV 路径跳过）
+    relocate_local_txt(book)
 
     if payload.with_cover and hit.cover_url:
         try:
@@ -174,7 +199,7 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         except ScrapeError:
             pass
 
-    book.updated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    book.updated_at = datetime.now().isoformat(timespec="seconds")
     db.commit()
     db.refresh(book)
     data = admin_book_detail(book)

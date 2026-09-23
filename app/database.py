@@ -41,6 +41,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _migrate_books()
+    _init_fts()
 
 
 def _migrate_books() -> None:
@@ -55,6 +56,70 @@ def _migrate_books() -> None:
         if "source_id" not in cols:
             conn.execute(text("ALTER TABLE books ADD COLUMN source_id VARCHAR(64) NOT NULL DEFAULT ''"))
         conn.commit()
+
+
+def _init_fts() -> None:
+    """书籍全文检索（A9）：FTS5 外部内容表 + 触发器同步；失败则仅用 LIKE。"""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        try:
+            conn.execute(
+                text(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
+                        title, author, tags, intro,
+                        content='books', content_rowid='id',
+                        tokenize='unicode61'
+                    )
+                    """
+                )
+            )
+            # 增量同步触发器
+            for name, sql in (
+                (
+                    "books_ai_fts",
+                    "CREATE TRIGGER IF NOT EXISTS books_ai_fts AFTER INSERT ON books BEGIN "
+                    "INSERT INTO books_fts(rowid, title, author, tags, intro) "
+                    "VALUES (new.id, new.title, new.author, new.tags, new.intro); END",
+                ),
+                (
+                    "books_ad_fts",
+                    "CREATE TRIGGER IF NOT EXISTS books_ad_fts AFTER DELETE ON books BEGIN "
+                    "INSERT INTO books_fts(books_fts, rowid, title, author, tags, intro) "
+                    "VALUES ('delete', old.id, old.title, old.author, old.tags, old.intro); END",
+                ),
+                (
+                    "books_au_fts",
+                    "CREATE TRIGGER IF NOT EXISTS books_au_fts AFTER UPDATE ON books BEGIN "
+                    "INSERT INTO books_fts(books_fts, rowid, title, author, tags, intro) "
+                    "VALUES ('delete', old.id, old.title, old.author, old.tags, old.intro); "
+                    "INSERT INTO books_fts(rowid, title, author, tags, intro) "
+                    "VALUES (new.id, new.title, new.author, new.tags, new.intro); END",
+                ),
+            ):
+                conn.execute(text(sql))
+            # 首次建表后按需重建索引（书籍有、FTS 空时）
+            n_fts = conn.execute(text("SELECT count(*) FROM books_fts")).scalar() or 0
+            n_books = conn.execute(text("SELECT count(*) FROM books")).scalar() or 0
+            if n_books and not n_fts:
+                conn.execute(text("INSERT INTO books_fts(books_fts) VALUES('rebuild')"))
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            # 无 FTS5 的构建则自动降级为 LIKE
+            conn.rollback()
+
+
+def fts_available() -> bool:
+    """当前库是否启用了 books_fts。"""
+    from sqlalchemy import text
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1 FROM books_fts LIMIT 1"))
+            return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def dispose_engine() -> None:

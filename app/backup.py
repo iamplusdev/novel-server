@@ -2,9 +2,13 @@
 
 备份内容（关键数据）：SQLite 数据库 + covers 封面目录 + manifest。
 不打包 novels/ 源 TXT（体量大，通常另有原件）。
+WebDAV 密码落盘时用 auth secret 做流加密（A8），避免明文。
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import shutil
 import sqlite3
@@ -84,6 +88,57 @@ def config_path() -> Path:
     return settings.database_path.parent / CONFIG_FILE_NAME
 
 
+def _secret_key() -> bytes:
+    """加密密钥：优先 auth.secret，否则用机器路径派生（未设账号时也能用）。"""
+    try:
+        from .auth import load_auth
+
+        data = load_auth() or {}
+        raw = (data.get("secret") or "") + "|" + str(settings.database_path)
+    except Exception:  # noqa: BLE001
+        raw = str(settings.database_path)
+    return hashlib.sha256(raw.encode("utf-8")).digest()
+
+
+def encrypt_secret(plain: str) -> str:
+    """流加密 + HMAC 标记，返回 enc:v1:base64。仅防落盘明文，非军用级。"""
+    if plain == "":
+        return ""
+    key = _secret_key()
+    data = plain.encode("utf-8")
+    # HMAC-SHA256 作密钥流
+    out = bytearray()
+    for i in range(0, len(data), 32):
+        block = hmac.new(key, f"blk:{i // 32}".encode("ascii"), hashlib.sha256).digest()
+        chunk = data[i : i + 32]
+        out.extend(b ^ block[j] for j, b in enumerate(chunk))
+    tag = hmac.new(key, bytes(out), hashlib.sha256).digest()
+    return "enc:v1:" + base64.urlsafe_b64encode(tag + bytes(out)).decode("ascii")
+
+
+def decrypt_secret(token: str) -> str:
+    """解密 encrypt_secret；兼容旧明文（无 enc: 前缀）。"""
+    if not token:
+        return ""
+    if not token.startswith("enc:v1:"):
+        return token  # 旧配置明文，读入后下次保存会自动加密
+    try:
+        raw = base64.urlsafe_b64decode(token[len("enc:v1:") :].encode("ascii"))
+        tag, body = raw[:32], raw[32:]
+        key = _secret_key()
+        expect = hmac.new(key, body, hashlib.sha256).digest()
+        if not hmac.compare_digest(tag, expect):
+            return ""
+        out = bytearray()
+        for i in range(0, len(body), 32):
+            block = hmac.new(key, f"blk:{i // 32}".encode("ascii"), hashlib.sha256).digest()
+            chunk = body[i : i + 32]
+            out.extend(b ^ block[j] for j, b in enumerate(chunk))
+        return bytes(out).decode("utf-8")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def load_config() -> BackupConfig:
     path = config_path()
     if not path.is_file():
@@ -95,7 +150,7 @@ def load_config() -> BackupConfig:
     return BackupConfig(
         webdav_url=str(data.get("webdav_url") or ""),
         username=str(data.get("username") or ""),
-        password=str(data.get("password") or ""),
+        password=decrypt_secret(str(data.get("password") or "")),
         remote_path=str(data.get("remote_path") or "novel-server-backups").strip("/") or "novel-server-backups",
         books_path=(str(data.get("books_path") or "books").strip("/").replace("\\", "/") or "books"),
         auto_enabled=bool(data.get("auto_enabled")),
@@ -107,7 +162,10 @@ def load_config() -> BackupConfig:
 
 def save_config(cfg: BackupConfig) -> None:
     path = config_path()
-    path.write_text(json.dumps(cfg.to_secret_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    secret = cfg.to_secret_dict()
+    # 落盘加密，接口仍不回传明文
+    secret["password"] = encrypt_secret(cfg.password or "")
+    path.write_text(json.dumps(secret, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         path.chmod(0o600)
     except OSError:

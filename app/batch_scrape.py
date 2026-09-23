@@ -11,11 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
-from .importer import UNCATEGORIZED, _ensure_category_tag
+from .importer import ensure_category_tag, relocate_local_txt
 from .models import Book
 from .scrapers import ALL_SOURCES, REGISTRY, SOURCE_LABELS
 from .scrapers.qidian import ScrapeError, clean_tag_token, download_cover
-from .config import CATEGORIES, settings
+from .config import UNCATEGORIZED, make_category_label, map_site_category, normalize_source, settings
 
 _lock = threading.Lock()
 _status: dict = {
@@ -28,12 +28,22 @@ _status: dict = {
     "log": [],
     "last_error": "",
 }
+# 请求中止批量刮削（A6）
+_cancel = threading.Event()
 
 
 def get_batch_status() -> dict:
     out = dict(_status)
     out["log"] = list(_status.get("log") or [])
+    out["cancel_requested"] = _cancel.is_set()
     return out
+
+
+def request_batch_cancel() -> bool:
+    if not _status.get("running"):
+        return False
+    _cancel.set()
+    return True
 
 
 def _log(msg: str) -> None:
@@ -141,10 +151,21 @@ def _apply_hit_to_book(db: Session, book: Book, hit_dict: dict) -> None:
         book.status = st
     if hit_dict.get("latest_chapter"):
         book.latest_chapter = hit_dict["latest_chapter"][:200]
-    # 分类仅接受既定分类表；不一致（或空）则归「未分类」。刮削只写库，不移动文件。
+    # 站外字数写入（0 表示未取到，保留本地统计）
+    try:
+        wc = int(hit_dict.get("word_count") or 0)
+        if wc > 0:
+            book.word_count = wc
+    except (TypeError, ValueError):
+        pass
+    # 分类写成「书源-站内分类」；与单本刮削一致（map_site_category 统一匹配）
     if hit_dict.get("category"):
         raw_cat = (hit_dict["category"] or "").strip()[:50]
-        book.category = raw_cat if raw_cat in CATEGORIES else UNCATEGORIZED
+        src = normalize_source(hit_dict.get("source") or "")
+        src_n, cat_n = map_site_category(src, raw_cat)
+        book.category = make_category_label(src_n, cat_n)
+    elif not book.category:
+        book.category = UNCATEGORIZED
 
     raw_tags = list(hit_dict.get("tags") or [])
     cleaned = []
@@ -153,10 +174,13 @@ def _apply_hit_to_book(db: Session, book: Book, hit_dict: dict) -> None:
         if tok and tok not in cleaned and tok != UNCATEGORIZED:
             cleaned.append(tok)
     # 已正式分类则去掉「未分类」标记
-    book.tags = _ensure_category_tag(",".join(cleaned[:12]), book.category)
+    book.tags = ensure_category_tag(",".join(cleaned[:12]), book.category)
 
-    book.source = hit_dict.get("source") or "起点"
+    book.source = normalize_source(hit_dict.get("source") or "") or book.source or "起点"
     book.source_id = str(hit_dict.get("source_id") or "")
+
+    # 本地 TXT 归位到 novels/<书源>/<分类>/
+    relocate_local_txt(book)
 
     if hit_dict.get("cover_url"):
         try:
@@ -203,6 +227,10 @@ def run_batch_scrape(
         _status["dry_run"] = dry_run
 
         for book in books:
+            # 支持中途取消（A6）
+            if _cancel.is_set():
+                _log("（已取消）")
+                break
             _status["done"] += 1
             title, author = book.title, book.author
             search_kw = _search_keyword(title)
@@ -228,7 +256,7 @@ def run_batch_scrape(
                     detail = mod.fetch_detail(src_id)
                     d = detail.to_dict()
                     # 合并搜索 hint
-                    for k in ("name", "author", "intro", "status", "cover_url", "latest_chapter", "tags", "category"):
+                    for k in ("name", "author", "intro", "status", "cover_url", "latest_chapter", "tags", "category", "word_count"):
                         if not d.get(k) and hd.get(k):
                             d[k] = hd[k]
                     d["source"] = label
@@ -266,6 +294,7 @@ def start_batch_scrape(**kwargs) -> bool:
     if _status.get("running"):
         _lock.release()
         return False
+    _cancel.clear()
 
     def _run() -> None:
         _status["running"] = True

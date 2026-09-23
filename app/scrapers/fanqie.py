@@ -21,6 +21,41 @@ UA = (
 TIMEOUT = 20
 _SEARCH_API = "https://fanqienovel.com/api/author/search/search_book/v1"
 
+# 番茄站内别名 → 站内标准分类名（保持官网栏目，不再映射到旧扁平分类）
+_FQ_CATEGORY_MAP = {
+    "西方奇幻": "西方奇幻",
+    "东方仙侠": "东方仙侠",
+    "科幻末世": "科幻末世",
+    "都市日常": "都市日常",
+    "都市修真": "都市修真",
+    "都市高武": "都市高武",
+    "历史古代": "历史古代",
+    "战神赘婿": "战神赘婿",
+    "都市种田": "都市种田",
+    "传统玄幻": "传统玄幻",
+    "历史脑洞": "历史脑洞",
+    "悬疑脑洞": "悬疑脑洞",
+    "都市脑洞": "都市脑洞",
+    "玄幻脑洞": "玄幻脑洞",
+    "悬疑灵异": "悬疑灵异",
+    "抗战谍战": "抗战谍战",
+    "游戏体育": "游戏体育",
+    "动漫衍生": "动漫衍生",
+    "男频衍生": "男频衍生",
+    # 常见标签别名归到站内栏目
+    "衍生": "男频衍生",
+    "双男主": "男频衍生",
+    "女频衍生": "动漫衍生",
+}
+
+
+def map_category(raw: str) -> str:
+    """规范化番茄站内分类名；未知则原样返回，由写库侧拼「番茄-分类」。"""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    return _FQ_CATEGORY_MAP.get(s, s)
+
 
 def _http_get(url: str, headers: dict | None = None) -> str:
     """统一走 http_util：默认直连，避免本地代理未启动导致失败。"""
@@ -82,7 +117,7 @@ def _hit_from_search_item(d: dict) -> ScrapeHit:
         url=book_url_for(bid),
         intro=_clean(d.get("book_abstract") or "")[:300],
         status=_status_from_code(d.get("creation_status")),
-        category=cat_main,
+        category=map_category(cat_main),
         word_count=int(d.get("word_count") or 0),
         tags=tags[:8],
     )
@@ -105,12 +140,22 @@ def search(keyword: str, limit: int = 10) -> list[ScrapeHit]:
             "query_word": keyword,
         }
     )
-    # 先不带反爬参数请求；失败再带空 msToken
+    # 先不带反爬参数请求；失败再带空 msToken / 去掉 filter，尽量提高成功率
     last_err: Exception | None = None
     data = None
+    qs_nofilter = urllib.parse.urlencode(
+        {
+            "page_count": str(max(1, min(limit, 20))),
+            "page_index": "0",
+            "query_type": "0",
+            "query_word": keyword,
+        }
+    )
     for url in (
         f"{_SEARCH_API}?{qs}",
         f"{_SEARCH_API}?{qs}&msToken=",
+        f"{_SEARCH_API}?{qs_nofilter}",
+        f"{_SEARCH_API}?{qs_nofilter}&msToken=",
     ):
         try:
             text = _http_get(url, headers={"Accept": "application/json"})
@@ -127,9 +172,11 @@ def search(keyword: str, limit: int = 10) -> list[ScrapeHit]:
     items = (((data or {}).get("data") or {}).get("search_book_data_list")) or []
     hits = [_hit_from_search_item(x) for x in items if x.get("book_id")]
     if not hits and not items:
+        # 搜索接口可能要求 a_bogus/msToken 签名；书号/链接详情仍可用
         raise ScrapeError(
-            "番茄搜索接口返回空（需 a_bogus/msToken 签名）。"
-            "可改用书号/详情链接刮削，例如 7276384138653862966"
+            "番茄搜索接口返回空（可能需 a_bogus/msToken 签名）。"
+            "降级建议：改用书号或详情链接刮削，例如 7276384138653862966 "
+            "或 https://fanqienovel.com/page/7276384138653862966"
         )
     return hits[:limit]
 
@@ -195,6 +242,7 @@ def fetch_detail(book_id: str) -> ScrapeHit:
                 ("abstract", r'"abstract"\s*:\s*"([^"]*)"'),
                 ("thumb", r'"thumb_url"\s*:\s*"([^"]+)"'),
                 ("category", r'"category"\s*:\s*"([^"]*)"'),
+                ("wordCount", r'"(?:wordCount|word_count)"\s*:\s*(\d+)'),
             ):
                 mm = re.search(pat, raw_json)
                 if not mm:
@@ -211,7 +259,12 @@ def fetch_detail(book_id: str) -> ScrapeHit:
                     u = mm.group(1).encode().decode("unicode_escape") if "\\u" in mm.group(1) else mm.group(1)
                     hit.cover_url = u
                 elif key == "category" and not hit.category:
-                    hit.category = _clean(mm.group(1))
+                    hit.category = map_category(_clean(mm.group(1)))
+                elif key == "wordCount" and not hit.word_count:
+                    try:
+                        hit.word_count = int(mm.group(1))
+                    except ValueError:
+                        pass
         if isinstance(state, dict):
             page_st = state.get("page") or {}
             if not hit.author:
@@ -226,8 +279,18 @@ def fetch_detail(book_id: str) -> ScrapeHit:
             if cat2 and not hit.category:
                 names = re.findall(r'"Name"\s*:\s*"([^"]+)"', cat2 if isinstance(cat2, str) else "")
                 if names:
-                    hit.category = names[0]
+                    hit.category = map_category(names[0])
                     hit.tags = [clean_tag_token(x) for x in names if clean_tag_token(x)][:8]
+            # 字数：优先取 JSON 字段
+            if not hit.word_count:
+                for k in ("wordCount", "word_count", "totalWordCount"):
+                    try:
+                        v = int(page_st.get(k) or 0)
+                    except (TypeError, ValueError):
+                        v = 0
+                    if v > 0:
+                        hit.word_count = v
+                        break
 
     # 简介：目录前正文段 / abstract / meta description
     if not hit.intro:
@@ -274,6 +337,20 @@ def fetch_detail(book_id: str) -> ScrapeHit:
         m = re.search(r'"status"\s*:\s*(\d+)', page)
         if m:
             hit.status = _status_from_code(m.group(1))
+    if hit.category:
+        hit.category = map_category(hit.category)
+    # 字数兜底：详情页可见的「xx.x 万字」/「xxxx 字」
+    if not hit.word_count:
+        m = re.search(r"(\d+(?:\.\d+)?)\s*万字", page)
+        if m:
+            hit.word_count = int(float(m.group(1)) * 10000)
+        else:
+            m = re.search(r"(\d{2,9})\s*字", page)
+            if m:
+                try:
+                    hit.word_count = int(m.group(1))
+                except ValueError:
+                    pass
     if not hit.tags and hit.category:
         hit.tags = [clean_tag_token(x) for x in re.split(r"[,，]", hit.category) if clean_tag_token(x)]
     # 简介兜底：目录前长段落
