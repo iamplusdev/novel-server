@@ -140,7 +140,16 @@ def main():
 
     # legado
     st, lb = call("/api/legado/book-source")
-    check("legado source", st == 200 and lb.get("bookSourceUrl"))
+    # 书源必须是数组且含 bookUrl 规则，否则 Legado 无法换源
+    src0 = (lb[0] if isinstance(lb, list) and lb else (lb if isinstance(lb, dict) else {}))
+    check(
+        "legado source",
+        st == 200
+        and isinstance(lb, list)
+        and bool(src0.get("bookSourceUrl"))
+        and src0.get("ruleSearch", {}).get("bookUrl")
+        and src0.get("ruleBookInfo", {}).get("bookUrl"),
+    )
     st, lt = call(f"/api/legado/toc/{bid}")
     check("legado toc", st == 200 and lt.get("chapters") is not None)
 

@@ -183,14 +183,20 @@ def legado_content(
 
 
 @router.get("/book-source")
-def legado_book_source(request: Request) -> dict:
-    """返回注入了当前访问基址的 Legado 书源配置。"""
+def legado_book_source(request: Request) -> list:
+    """返回注入了当前访问基址的 Legado 书源配置（数组，可直接导入）。"""
     import json
     from pathlib import Path
 
     path = Path(__file__).resolve().parents[2] / "legado_book_source.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    data["bookSourceUrl"] = resolve_base_url(request)
-    data["bookSourceName"] = data.get("bookSourceName") or "爱小说"
-    data["bookSourceGroup"] = data.get("bookSourceGroup") or "本地NAS"
-    return data
+    # Legado 导入要求根节点为数组；兼容历史单对象文件
+    sources = data if isinstance(data, list) else [data]
+    base = resolve_base_url(request)
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        item["bookSourceUrl"] = base
+        item["bookSourceName"] = item.get("bookSourceName") or "爱小说"
+        item["bookSourceGroup"] = item.get("bookSourceGroup") or "本地NAS"
+    return sources

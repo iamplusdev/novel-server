@@ -1053,8 +1053,15 @@
         if (!res.ok) throw new Error("书源文件不存在");
         json = await res.json();
         const base = (state.stats && state.stats.public_base_url) || location.origin;
-        json.bookSourceUrl = base;
+        // 兼容数组/对象，统一注入当前访问基址
+        const items = Array.isArray(json) ? json : [json];
+        items.forEach((item) => {
+          if (item && typeof item === "object") item.bookSourceUrl = base;
+        });
+        json = items;
       }
+      // Legado 导入要求根节点为数组，预览与复制保持该格式
+      if (!Array.isArray(json)) json = [json];
       state.sourceJson = json;
       els.sourcePreview.textContent = JSON.stringify(json, null, 2);
     } catch (err) {

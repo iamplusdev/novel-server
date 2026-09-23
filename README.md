@@ -192,10 +192,12 @@ python run.py
 4. Legado → 我的 → 书源管理 → 本地导入 / 网络导入。
 5. 发现页可浏览各分类；搜索、详情、目录、正文均走 JSON API。
 
+注意：书源 JSON 根节点必须是**数组** `[{...}]`（Legado 导入要求），且 `ruleSearch` / `ruleExplore` / `ruleBookInfo` 需含 `bookUrl` 映射（换源依赖）。
+
 示例响应字段（JsonPath 规则已匹配）：
 
-- 探索/搜索：`$.books[].name/author/cover_url/intro/toc_url`
-- 详情：`$.name/author/cover_url/intro/toc_url`
+- 探索/搜索：`$.books[].name/author/book_url/cover_url/intro/toc_url`
+- 详情：`$.name/author/book_url/cover_url/intro/toc_url`
 - 目录：`$.chapters[].name/content_url`
 - 正文：`$.content`
 
