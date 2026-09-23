@@ -8,11 +8,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.config import CATEGORIES  # noqa: E402
+from urllib.parse import quote
+
+from app.config import all_category_labels  # noqa: E402
 
 
 def build() -> list:
     # Legado 导入要求根节点为书源对象数组，故返回 list
+    cats = all_category_labels()
     return [
         {
             "bookSourceName": "爱小说",
@@ -28,9 +31,9 @@ def build() -> list:
             "exploreUrl": [
                 {
                     "title": c,
-                    "url": f"/api/legado/explore/{c}?page={{{{page}}}}&page_size=20",
+                    "url": f"/api/legado/explore/{quote(c, safe='-')}?page={{{{page}}}}&page_size=20",
                 }
-                for c in CATEGORIES
+                for c in cats
             ],
             "header": "",
             "lastUpdateTime": 0,

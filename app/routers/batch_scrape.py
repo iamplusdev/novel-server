@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from ..auth import require_admin_dep
-from ..batch_scrape import get_batch_status, score_match, start_batch_scrape
+from ..batch_scrape import get_batch_status, request_batch_cancel, score_match, start_batch_scrape
 
 router = APIRouter(
     prefix="/api/admin/scrape/batch",
@@ -44,6 +44,13 @@ def batch_start(payload: BatchIn) -> dict:
 @router.get("/status")
 def batch_status() -> dict:
     return get_batch_status()
+
+
+@router.post("/cancel")
+def batch_cancel() -> dict:
+    """请求停止批量刮削（A6）。"""
+    ok = request_batch_cancel()
+    return {"ok": ok, "status": get_batch_status()}
 
 
 @router.post("/score")

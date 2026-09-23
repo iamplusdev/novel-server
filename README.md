@@ -1,281 +1,308 @@
-# 爱小说
+# 爱小说（novel-server）
 
-个人 TXT 小说库服务器：FastAPI + SQLite + 原生 HTML/JS 管理后台 + Legado 书源。
+个人 **TXT 小说存储库**：服务端负责导入、刮削、管理与 API；**阅读统一用手机 Legado（开源阅读）**。
 
-目标：极简、零多余依赖、可长期在个人服务器 / NAS 上维护。
+> 本项目**不做网页阅读器**。管理后台只做书库维护；正文阅读请通过 Legado 书源接入。
+
+目标：极简、零多余依赖，可长期跑在个人服务器 / NAS 上。
 
 ## 功能
 
-- 扫描 `novels/<分类>/*.txt`，解析章节写入 SQLite（内容哈希未变则跳过）
-- JSON API：分类浏览、搜索、书籍详情、目录、正文
-- Legado（开源阅读）自定义书源：发现页分类、搜索、详情、目录、正文，**全部返回完整 URL**
-- 管理后台（`/admin`）：**账号密码登录**（首次打开创建账号）；维护封面/书名/作者/简介/状态/标签；上传封面；删除书籍；触发导入；支持改密与恢复码重置
-- **WebDAV 备份 / 还原**：备份数据库+封面到 WebDAV，支持自动备份与一键还原
-- 封面存本地 `covers/`，由服务直接提供
+- 扫描 `novels/<书源>/<分类>/*.txt`，解析章节写入 SQLite（内容哈希未变则跳过）
+- 管理后台（`/admin`）：账号登录、封面墙、书源/分类筛选、元数据编辑、刮削、体检、备份
+- **两级分类**：书源（起点 / 番茄 / 本地）+ 站内分类，与 TXT 目录层级一致
+- **刮削**：起点 / 番茄 元数据（书名、作者、简介、状态、分类、标签、封面）
+- **Legado 书源**：发现页分类、搜索、详情、目录、正文（完整 URL），手机阅读主路径
+- WebDAV 备份 / 还原：数据库 + 封面，可自动备份
+- 封面本地 `covers/` 由服务直接提供
 
-## 技术栈与依赖
+## 技术栈
 
 | 组件 | 选型 |
 |------|------|
 | Web | FastAPI + Uvicorn |
 | 数据库 | SQLite + SQLAlchemy 2.x |
-| 前端 | 原生 HTML / CSS / JS（无框架） |
+| 管理前端 | 原生 HTML / CSS / JS（无框架） |
+| 阅读端 | Legado（开源阅读）+ 本项目书源 |
 | 依赖 | `fastapi` `uvicorn[standard]` `sqlalchemy` `python-multipart` |
 
-## 项目结构
+## 快速开始（推荐 Docker）
 
-```text
-novel-server/
-├── app/
-│   ├── main.py            # FastAPI 入口、静态路由
-│   ├── config.py          # 环境变量配置 + 分类常量
-│   ├── database.py        # SQLAlchemy 引擎 / 会话
-│   ├── models.py          # Book / Chapter
-│   ├── parsers.py         # TXT 章节与文件名解析
-│   ├── importer.py        # 目录扫描与增量导入
-│   ├── auth.py            # 管理 Token 校验
-│   ├── serializers.py     # Book/Chapter → JSON
-│   ├── webdav.py          # 极简 WebDAV 客户端（标准库）
-│   ├── backup.py          # 备份打包 / 上传 / 还原 / 自动调度
-│   └── routers/
-│       ├── public.py      # 公开阅读 API
-│       ├── legado.py      # Legado 书源 API
-│       ├── admin.py       # 管理后台 API
-│       └── backup.py      # WebDAV 备份 API
-├── index.html             # 管理后台 SPA
-├── admin.css / admin.js
-├── import_novels.py       # CLI 导入
-├── run.py                 # 服务启动
-├── legado_book_source.json
-├── requirements.txt
-├── Dockerfile / docker-compose.yml
-├── deploy/novel-server.service
-├── novels/                # 源 TXT（按分类子目录）
-├── data/novels.db         # SQLite
-└── covers/                # 封面图片
+### 1. 准备目录
+
+```bash
+mkdir -p novel-server && cd novel-server
+# 将本仓库代码放到当前目录（或 git clone 后进入）
+mkdir -p novels data covers
 ```
 
-## 数据库设计
-
-### books
-
-| 字段 | 说明 |
-|------|------|
-| id | 主键 |
-| title / author | 书名、作者 |
-| category | 分类（与文件夹同名） |
-| intro / status / tags | 简介 / 连载·完结·未知 / 逗号分隔标签 |
-| cover_file | covers 目录下文件名 |
-| source_path / source_hash | 源文件路径与 SHA256（增量导入） |
-| word_count / chapter_count / latest_chapter | 统计 |
-| created_at / updated_at | ISO 时间 |
-
-### chapters
-
-| 字段 | 说明 |
-|------|------|
-| id | 主键 |
-| book_id | 外键 → books.id，删除书籍级联删除 |
-| index | 章序（从 0 起） |
-| title | 章节标题 |
-| content | 章节全文 TEXT |
-
-索引：`books.category/title/author`，`chapters(book_id, index)`。
-
-## 推荐 TXT 目录约定
+把 TXT 放到：
 
 ```text
 novels/
-├── 玄幻/
-│   └── 书名.txt                 # 或 书名(作者).txt / 作者-书名.txt
-├── 仙侠/
-├── 都市/
-└── ...
+├── 起点/
+│   └── 都市/
+│       └── 书名.txt
+├── 番茄/
+│   └── 西方奇幻/
+│       └── 书名.txt
+└── 玄幻/                 # 本地/未刮削也可按分类放
+    └── 书名.txt
 ```
 
-- 无法识别的根目录 txt → 分类「未分类」
-- 章节识别支持：`第X章/节/回/卷/篇`、`Chapter N`、`序章/楔子/番外/终章` 等
-- 编码自动尝试 UTF-8 / GB18030 / Big5
+文件名建议：`书名.txt`、`书名(作者).txt`、`作者-书名.txt`。
 
-## API 定义
+### 2. 修改对外地址（必做）
 
-公开（默认无鉴权，适合内网；如需隔离可在网关加认证）：
+编辑 `docker-compose.yml`：
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/categories` | 分类及数量 |
-| GET | `/api/books` | 列表：`category` `q` `status` `sort` `page` `page_size` |
-| GET | `/api/search?q=` | 搜索（书名/作者/标签/简介） |
-| GET | `/api/books/{id}` | 详情 |
-| GET | `/api/books/{id}/chapters` | 章节目录（可分页） |
-| GET | `/api/books/{id}/chapters/{chapter_id}` | 正文 |
+```yaml
+environment:
+  PUBLIC_BASE_URL: "http://192.168.1.100:8000"   # 改成手机能访问到的地址
+```
 
-Legado（返回绝对 URL）：
+该地址会写入 Legado 书源的 `bookSourceUrl` 与封面/章节绝对链接。
 
-| 方法 | 路径 |
+### 3. 构建镜像
+
+```bash
+# 在仓库根目录（含 Dockerfile）
+docker compose build
+
+# 或单独构建并打标签
+docker build -t novel-server:latest .
+
+# 可选：导出镜像拷到 NAS
+docker save -o novel-server-latest.tar novel-server:latest
+# NAS 上：docker load -i novel-server-latest.tar
+```
+
+### 4. 启动服务
+
+```bash
+docker compose up -d
+docker compose ps          # 等 healthcheck 变 healthy
+curl -s http://127.0.0.1:8000/health
+```
+
+数据卷（务必持久化，勿打进镜像）：
+
+| 宿主机 | 容器 | 内容 |
+|--------|------|------|
+| `./novels` | `/app/novels` | 源 TXT |
+| `./data` | `/app/data` | SQLite、账号、备份配置 |
+| `./covers` | `/app/covers` | 封面 |
+
+### 5. 初始化
+
+```bash
+# 首次导入 TXT
+docker compose exec novel-server python import_novels.py
+
+# 管理后台创建账号（或打开网页首设）
+# 浏览器：http://<host>:8000/admin
+# 忘记密码时：docker compose exec novel-server python reset_auth.py admin 新密码
+```
+
+### 6. 手机 Legado 接入
+
+1. 手机与服务器同一局域网（或已穿透），能打开 `http://<host>:8000/health`
+2. 获取书源 JSON（三选一）：
+   - 浏览器打开 `http://<host>:8000/legado_book_source.json`
+   - 管理后台 →「API / 书源」→「下载 / 复制书源 JSON」（已填好 `PUBLIC_BASE_URL`）
+   - `GET /api/legado/book-source`
+3. Legado → **我的 → 书源管理 → 本地导入 / 网络导入**
+4. 发现页浏览分类；搜索书名；点进详情 → 目录 → 正文
+
+书源 JSON 根节点必须是数组 `[{...}]`，且规则含 `bookUrl`（换源需要）。
+
+### 7. 日常操作
+
+| 操作 | 方式 |
 |------|------|
-| GET | `/api/legado/explore/{分类}?page=` |
-| GET | `/api/legado/search?q=&page=` |
-| GET | `/api/legado/book/{id}` |
-| GET | `/api/legado/toc/{id}` |
-| GET | `/api/legado/content/{book_id}/{chapter_id}` |
-| GET | `/api/legado/book-source` | 生成注入了 `PUBLIC_BASE_URL` 的书源 JSON |
+| 改元数据 / 封面 / 分类 | 管理后台书库，点封面卡片 |
+| 再次导入 | 管理后台「导入」或 `docker compose exec novel-server python import_novels.py` |
+| 刮削补全 | 管理后台编辑抽屉「刮削…」或体检页「一键刮削」 |
+| 备份 | 管理后台「备份」配置 WebDAV |
+| 升级 | `docker compose build && docker compose up -d`（卷数据保留） |
 
-管理（登录后 `Authorization: Bearer <session>`，同时下发 HttpOnly Cookie）：
+---
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/auth/status` | 是否需首设 / 当前用户名 |
-| POST | `/api/auth/setup` | 首次创建账号（返回恢复码） |
-| POST | `/api/auth/login` | 登录，返回会话 Token |
-| POST | `/api/auth/logout` | 退出 |
-| GET | `/api/auth/me` | 当前用户 |
-| POST | `/api/auth/change-password` | 修改密码 |
-| POST | `/api/auth/forgot` | 恢复码重设（返回新恢复码） |
-| GET | `/api/admin/stats` | 统计 |
-| GET | `/api/admin/books` | 管理列表 |
-| GET/PATCH | `/api/admin/books/{id}` | 详情 / 更新元数据 |
-| POST | `/api/admin/books/{id}/cover` | multipart 上传封面 |
-| DELETE | `/api/admin/books/{id}` | 删除书籍（级联章节+封面） |
-| POST | `/api/admin/import` | 后台触发导入 |
-| GET | `/api/admin/import/status` | 导入状态 |
-| GET/PUT | `/api/admin/backup/config` | WebDAV 备份配置（密码不回传） |
-| POST | `/api/admin/backup/test` | 测试 WebDAV 连接 |
-| POST | `/api/admin/backup/run` | 立即备份并上传 |
-| GET | `/api/admin/backup/list` | 列出远程备份 |
-| POST | `/api/admin/backup/restore` | 按文件名还原 |
-| GET | `/api/admin/backup/status` | 备份/还原状态日志 |
+## Docker 部署说明
 
-OpenAPI 文档：`/docs`
+### compose 文件要点
 
-## 配置
+```yaml
+services:
+  novel-server:
+    build: .
+    image: novel-server:latest
+    container_name: novel-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PUBLIC_BASE_URL: "http://192.168.1.100:8000"  # 必改
+      NOVELS_DIR: "/app/novels"
+      DATABASE_PATH: "/app/data/novels.db"
+      COVERS_DIR: "/app/covers"
+    volumes:
+      - ./novels:/app/novels
+      - ./data:/app/data
+      - ./covers:/app/covers
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
 
-复制 `.env.example` 为环境变量或 `.env`（systemd 可用 `EnvironmentFile`）：
+### 常用命令
+
+```bash
+docker compose up -d              # 启动
+docker compose logs -f            # 日志
+docker compose exec novel-server python import_novels.py
+docker compose restart
+docker compose down               # 停止（保留卷数据）
+
+# 只构建不启动
+docker compose build --no-cache
+
+# 备份宿主机数据目录即可保全书库
+tar czf novel-data-$(date +%F).tar.gz data covers novels
+```
+
+### 镜像说明
+
+- 基础镜像：`python:3.12-slim`
+- 只包含运行代码与依赖；**用户数据一律 volume 挂载**
+- 构建上下文通过 `.dockerignore` 排除 `data/` `covers/` `novels/` `scripts/` 等
+- 导出镜像：`docker save -o novel-server-latest.tar novel-server:latest`
+
+### 网络与安全
+
+| 场景 | 建议 |
+|------|------|
+| 纯局域网 | `PUBLIC_BASE_URL=http://<内网IP>:8000`，防火墙放行 8000 |
+| 外网 / 穿透 | 用 HTTPS 域名；设 `COOKIE_SECURE=1`；反代加 Basic Auth 或只允许内网 |
+| Legado 外网 | 书源 `header` 可带反代账号；或走 Tailscale 等私有网 |
+
+---
+
+## 配置项
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | **必改**，手机可访问的完整根地址 |
+| `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | **必改**，手机可访问的完整根地址（书源/封面绝对链） |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | 监听 |
 | `NOVELS_DIR` | `./novels` | TXT 根目录 |
 | `DATABASE_PATH` | `./data/novels.db` | SQLite 路径 |
 | `COVERS_DIR` | `./covers` | 封面目录 |
+| `COOKIE_SECURE` | `0` | HTTPS/反代设 `1` |
+| `SCRAPER_PROXY` | （空） | 刮削代理，默认直连 |
 
-## 本地运行
+---
+
+## 本地源码运行（开发）
 
 ```bash
-cd novel-server
 python -m venv .venv
-# Windows: .venv\Scripts\activate
-source .venv/bin/activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 配置局域网地址（PowerShell 示例）
-$env:PUBLIC_BASE_URL = "http://192.168.1.100:8000"
-
-# 导入 TXT
+export PUBLIC_BASE_URL="http://192.168.1.100:8000"
 python import_novels.py
-
-# 启动
 python run.py
 ```
 
 - 管理后台：`http://<host>:8000/admin`
 - API 文档：`http://<host>:8000/docs`
+- 测试：`python -m unittest tests.test_core`
 
-也可在后台再次导入：管理页「导入」或 `python import_novels.py --watch`。
+---
 
-## Legado 书源接入
+## Legado 使用说明
 
-1. 确保手机与服务器同一局域网，`PUBLIC_BASE_URL` 可访问。
-2. 浏览器打开 `http://<host>:8000/legado_book_source.json`，或在管理后台「API / 书源」复制。
-3. 把 `bookSourceUrl` 改成你的地址（后台复制时已自动填入）。
-4. Legado → 我的 → 书源管理 → 本地导入 / 网络导入。
-5. 发现页可浏览各分类；搜索、详情、目录、正文均走 JSON API。
+**阅读入口只有 Legado**，本服务只提供 JSON API。
 
-注意：书源 JSON 根节点必须是**数组** `[{...}]`（Legado 导入要求），且 `ruleSearch` / `ruleExplore` / `ruleBookInfo` 需含 `bookUrl` 映射（换源依赖）。
+| Legado 功能 | 本服务 API |
+|-------------|------------|
+| 发现 / 分类 | `GET /api/legado/explore/{分类}?page=` |
+| 搜索 | `GET /api/legado/search?q=&page=` |
+| 书籍详情 | `GET /api/legado/book/{id}` |
+| 目录 | `GET /api/legado/toc/{id}` |
+| 正文 | `GET /api/legado/content/{book_id}/{chapter_id}` |
+| 书源文件 | `GET /api/legado/book-source` 或 `/legado_book_source.json` |
 
-示例响应字段（JsonPath 规则已匹配）：
+公开 JSON（供调试/其它客户端）：
 
-- 探索/搜索：`$.books[].name/author/book_url/cover_url/intro/toc_url`
-- 详情：`$.name/author/book_url/cover_url/intro/toc_url`
-- 目录：`$.chapters[].name/content_url`
-- 正文：`$.content`
+| 方法 | 路径 |
+|------|------|
+| GET | `/api/categories` |
+| GET | `/api/books`（`source` `category` `q` `status` `sort` `page`） |
+| GET | `/api/search?q=` |
+| GET | `/api/books/{id}` |
+| GET | `/api/books/{id}/chapters` |
+| GET | `/api/books/{id}/chapters/{chapter_id}` |
 
-## 部署
+---
 
-### 方式 A：Docker（推荐 NAS）
+## 管理后台（`/admin`）
 
-```bash
-# 编辑 docker-compose.yml 中的 PUBLIC_BASE_URL
-docker compose up -d --build
+1. 首次打开创建用户名/密码，**保存恢复码**
+2. **书库**：书源行 + 分类行筛选、封面墙、点卡片编辑
+3. **编辑**：书源 / 分类两级下拉、刮削、封面、删除
+4. **导入**：扫描本地 `NOVELS_DIR`
+5. **体检**：重复合并、损坏修复、一键刮削、按分类归位
+6. **备份**：WebDAV 配置、立即/自动备份、还原
+7. **API / 书源**：查看接口、复制 Legado JSON
 
-# 导入（容器内）
-docker compose exec novel-server python import_novels.py
+忘记密码：登录页「忘记密码」+ 恢复码，或容器内 `python reset_auth.py`。
+
+---
+
+## 目录与数据
+
+```text
+novel-server/
+├── app/                 # FastAPI 应用
+├── index.html admin.css admin.js admin.ui.js
+├── import_novels.py     # CLI 导入
+├── run.py
+├── legado_book_source.json
+├── Dockerfile docker-compose.yml
+├── novels/              # 源 TXT（按 书源/分类 子目录）
+├── data/                # novels.db、auth.json、backup_config.json
+└── covers/              # 封面
 ```
 
-### 方式 B：systemd（Linux 主机）
+**books 表**：title / author / category（`起点-都市` 形式）/ intro / status / tags / cover_file / source_path / source_hash / word_count / chapter_count / latest_chapter / source / source_id / created_at / updated_at  
 
-```bash
-sudo useradd -r -s /usr/sbin/nologin novel || true
-sudo mkdir -p /opt/novel-server
-sudo rsync -a ./ /opt/novel-server/
-cd /opt/novel-server
-sudo python3 -m venv .venv
-sudo .venv/bin/pip install -r requirements.txt
+**chapters 表**：book_id / index / title / content
 
-cat | sudo tee /opt/novel-server/.env <<'EOF'
-PUBLIC_BASE_URL=http://192.168.1.100:8000
-HOST=0.0.0.0
-PORT=8000
-NOVELS_DIR=/opt/novel-server/novels
-DATABASE_PATH=/opt/novel-server/data/novels.db
-COVERS_DIR=/opt/novel-server/covers
-EOF
-sudo chown -R novel:novel /opt/novel-server
-sudo cp deploy/novel-server.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now novel-server
-sudo -u novel /opt/novel-server/.venv/bin/python /opt/novel-server/import_novels.py
-```
+---
 
-### 局域网与内网穿透
+## WebDAV 备份
 
-- 局域网：手机访问 `http://<服务器IP>:8000`，书源 `bookSourceUrl` 同此。
-- 防火墙放行 TCP 8000。
-- 外网访问（可选）：frp / Cloudflare Tunnel / Tailscale 等，将 `PUBLIC_BASE_URL` 改为穿透后的 HTTPS 地址；Legado 若走外网建议再加反向代理 Basic Auth，并在书源 `header` 中带认证信息。
+管理后台 →「备份」：
 
-## WebDAV 备份与还原
+1. 填 WebDAV 地址、账号、远程目录  
+2. 测试连接 → 保存  
+3. 立即备份 / 勾选自动备份  
 
-管理后台 →「备份」页配置：
+备份内容：`novels.db` + `covers/` + manifest（不含 `novels/` 源 TXT）。  
+密码加密存于 `data/backup_config.json`，接口不回传明文。
 
-1. **WebDAV 地址**：如 `https://dav.example.com/dav/`（坚果云 / Nextcloud / NAS 均可）
-2. **账号 / 密码**、**远程目录**（默认 `novel-server-backups`）
-3. **测试连接** → **保存配置**
-4. **立即备份**：打包 `novels.db` + `covers/` 为 zip 上传，并写 `latest.json`
-5. **自动备份**：勾选后按「间隔小时」在服务运行时自动备份；按「保留份数」滚动删除旧包
+---
 
-**还原**：在备份列表点「还原」，会下载对应 zip，覆盖本地数据库与封面（不覆盖 `novels/` 源 TXT）。
+## 维护
 
-说明：
-- 备份密码存于服务器 `data/backup_config.json`（接口不回传明文），请妥善保护该文件
-- 还原会重建 SQLite 连接；还原完成后建议刷新管理后台
-- 本地也会在 `data/backups/` 留一份最近打包文件
-
-## 管理后台
-
-1. 打开 `/admin`，**首次使用创建用户名/密码**（请保存恢复码）。
-2. 书库：封面墙/列表、搜索筛选、点击卡片编辑元数据、上传封面、删除。
-3. 导入：一键扫描 `NOVELS_DIR`，查看新增/更新/跳过/失败日志。
-4. 备份：WebDAV 配置、立即/自动备份、列表还原。
-5. API / 书源：查看接口与复制 Legado JSON。
-
-## 维护建议
-
-- 源 TXT 只增不改时，重复导入几乎无开销（SHA256 跳过）。
-- 备份：打包 `data/` + `covers/` 即可；`novels/` 另存；或直接用 WebDAV 备份功能。
-- 升级：拉代码 → `pip install -r requirements.txt` → 重启服务。
-- 不要把真实密码、恢复码或 WebDAV 密码提交到仓库。
-- 忘记密码：登录页「忘记密码」+ 恢复码；或服务器 `python reset_auth.py`。
+- 源 TXT 内容未变时重复导入几乎无开销（SHA256 跳过）
+- 升级：重新 `docker compose build && up -d`，卷数据保留
+- 勿将密码、恢复码、WebDAV 密码提交进仓库
+- 一次性补丁脚本在 `scripts/_archive/`，日常无需执行
 
 ## License
 

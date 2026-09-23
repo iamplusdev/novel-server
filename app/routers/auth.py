@@ -106,7 +106,7 @@ def auth_forgot(payload: ForgotIn, response: Response, request: Request) -> dict
     )
     auth_mod.check_login_allowed(key)
     try:
-        auth_mod.reset_with_recovery(
+        new_code = auth_mod.reset_with_recovery(
             payload.recovery_code,
             payload.username or "",
             payload.new_password,
@@ -115,7 +115,6 @@ def auth_forgot(payload: ForgotIn, response: Response, request: Request) -> dict
         auth_mod.note_login_failure(key)
         raise
     auth_mod.note_login_success(key)
-    new_code = auth_mod.get_new_recovery_code()
     data = auth_mod.load_auth()
     session = auth_mod.login(data["username"], payload.new_password)
     auth_mod.set_session_cookie(response, session["token"])
