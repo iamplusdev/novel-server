@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>爱小说 · 管理后台</title>
-  <link rel="stylesheet" href="/admin.css" />
+  <link rel="stylesheet" href="/admin.css?v=1790128895" />
 </head>
 <body>
 <div id="login" class="login-wrap">
@@ -13,7 +13,7 @@
         <span class="brand-mark">爱</span>
         <div>
           <h1>爱小说</h1>
-          <p class="muted" id="auth-subtitle">管理后台 · 账号登录</p>
+          <p class="muted" id="auth-subtitle">首次使用 · 请创建管理账号</p>
         </div>
       </div>
 
@@ -26,7 +26,7 @@
           <span>密码</span>
           <input id="login-pass" class="input" type="password" autocomplete="current-password" placeholder="密码" />
         </label>
-        <button id="login-btn" class="btn btn-primary btn-block">登录</button>
+        <button type="button" id="login-btn" class="btn btn-primary btn-block">登录</button>
         <div class="auth-links">
           <button type="button" class="link-btn" id="show-forgot">忘记密码</button>
         </div>
@@ -46,7 +46,7 @@
           <span>确认密码</span>
           <input id="setup-pass2" class="input" type="password" autocomplete="new-password" />
         </label>
-        <button id="setup-btn" class="btn btn-primary btn-block">创建账号并进入</button>
+        <button type="button" id="setup-btn" class="btn btn-primary btn-block">创建账号并进入</button>
       </div>
 
       <div id="auth-forgot" hidden>
@@ -63,7 +63,7 @@
           <span>新密码（至少 6 位）</span>
           <input id="forgot-pass" class="input" type="password" autocomplete="new-password" />
         </label>
-        <button id="forgot-btn" class="btn btn-primary btn-block">重设并登录</button>
+        <button type="button" id="forgot-btn" class="btn btn-primary btn-block">重设并登录</button>
         <div class="auth-links">
           <button type="button" class="link-btn" id="show-login">返回登录</button>
         </div>
@@ -73,8 +73,8 @@
         <p class="hint" style="margin:0 0 8px;color:var(--danger)">请立即保存恢复码，离开本页面后无法再次查看！</p>
         <div class="recovery-box mono" id="recovery-code"></div>
         <div class="row">
-          <button id="copy-recovery" class="btn btn-ghost">复制恢复码</button>
-          <button id="recovery-done" class="btn btn-primary">我已保存，进入后台</button>
+          <button type="button" id="copy-recovery" class="btn btn-ghost">复制恢复码</button>
+          <button type="button" id="recovery-done" class="btn btn-primary">我已保存，进入后台</button>
         </div>
       </div>
 
@@ -93,27 +93,16 @@
         </div>
       </div>
       <nav class="nav">
-        <button class="nav-item active" data-view="library">书库</button>
-        <button class="nav-item" data-view="import">导入</button>
-        <button class="nav-item" data-view="check">体检</button>
-        <button class="nav-item" data-view="backup">备份</button>
-        <button class="nav-item" data-view="api">API / 书源</button>
+        <button type="button" class="nav-item active" data-view="library">书库</button>
+        <button type="button" class="nav-item" data-view="import">导入</button>
+        <button type="button" class="nav-item" data-view="check">体检</button>
+        <button type="button" class="nav-item" data-view="backup">备份</button>
+        <button type="button" class="nav-item" data-view="api">API / 书源</button>
+        <button type="button" class="nav-item" data-view="settings">设置</button>
       </nav>
-      <div class="stats" id="stats-box">
-        <div class="stat"><span class="stat-n" id="stat-books">0</span><span class="stat-l">书籍</span></div>
-        <div class="stat"><span class="stat-n" id="stat-words">0</span><span class="stat-l">字数</span></div>
-      </div>
+      
       <div class="side-foot">
-        <label class="field field-tight">
-          <span>主题</span>
-          <select id="theme-select" class="input select" title="界面主题">
-            <option value="auto">跟随系统</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
-          </select>
-        </label>
-        <button id="change-pass-btn" class="btn btn-ghost btn-sm">修改密码</button>
-        <button id="logout-btn" class="btn btn-ghost btn-sm">退出登录</button>
+        
       </div>
     </aside>
 
@@ -125,7 +114,7 @@
             <h2>书库</h2>
             <span class="pill" id="lib-count">0</span>
           </div>
-          <div class="toolbar-right">
+          <div class="toolbar-right tools">
             <input id="search-input" class="input" type="search" placeholder="搜索书名 / 作者 / 标签…" />
             <select id="sort-select" class="input select" title="排序">
               <option value="updated">导入/更新时间</option>
@@ -141,8 +130,8 @@
             <label class="size-ctrl" title="封面墙卡片大小">
               <span class="muted tiny">大小</span>
               <input id="grid-size" type="range" min="110" max="240" step="10" value="150" />
+              <input id="list-size" type="range" min="160" max="360" step="10" value="220" hidden />
             </label>
-            <button id="refresh-btn" class="btn btn-ghost">刷新</button>
           </div>
         </header>
 
@@ -151,9 +140,9 @@
         <div id="grid-wrap" class="book-grid"></div>
         <div id="list-wrap" class="book-list" hidden></div>
         <div class="pager">
-          <button id="prev-page" class="btn btn-ghost btn-sm">上一页</button>
+          <button type="button" id="prev-page" class="btn btn-ghost btn-sm">上一页</button>
           <span id="page-label" class="muted">1 / 1</span>
-          <button id="next-page" class="btn btn-ghost btn-sm">下一页</button>
+          <button type="button" id="next-page" class="btn btn-ghost btn-sm">下一页</button>
         </div>
       </section>
 
@@ -161,10 +150,10 @@
       <section id="view-import" class="view" hidden>
         <header class="toolbar">
           <div class="toolbar-left"><h2>导入 TXT</h2></div>
-          <div class="toolbar-right">
-            <button id="import-btn" class="btn btn-ghost">导入本地 novels</button>
-            <button id="import-webdav-btn" class="btn btn-primary">从 WebDAV books 导入</button>
-            <button id="import-refresh" class="btn btn-ghost">刷新状态</button>
+          <div class="toolbar-right tools">
+            <button type="button" id="import-btn" class="btn btn-ghost">导入本地 novels</button>
+            <button type="button" id="import-webdav-btn" class="btn btn-primary">从 WebDAV books 导入</button>
+            <button type="button" id="import-refresh" class="btn btn-ghost">刷新状态</button>
           </div>
         </header>
         <div class="panel">
@@ -189,9 +178,9 @@
             <h2>书库体检</h2>
             <span class="pill" id="check-summary">未检查</span>
           </div>
-          <div class="toolbar-right">
-            <button id="check-scan" class="btn btn-primary">重新扫描</button>
-            <button id="check-repair-all" class="btn btn-ghost">修复全部问题</button>
+          <div class="toolbar-right tools">
+            <button type="button" id="check-scan" class="btn btn-primary">重新扫描</button>
+            <button type="button" id="check-repair-all" class="btn btn-ghost">修复全部问题</button>
           </div>
         </header>
 
@@ -213,9 +202,9 @@
             默认只处理尚未刮削的书；建议先「预览匹配」再「开始写入」。每本间隔约 0.6s，降低风控。
           </p>
           <div class="row">
-            <button id="batch-scrape-preview" class="btn btn-ghost">预览匹配</button>
-            <button id="batch-scrape-run" class="btn btn-primary">开始一键刮削</button>
-            <button id="batch-scrape-status" class="btn btn-ghost">刷新进度</button>
+            <button type="button" id="batch-scrape-preview" class="btn btn-ghost">预览匹配</button>
+            <button type="button" id="batch-scrape-run" class="btn btn-primary">开始一键刮削</button>
+            <button type="button" id="batch-scrape-status" class="btn btn-ghost">刷新进度</button>
             
             <label class="check-row" style="margin:0">
               <input id="batch-only-missing" type="checkbox" checked />
@@ -237,9 +226,9 @@
             <h2>WebDAV 备份</h2>
             <span class="pill" id="backup-auto-pill">未启用自动</span>
           </div>
-          <div class="toolbar-right">
-            <button id="backup-run" class="btn btn-primary">立即备份</button>
-            <button id="backup-list-refresh" class="btn btn-ghost">刷新列表</button>
+          <div class="toolbar-right tools">
+            <button type="button" id="backup-run" class="btn btn-primary">立即备份</button>
+            <button type="button" id="backup-list-refresh" class="btn btn-ghost">刷新列表</button>
           </div>
         </header>
 
@@ -273,8 +262,8 @@
             <span>启用自动备份（服务运行时按间隔检查）</span>
           </label>
           <div class="row">
-            <button id="dav-save" class="btn btn-primary">保存配置</button>
-            <button id="dav-test" class="btn btn-ghost">测试连接</button>
+            <button type="button" id="dav-save" class="btn btn-primary">保存配置</button>
+            <button type="button" id="dav-test" class="btn btn-ghost">测试连接</button>
           </div>
           <p class="muted tiny">备份内容：SQLite 数据库 + covers 封面 + manifest。不打包 novels/ 源 TXT。密码保存在服务器 <code>data/backup_config.json</code>，接口不会回传明文。</p>
         </div>
@@ -333,9 +322,34 @@
           <p class="muted">下载后在开源阅读 Legado → 我的 → 书源管理 → 本地导入。若开启了全局鉴权，可在 header 中加入 Bearer Token。</p>
           <div class="row">
             <a class="btn btn-primary" href="/legado_book_source.json" download>下载书源 JSON</a>
-            <button id="copy-source" class="btn btn-ghost">复制书源 JSON</button>
+            <button type="button" id="copy-source" class="btn btn-ghost">复制书源 JSON</button>
           </div>
           <pre id="source-preview" class="log"></pre>
+        </div>
+      </section>
+
+      <!-- 设置 -->
+      <section id="view-settings" class="view" hidden>
+        <header class="toolbar">
+          <div class="toolbar-left"><h2>设置</h2></div>
+        </header>
+        <div class="panel card">
+          <div class="panel-title">外观</div>
+          <label class="field">
+            <span>主题</span>
+            <select id="theme-select" class="input select">
+              <option value="auto">跟随系统</option>
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </label>
+        </div>
+        <div class="panel card">
+          <div class="panel-title">账号</div>
+          <div class="row">
+            <button type="button" id="change-pass-btn" class="btn btn-primary">修改密码</button>
+            <button type="button" id="logout-btn" class="btn btn-ghost">退出登录</button>
+          </div>
         </div>
       </section>
     </main>
@@ -347,7 +361,7 @@
     <div id="drawer-resize" class="drawer-resize" title="拖动调整宽度"></div>
     <header class="drawer-head">
       <h3 id="drawer-title">编辑书籍</h3>
-      <button id="drawer-close" class="icon-btn" aria-label="关闭">✕</button>
+      <button type="button" id="drawer-close" class="icon-btn" aria-label="关闭">✕</button>
     </header>
     <div class="drawer-body">
       <input type="hidden" id="edit-id" />
@@ -385,10 +399,10 @@
       <div class="muted tiny" id="edit-meta"></div>
     </div>
     <footer class="drawer-foot">
-      <button id="delete-btn" class="btn btn-danger">删除书籍</button>
+      <button type="button" id="delete-btn" class="btn btn-danger">删除书籍</button>
       <div class="spacer"></div>
-      <button id="cancel-btn" class="btn btn-ghost">取消</button>
-      <button id="save-btn" class="btn btn-primary">保存</button>
+      <button type="button" id="cancel-btn" class="btn btn-ghost">取消</button>
+      <button type="button" id="save-btn" class="btn btn-primary">保存</button>
     </footer>
   </aside>
 
@@ -398,7 +412,7 @@
   <div id="pw-modal" class="modal" hidden>
     <header class="drawer-head">
       <h3>修改密码</h3>
-      <button id="pw-close" class="icon-btn" aria-label="关闭">✕</button>
+      <button type="button" id="pw-close" class="icon-btn" aria-label="关闭">✕</button>
     </header>
     <div class="drawer-body">
       <label class="field"><span>当前密码</span>
@@ -414,8 +428,8 @@
     </div>
     <footer class="drawer-foot">
       <div class="spacer"></div>
-      <button id="pw-cancel" class="btn btn-ghost">取消</button>
-      <button id="pw-save" class="btn btn-primary">保存</button>
+      <button type="button" id="pw-cancel" class="btn btn-ghost">取消</button>
+      <button type="button" id="pw-save" class="btn btn-primary">保存</button>
     </footer>
   </div>
 
@@ -424,7 +438,7 @@
   <div id="scrape-modal" class="modal modal-lg" hidden>
     <header class="drawer-head">
       <h3>刮削元数据</h3>
-      <button id="scrape-close" class="icon-btn" aria-label="关闭">✕</button>
+      <button type="button" id="scrape-close" class="icon-btn" aria-label="关闭">✕</button>
     </header>
     <div class="drawer-body">
       <div class="row" style="margin:0 0 10px">
@@ -433,7 +447,7 @@
           <option value="qidian">起点</option>
           <option value="fanqie">番茄</option>
         </select>
-        <button id="scrape-search-btn" class="btn btn-primary">搜索</button>
+        <button type="button" id="scrape-search-btn" class="btn btn-primary">搜索</button>
       </div>
       <div class="muted tiny" id="scrape-tip" style="margin-bottom:8px">
         将把结果写入当前编辑中的书籍。多条结果时请核对书名/作者后再点「采用」。
@@ -443,7 +457,7 @@
     </div>
     <footer class="drawer-foot">
       <div class="spacer"></div>
-      <button id="scrape-cancel" class="btn btn-ghost">关闭</button>
+      <button type="button" id="scrape-cancel" class="btn btn-ghost">关闭</button>
     </footer>
   </div>
 
@@ -456,12 +470,26 @@
     <div class="drawer-body" id="scrape-confirm-body"></div>
     <footer class="drawer-foot">
       <div class="spacer"></div>
-      <button id="scrape-confirm-no" class="btn btn-ghost">取消</button>
-      <button id="scrape-confirm-yes" class="btn btn-primary">写入数据库</button>
+      <button type="button" id="scrape-confirm-no" class="btn btn-ghost">取消</button>
+      <button type="button" id="scrape-confirm-yes" class="btn btn-primary">写入数据库</button>
     </footer>
   </div>
 
-  <script src="/admin.js"></script>
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  <script src="/admin.js?v=1790128895"></script>
   <script>
     (function () {
       function wipe() {

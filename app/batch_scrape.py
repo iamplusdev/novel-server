@@ -51,15 +51,11 @@ def _search_keyword(title: str) -> str:
 
 
 def _author_from_title_field(title: str, fallback: str) -> str:
+    # 从书名里的「作者：xxx」提取作者，否则回退本地作者
     m = re.search(r"作者\s*[：:]\s*([^\s》）)]+)", title or "")
     if m:
         return m.group(1).strip()
     return fallback or ""
-    s = (s or "").strip()
-    s = re.sub(r"[《》〈〉\[\]【】()（）]", "", s)
-    s = re.sub(r"(校对版全本|全本|精校版|修订版)$", "", s)
-    s = re.sub(r"\s+", "", s)
-    return s.lower()
 
 
 def _norm_name(s: str) -> str:

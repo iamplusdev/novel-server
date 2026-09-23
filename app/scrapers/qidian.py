@@ -6,13 +6,12 @@
 """
 from __future__ import annotations
 
-import gzip
 import html as html_lib
 import re
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
+
+from .http_util import HttpError, http_get, http_get_bytes
 
 UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
@@ -119,31 +118,19 @@ def extract_detail_tags(page: str) -> list[str]:
 
 
 def _http_get(url: str) -> str:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Accept-Encoding": "gzip",
-            "Referer": "https://m.qidian.com/",
-        },
-        method="GET",
-    )
+    """统一走 http_util：默认直连，避免本地代理未启动导致批量失败。"""
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            raw = resp.read()
-            if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
-                try:
-                    raw = gzip.decompress(raw)
-                except OSError:
-                    pass
-            charset = resp.headers.get_content_charset() or "utf-8"
-            return raw.decode(charset, errors="replace")
-    except urllib.error.HTTPError as e:
-        raise ScrapeError(f"起点请求失败 HTTP {e.code}") from e
-    except urllib.error.URLError as e:
-        raise ScrapeError(f"起点连接失败: {e.reason}") from e
+        return http_get(
+            url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+                "Referer": "https://m.qidian.com/",
+            },
+            timeout=TIMEOUT,
+        )
+    except HttpError as e:
+        # 保留「起点」语义，便于批处理日志识别
+        raise ScrapeError(f"起点{e}") from e
 
 
 def _clean(s: str | None) -> str:
@@ -528,14 +515,11 @@ def download_cover(url: str, dest) -> str:
         raise ScrapeError("没有封面地址")
     if url.startswith("//"):
         url = "https:" + url
-    req = urllib.request.Request(
-        url, headers={"User-Agent": UA, "Referer": "https://m.qidian.com/"}
-    )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            data = resp.read()
-            ctype = (resp.headers.get("Content-Type") or "").lower()
-    except Exception as exc:  # noqa: BLE001
+        data, ctype = http_get_bytes(
+            url, headers={"Referer": "https://m.qidian.com/"}, timeout=TIMEOUT
+        )
+    except HttpError as exc:
         raise ScrapeError(f"封面下载失败: {exc}") from exc
     if "png" in ctype:
         ext = ".png"

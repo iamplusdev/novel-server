@@ -10,7 +10,7 @@ import urllib.request
 
 BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
 USERNAME = os.environ.get("ADMIN_USER", "admin")
-PASSWORD = os.environ.get("ADMIN_PASS", "test-pass-12345")
+PASSWORD = os.environ.get("ADMIN_PASS", "admin123")
 
 
 def api(path: str, method: str = "GET", data: dict | None = None, token: str | None = None):

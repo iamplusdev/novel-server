@@ -1,13 +1,18 @@
-"""极简 WebDAV 客户端（仅标准库 urllib + ElementTree）。"""
+"""极简 WebDAV 客户端（仅标准库 urllib + ElementTree）。
+
+网络策略：默认直连，避免本地系统代理（Clash 等）未启动导致备份失败。
+如需走代理，设置环境变量 WEBDAV_PROXY，例如 http://127.0.0.1:7890。
+"""
 from __future__ import annotations
 
 import base64
+import os
 import posixpath
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 DAV_NS = "d"
 PROPFIND_BODY = """<?xml version="1.0" encoding="utf-8"?>
@@ -33,6 +38,15 @@ class DavItem:
 
 class WebDAVError(Exception):
     pass
+
+
+def _build_opener():
+    """默认直连；仅当设置了 WEBDAV_PROXY 时才走指定代理。"""
+    proxy = (os.environ.get("WEBDAV_PROXY") or "").strip()
+    if proxy:
+        return build_opener(ProxyHandler({"http": proxy, "https": proxy}))
+    # 显式空代理 = 直连，不继承系统代理
+    return build_opener(ProxyHandler({}))
 
 
 class WebDAVClient:
@@ -71,7 +85,7 @@ class WebDAVClient:
             hdrs.update(headers)
         req = Request(url, data=data, headers=hdrs, method=method)
         try:
-            with urlopen(req, timeout=timeout or self.timeout) as resp:
+            with _build_opener().open(req, timeout=timeout or self.timeout) as resp:
                 body = resp.read()
                 resp_headers = {k.lower(): v for k, v in resp.headers.items()}
                 return resp.status, body, resp_headers

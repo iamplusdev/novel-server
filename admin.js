@@ -88,16 +88,14 @@
     baseUrlLabel: $("base-url-label"),
     apiBase: $("api-base"),
     novelsPath: $("novels-path"),
-    statBooks: $("stat-books"),
-    statWords: $("stat-words"),
     libCount: $("lib-count"),
     searchInput: $("search-input"),
     categoryBar: $("category-bar"),
     sortSelect: $("sort-select"),
     viewMode: $("view-mode"),
     gridSize: $("grid-size"),
+    listSize: $("list-size"),
     themeSelect: $("theme-select"),
-    refreshBtn: $("refresh-btn"),
     gridWrap: $("grid-wrap"),
     listWrap: $("list-wrap"),
     prevPage: $("prev-page"),
@@ -134,7 +132,6 @@
     batchScrapeStatus: $("batch-scrape-status"),
     batchOnlyMissing: $("batch-only-missing"),
     batchMinScore: $("batch-min-score"),
-    batchSource: $("batch-source"),
     batchScrapeLog: $("batch-scrape-log"),
     drawer: $("drawer"),
     drawerMask: $("drawer-mask"),
@@ -179,6 +176,10 @@
     "游戏", "体育", "科幻", "诸天无限", "悬疑灵异", "轻小说", "短篇", "未分类",
   ];
 
+  function setText(el, val) {
+    if (el) el.textContent = val;
+  }
+
   function toast(msg, type) {
     els.toast.textContent = msg;
     els.toast.hidden = false;
@@ -203,6 +204,13 @@
     if (els.gridSize) els.gridSize.value = String(n);
     if (els.gridWrap) els.gridWrap.style.setProperty("--cover-w", n + "px");
     localStorage.setItem(GRID_SIZE_KEY, String(n));
+  }
+
+  function applyListSize(px) {
+    const n = Math.min(360, Math.max(160, Number(px) || 220));
+    if (els.listSize) els.listSize.value = String(n);
+    if (els.listWrap) els.listWrap.style.setProperty("--list-w", n + "px");
+    localStorage.setItem("novel_list_size", String(n));
   }
 
   function applyDrawerWidth(px) {
@@ -258,9 +266,11 @@
       opts.body = JSON.stringify(opts.body);
     }
     const res = await fetch(path, opts);
-    if (res.status === 401) {
+    const isAuthPath = String(path).indexOf("/api/auth/") === 0;
+    // 仅 /me 失效才登出，避免书库等接口 401 把用户踢回登录页
+    if (res.status === 401 && !options?.skipAuth && String(path) === "/api/auth/me") {
       logout(false);
-      throw new Error("Token 无效或已过期");
+      throw new Error("登录已失效，请重新登录");
     }
     let data = null;
     const text = await res.text();
@@ -278,11 +288,16 @@
   }
 
   function showApp() {
-    els.login.hidden = true;
-    els.app.hidden = false;
-    els.viewMode.value = state.viewMode;
-    if (els.sortSelect) els.sortSelect.value = state.sort || "updated";
-    renderCategoryBar();
+    try {
+      if (els.login) els.login.hidden = true;
+      if (els.app) els.app.hidden = false;
+      if (els.viewMode) els.viewMode.value = state.viewMode;
+      if (els.sortSelect) els.sortSelect.value = state.sort || "updated";
+      if (els.categoryBar) renderCategoryBar();
+    } catch (e) {
+      if (els.login) els.login.hidden = true;
+      if (els.app) els.app.hidden = false;
+    }
   }
 
   function showAuthPane(name) {
@@ -297,19 +312,19 @@
     });
     els.loginError.hidden = true;
     if (name === "setup") {
-      els.authSubtitle.textContent = "首次使用 · 创建管理账号";
+      setText(els.authSubtitle, "首次使用 · 创建管理账号");
     } else if (name === "forgot") {
-      els.authSubtitle.textContent = "忘记密码 · 恢复码重设";
+      setText(els.authSubtitle, "忘记密码 · 恢复码重设");
     } else if (name === "recovery") {
-      els.authSubtitle.textContent = "保存恢复码";
+      setText(els.authSubtitle, "保存恢复码");
     } else {
-      els.authSubtitle.textContent = "管理后台 · 账号登录";
+      setText(els.authSubtitle, "管理后台 · 账号登录");
     }
   }
 
   function authError(msg) {
     els.loginError.hidden = false;
-    els.loginError.textContent = msg || "操作失败";
+    setText(els.loginError, msg || "操作失败");
   }
 
   function saveSession(payload) {
@@ -330,19 +345,20 @@
     if (st.setup_required) {
       showLogin();
       showAuthPane("setup");
+      if (els.authSubtitle) setText(els.authSubtitle, "首次使用 · 请创建管理账号");
       return;
     }
     // 已有本地会话则尝试 /me
-    if (state.token) {
-      try {
-        const me = await api("/api/auth/me");
+    try {
+      const me = await api("/api/auth/me", { skipAuth: false });
+      if (me && me.username) {
         state.username = me.username;
-        await afterLogin();
+        showApp();
+        try { await afterLogin(); } catch (e) { toast(e.message || "加载数据失败", "err"); }
         return;
-      } catch (_) {
-        state.token = "";
-        localStorage.removeItem(TOKEN_KEY);
       }
+    } catch (_) {
+      /* cookie/token 都无效则停在登录页 */
     }
     showLogin();
     showAuthPane("login");
@@ -361,31 +377,46 @@
   }
 
   async function login() {
-    const username = els.loginUser.value.trim();
-    const password = els.loginPass.value;
+    try {
+    const username = (els.loginUser && els.loginUser.value || "").trim();
+    const password = (els.loginPass && els.loginPass.value) || "";
     if (!username || !password) {
       authError("请输入用户名和密码");
       return;
     }
     els.loginError.hidden = true;
     try {
+      state.token = "";
+      localStorage.removeItem(TOKEN_KEY);
       const res = await api("/api/auth/login", {
         method: "POST",
+        skipAuth: true,
         body: { username: username, password: password },
       });
       saveSession(res);
       state.username = res.username;
-      els.loginPass.value = "";
-      await afterLogin();
+      if (els.loginPass) els.loginPass.value = "";
+      showApp();
+      try { await afterLogin(); } catch (e) { toast(e.message || '加载数据失败', 'err'); }
     } catch (err) {
-      authError(err.message || "登录失败");
+      const msg = (err && err.message) || "登录失败";
+      if (String(msg).indexOf("尚未设置") >= 0 || String(msg).indexOf("创建") >= 0) {
+        showAuthPane("setup");
+        authError("首次使用请先创建账号（下方表单）");
+      } else {
+        authError(msg);
+      }
+    }
+    } catch (e) {
+      authError(e.message || "登录失败");
     }
   }
 
   async function setupAccount() {
-    const username = els.setupUser.value.trim();
-    const password = els.setupPass.value;
-    const password2 = els.setupPass2.value;
+    try {
+    const username = (els.setupUser && els.setupUser.value || "").trim();
+    const password = (els.setupPass && els.setupPass.value) || "";
+    const password2 = (els.setupPass2 && els.setupPass2.value) || "";
     if (!username) return authError("请填写用户名");
     if (!password || password.length < 6) return authError("密码至少 6 位");
     if (password !== password2) return authError("两次密码不一致");
@@ -405,6 +436,9 @@
       }
     } catch (err) {
       authError(err.message || "创建失败");
+    }
+    } catch (e) {
+      authError(e.message || "创建失败");
     }
   }
 
@@ -511,10 +545,9 @@
   async function loadStats() {
     const data = await api("/api/admin/stats");
     state.stats = data;
-    els.statBooks.textContent = data.total_books ?? 0;
-    els.statWords.textContent = fmtWords(data.total_words);
-    els.baseUrlLabel.textContent = data.public_base_url || location.origin;
-    els.apiBase.textContent = data.public_base_url || location.origin;
+    // 统计卡片 DOM 已移除，这里只保留会话内状态
+    setText(els.baseUrlLabel, data.public_base_url || location.origin);
+    setText(els.apiBase, data.public_base_url || location.origin);
     fillCategorySelects(data.categories);
     renderCategoryBar();
     renderImportLog(data.import);
@@ -570,10 +603,10 @@
     const data = await api("/api/admin/books?" + currentQuery());
     state.items = data.items || [];
     state.total = data.total || 0;
-    els.libCount.textContent = String(state.total);
+    setText(els.libCount, String(state.total));
     const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
     if (state.page > pages) state.page = pages;
-    els.pageLabel.textContent = state.page + " / " + pages;
+    setText(els.pageLabel, state.page + " / " + pages);
     els.prevPage.disabled = state.page <= 1;
     els.nextPage.disabled = state.page >= pages;
     renderLibrary();
@@ -592,6 +625,9 @@
 
   function renderLibrary() {
     const grid = state.viewMode === "grid";
+    // 封面墙/列表共用同一套大小滑条显隐
+    if (els.gridSize) els.gridSize.hidden = !grid;
+    if (els.listSize) els.listSize.hidden = grid;
     els.gridWrap.hidden = !grid;
     els.listWrap.hidden = grid;
     const emptyText = "暂无书籍，请到「导入」页导入 TXT。";
@@ -602,8 +638,9 @@
         return;
       }
       els.gridWrap.innerHTML = state.items.map((b) => {
-        const cover = b.cover_url
-          ? `<img src="${escapeAttr(b.cover_url)}" alt="" loading="lazy" />`
+        const coverSrc = b.cover_path || b.cover_url;
+        const cover = coverSrc
+          ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" />`
           : `<div class="placeholder">${escapeHtml(b.name)}</div>`;
         return `
           <article class="book-card" data-id="${b.id}">
@@ -611,9 +648,6 @@
             <div class="book-meta">
               <div class="book-name" title="${escapeAttr(b.name)}">${escapeHtml(b.name)}</div>
               <div class="book-sub">
-                <span class="chip cat">${escapeHtml(b.category || "—")}</span>
-                ${statusChip(b.status)}
-                ${sourceChip(b.source)}
                 <span>${escapeHtml(b.author || "佚名")}</span>
               </div>
             </div>
@@ -622,47 +656,31 @@
       els.gridWrap.querySelectorAll(".book-card").forEach((card) => {
         card.addEventListener("click", () => openDrawer(Number(card.dataset.id)));
       });
-    } else {
-      if (!state.items.length) {
-        els.listWrap.innerHTML = '<div class="muted" style="padding:32px;text-align:center">' + emptyText + "</div>";
-        return;
-      }
-      els.listWrap.innerHTML = state.items.map((b) => {
-        const cover = b.cover_url
-          ? `<img src="${escapeAttr(b.cover_url)}" alt="" loading="lazy" />`
-          : `<div class="placeholder">${escapeHtml((b.name || "").slice(0, 6))}</div>`;
-        const intro = b.intro ? escapeHtml(b.intro) : "暂无简介";
-        return `
-          <article class="book-row" data-id="${b.id}">
-            <div class="row-cover">${cover}</div>
-            <div class="row-body">
-              <div class="row-title" title="${escapeAttr(b.name)}">${escapeHtml(b.name)}</div>
-              <div class="row-meta">
-                <span class="chip cat">${escapeHtml(b.category || "—")}</span>
-                ${statusChip(b.status)}
-                ${sourceChip(b.source)}
-                <span>${escapeHtml(b.author || "佚名")}</span>
-                ${(b.tags || []).slice(0, 4).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join("")}
-              </div>
-              <div class="row-intro">${intro}</div>
-            </div>
-            <div class="row-side">
-              <span>${fmtWords(b.word_count)}字</span>
-              <span>${b.chapter_count ?? 0} 章</span>
-              <button class="btn btn-ghost btn-sm" data-edit="${b.id}">编辑</button>
-            </div>
-          </article>`;
-      }).join("");
-      els.listWrap.querySelectorAll(".book-row").forEach((row) => {
-        row.addEventListener("click", () => openDrawer(Number(row.dataset.id)));
-      });
-      els.listWrap.querySelectorAll("[data-edit]").forEach((btn) => {
-        btn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          openDrawer(Number(btn.dataset.edit));
-        });
-      });
+      return;
     }
+
+    // 列表模式：有数据才渲染卡片，空列表给提示
+    if (!state.items.length) {
+      els.listWrap.innerHTML = '<div class="muted" style="padding:32px;text-align:center">' + emptyText + "</div>";
+      return;
+    }
+    els.listWrap.innerHTML = state.items.map((b) => {
+      const coverSrc = b.cover_path || b.cover_url;
+      const cover = coverSrc
+        ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" />`
+        : `<div class="placeholder">${escapeHtml((b.name || "").slice(0, 6))}</div>`;
+      return `
+        <article class="book-row" data-id="${b.id}">
+          <div class="row-cover">${cover}</div>
+          <div class="row-body">
+            <div class="row-title">${escapeHtml(b.name)}</div>
+            <div class="row-meta">${escapeHtml(b.author || "佚名")}</div>
+          </div>
+        </article>`;
+    }).join("");
+    els.listWrap.querySelectorAll(".book-row").forEach((row) => {
+      row.addEventListener("click", () => openDrawer(Number(row.dataset.id)));
+    });
   }
 
   function escapeHtml(s) {
@@ -685,7 +703,7 @@
     els.editStatus.value = book.status || "完结";
     els.editTags.value = (book.tags || []).join(", ");
     els.editIntro.value = book.intro || "";
-    els.coverPreview.src = book.cover_url || placeholderDataUri(book.name || "");
+    els.coverPreview.src = book.cover_path || book.cover_url || placeholderDataUri(book.name || "");
     els.coverPreview.alt = book.name || "封面";
     els.editMeta.textContent = [
       "ID " + book.id,
@@ -862,7 +880,7 @@
       els.editStatus.value = res.status || "完结";
       els.editTags.value = (res.tags || []).join(", ");
       els.editIntro.value = res.intro || "";
-      if (res.cover_url) els.coverPreview.src = res.cover_url;
+      if (res.cover_path || res.cover_url) els.coverPreview.src = res.cover_path || res.cover_url;
       els.scrapeOrigin.textContent = (res.source || "起点") + (res.source_id ? " · " + res.source_id : "");
       els.editMeta.textContent = [
         "ID " + res.id,
@@ -925,7 +943,7 @@
         method: "PATCH",
         body: payload,
       });
-      els.coverPreview.src = updated.cover_url || placeholderDataUri(updated.name);
+      els.coverPreview.src = updated.cover_path || updated.cover_url || placeholderDataUri(updated.name);
       els.coverFile.value = "";
       toast("已保存", "ok");
       await Promise.all([loadBooks(), loadStats()]);
@@ -1366,7 +1384,7 @@
       const res = await api("/api/admin/scrape/batch/start", {
         method: "POST",
         body: {
-          source: (els.batchSource && els.batchSource.value) || "all",
+          source: "qidian",
           only_missing: !!els.batchOnlyMissing.checked,
           min_score: Number(els.batchMinScore.value) || 0.55,
           dry_run: !!dryRun,
@@ -1405,10 +1423,10 @@
   }
 
   function switchView(name) {
-    document.querySelectorAll(".nav-item").forEach((btn) => {
+    document.querySelectorAll("[data-view]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.view === name);
     });
-    ["library", "import", "check", "backup", "api"].forEach((v) => {
+    ["library", "import", "check", "backup", "api", "settings"].forEach((v) => {
       const el = $("view-" + v);
       if (el) el.hidden = v !== name;
     });
@@ -1423,15 +1441,19 @@
     }
   }
 
+  function on(el, ev, fn) {
+    if (el && el.addEventListener) el.addEventListener(ev, fn);
+  }
+
   // Events
-  els.loginBtn.addEventListener("click", login);
-  els.loginPass.addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
-  els.loginUser.addEventListener("keydown", (e) => { if (e.key === "Enter") els.loginPass.focus(); });
-  els.setupBtn.addEventListener("click", setupAccount);
-  els.forgotBtn.addEventListener("click", forgotPassword);
-  els.showForgot.addEventListener("click", () => showAuthPane("forgot"));
-  els.showLogin.addEventListener("click", () => showAuthPane("login"));
-  els.copyRecovery.addEventListener("click", () => {
+  on(els.loginBtn, "click", login);
+  on(els.loginPass, "keydown", (e) => { if (e.key === "Enter") login(); });
+  on(els.loginUser, "keydown", (e) => { if (e.key === "Enter") els.loginPass.focus(); });
+  on(els.setupBtn, "click", setupAccount);
+  on(els.forgotBtn, "click", forgotPassword);
+  on(els.showForgot, "click", () => showAuthPane("forgot"));
+  on(els.showLogin, "click", () => showAuthPane("login"));
+  on(els.copyRecovery, "click", () => {
     const text = els.recoveryCode.textContent || "";
     if (!text) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1439,94 +1461,101 @@
         .catch(() => fallbackCopy(text));
     } else fallbackCopy(text);
   });
-  els.recoveryDone.addEventListener("click", () => afterLogin().catch((e) => authError(e.message)));
-  els.logoutBtn.addEventListener("click", () => logout(true));
-  els.changePassBtn.addEventListener("click", openPwModal);
-  els.pwSave.addEventListener("click", saveNewPassword);
-  els.pwCancel.addEventListener("click", closePwModal);
-  els.pwClose.addEventListener("click", closePwModal);
-  els.pwMask.addEventListener("click", closePwModal);
-  document.querySelectorAll(".nav-item").forEach((btn) => {
+  on(els.recoveryDone, "click", () => afterLogin().catch((e) => authError(e.message)));
+  on(els.logoutBtn, "click", () => logout(true));
+  on(els.changePassBtn, "click", openPwModal);
+  on(els.pwSave, "click", saveNewPassword);
+  on(els.pwCancel, "click", closePwModal);
+  on(els.pwClose, "click", closePwModal);
+  on(els.pwMask, "click", closePwModal);
+  document.querySelectorAll("[data-view]").forEach((btn) => {
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
-  els.refreshBtn.addEventListener("click", () => loadBooks().catch((e) => toast(e.message, "err")));
-  els.prevPage.addEventListener("click", () => { if (state.page > 1) { state.page -= 1; loadBooks().catch(toast); } });
-  els.nextPage.addEventListener("click", () => {
+  on(els.prevPage, "click", () => { if (state.page > 1) { state.page -= 1; loadBooks().catch(toast); } });
+  on(els.nextPage, "click", () => {
     const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
     if (state.page < pages) { state.page += 1; loadBooks().catch(toast); }
   });
   let searchTimer = null;
-  els.searchInput.addEventListener("input", () => {
+  on(els.searchInput, "input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { state.page = 1; loadBooks().catch(() => {}); }, 300);
   });
-  els.sortSelect.addEventListener("change", () => {
+  on(els.sortSelect, "change", () => {
     state.sort = els.sortSelect.value || "updated";
     localStorage.setItem("novel_sort", state.sort);
     state.page = 1;
     loadBooks().catch((e) => toast(e.message, "err"));
   });
-  els.viewMode.addEventListener("change", () => {
+  on(els.viewMode, "change", () => {
     state.viewMode = els.viewMode.value;
     localStorage.setItem("novel_view_mode", state.viewMode);
     renderLibrary();
   });
-  els.gridSize.addEventListener("input", () => applyGridSize(els.gridSize.value));
-  els.themeSelect.addEventListener("change", () => applyTheme(els.themeSelect.value));
+  on(els.gridSize, "input", () => applyGridSize(els.gridSize.value));
+  els.listSize && on(els.listSize, "input", () => applyListSize(els.listSize.value));
+  on(els.themeSelect, "change", () => applyTheme(els.themeSelect.value));
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
       if (state.theme === "auto") applyTheme("auto");
     });
   }
-  els.importBtn.addEventListener("click", () => startImport("local"));
-  els.importWebdavBtn.addEventListener("click", () => startImport("webdav"));
-  els.importRefresh.addEventListener("click", () => refreshImport().catch(toast));
-  els.copySource.addEventListener("click", copySource);
-  els.backupRun.addEventListener("click", runBackupNow);
-  els.backupListRefresh.addEventListener("click", () => loadBackupList().catch((e) => toast(e.message, "err")));
-  els.davSave.addEventListener("click", saveBackupConfig);
-  els.davTest.addEventListener("click", testBackupConn);
-  els.checkScan.addEventListener("click", () => loadLibraryReport().catch((e) => toast(e.message, "err")));
-  els.checkRepairAll.addEventListener("click", repairAll);
-  els.batchScrapePreview.addEventListener("click", () => startBatchScrape(true));
-  els.batchScrapeRun.addEventListener("click", () => {
+  on(els.importBtn, "click", () => startImport("local"));
+  on(els.importWebdavBtn, "click", () => startImport("webdav"));
+  on(els.importRefresh, "click", () => refreshImport().catch(toast));
+  on(els.copySource, "click", copySource);
+  on(els.backupRun, "click", runBackupNow);
+  on(els.backupListRefresh, "click", () => loadBackupList().catch((e) => toast(e.message, "err")));
+  on(els.davSave, "click", saveBackupConfig);
+  on(els.davTest, "click", testBackupConn);
+  on(els.checkScan, "click", () => loadLibraryReport().catch((e) => toast(e.message, "err")));
+  on(els.checkRepairAll, "click", repairAll);
+  on(els.batchScrapePreview, "click", () => startBatchScrape(true));
+  on(els.batchScrapeRun, "click", () => {
     if (!confirm("开始对全库一键刮削？将按书名/作者最近匹配写入元数据。")) return;
     startBatchScrape(false);
   });
-  els.batchScrapeStatus.addEventListener("click", () => refreshBatchStatus().catch(toast));
-  els.drawerClose.addEventListener("click", closeDrawer);
-  els.cancelBtn.addEventListener("click", closeDrawer);
-  els.drawerMask.addEventListener("click", closeDrawer);
-  els.saveBtn.addEventListener("click", saveBook);
-  els.scrapeOpenBtn.addEventListener("click", openScrapeModal);
-  els.scrapeSearchBtn.addEventListener("click", runScrapeSearch);
-  els.scrapeKeyword.addEventListener("keydown", (e) => { if (e.key === "Enter") runScrapeSearch(); });
-  els.scrapeClose.addEventListener("click", closeScrapeModal);
-  els.scrapeCancel.addEventListener("click", closeScrapeModal);
-  els.scrapeMask.addEventListener("click", closeScrapeModal);
-  els.scrapeConfirmYes.addEventListener("click", () => {
+  on(els.batchScrapeStatus, "click", () => refreshBatchStatus().catch(toast));
+  on(els.drawerClose, "click", closeDrawer);
+  on(els.cancelBtn, "click", closeDrawer);
+  on(els.drawerMask, "click", closeDrawer);
+  on(els.saveBtn, "click", saveBook);
+  on(els.scrapeOpenBtn, "click", openScrapeModal);
+  on(els.scrapeSearchBtn, "click", runScrapeSearch);
+  on(els.scrapeKeyword, "keydown", (e) => { if (e.key === "Enter") runScrapeSearch(); });
+  on(els.scrapeClose, "click", closeScrapeModal);
+  on(els.scrapeCancel, "click", closeScrapeModal);
+  on(els.scrapeMask, "click", closeScrapeModal);
+  on(els.scrapeConfirmYes, "click", () => {
     const hit = state.pendingScrapeHit;
     if (hit) applyScrapeHit(hit);
   });
-  els.scrapeConfirmNo.addEventListener("click", closeScrapeConfirm);
-  els.scrapeConfirmMask.addEventListener("click", closeScrapeConfirm);
-  els.deleteBtn.addEventListener("click", deleteBook);
-  els.coverFile.addEventListener("change", () => {
+  on(els.scrapeConfirmNo, "click", closeScrapeConfirm);
+  on(els.scrapeConfirmMask, "click", closeScrapeConfirm);
+  on(els.deleteBtn, "click", deleteBook);
+  on(els.coverFile, "change", () => {
     const f = els.coverFile.files && els.coverFile.files[0];
     if (!f) return;
     const url = URL.createObjectURL(f);
     els.coverPreview.src = url;
   });
 
+  window.doSetup = function () { return Promise.resolve(setupAccount()).catch(function (e) { authError(e.message || '创建失败'); }); };
+  window.doLogin = function () { return Promise.resolve(login()).catch(function (e) { authError(e.message || '登录失败'); }); };
+
   // Boot
   applyTheme(state.theme);
   applyGridSize(localStorage.getItem(GRID_SIZE_KEY) || 150);
+  applyListSize(localStorage.getItem('novel_list_size') || 220);
   applyDrawerWidth(localStorage.getItem(DRAWER_W_KEY) || 520);
   initDrawerResize();
   if (els.sortSelect) els.sortSelect.value = state.sort || "updated";
-  bootAuth().catch((e) => {
-    showLogin();
-    showAuthPane("login");
-    authError(e.message || "无法连接服务端");
-  });
+  Promise.resolve()
+    .then(() => bootAuth())
+    .catch((e) => {
+      showLogin();
+      showAuthPane("login");
+      authError(e.message || "无法连接服务端");
+    });
 })();
+

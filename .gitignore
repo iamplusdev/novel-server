@@ -9,3 +9,6 @@ covers/
 *.db-wal
 *.db-shm
 .DS_Store
+# Docker 镜像导出包与小说运行数据不入库
+*.tar
+novels/

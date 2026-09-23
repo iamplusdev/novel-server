@@ -5,14 +5,12 @@
 """
 from __future__ import annotations
 
-import gzip
 import html as html_lib
 import json
 import re
-import urllib.error
 import urllib.parse
-import urllib.request
 
+from .http_util import HttpError, http_get as _http_get_raw, http_get_bytes
 from .qidian import ScrapeError, ScrapeHit, clean_tag_token
 
 SOURCE_NAME = "番茄"
@@ -25,30 +23,16 @@ _SEARCH_API = "https://fanqienovel.com/api/author/search/search_book/v1"
 
 
 def _http_get(url: str, headers: dict | None = None) -> str:
-    hdrs = {
-        "User-Agent": UA,
-        "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Accept-Encoding": "identity",
-        "Referer": "https://fanqienovel.com/",
-    }
-    if headers:
-        hdrs.update(headers)
-    req = urllib.request.Request(url, headers=hdrs, method="GET")
+    """统一走 http_util：默认直连，避免本地代理未启动导致失败。"""
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            raw = resp.read()
-            if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
-                try:
-                    raw = gzip.decompress(raw)
-                except OSError:
-                    pass
-            charset = resp.headers.get_content_charset() or "utf-8"
-            return raw.decode(charset, errors="replace")
-    except urllib.error.HTTPError as e:
-        raise ScrapeError(f"番茄请求失败 HTTP {e.code}") from e
-    except urllib.error.URLError as e:
-        raise ScrapeError(f"番茄连接失败: {e.reason}") from e
+        return _http_get_raw(
+            url,
+            headers=headers or {"Referer": "https://fanqienovel.com/"},
+            timeout=TIMEOUT,
+            referer="https://fanqienovel.com/",
+        )
+    except HttpError as e:
+        raise ScrapeError(f"番茄{e}") from e
 
 
 def _clean(s: str | None) -> str:
@@ -305,14 +289,11 @@ def download_cover(url: str, dest) -> str:
         raise ScrapeError("没有封面地址")
     if url.startswith("//"):
         url = "https:" + url
-    req = urllib.request.Request(
-        url, headers={"User-Agent": UA, "Referer": "https://fanqienovel.com/"}
-    )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            data = resp.read()
-            ctype = (resp.headers.get("Content-Type") or "").lower()
-    except Exception as exc:  # noqa: BLE001
+        data, ctype = http_get_bytes(
+            url, headers={"Referer": "https://fanqienovel.com/"}, timeout=TIMEOUT
+        )
+    except HttpError as exc:
         raise ScrapeError(f"封面下载失败: {exc}") from exc
     if "png" in ctype:
         ext = ".png"

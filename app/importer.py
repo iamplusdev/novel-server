@@ -272,44 +272,45 @@ def import_from_webdav(db: Session | None = None) -> ImportResult:
         )
 
     try:
-        root = _resolve_root()
-    except WebDAVError as e:
-        result.failed.append(str(e))
-        return result
-
-    def walk(rel_dir: str, category: str) -> None:
         try:
-            items = client.list_items(rel_dir)
+            root = _resolve_root()
         except WebDAVError as e:
-            result.failed.append(f"{rel_dir}: {e}")
-            return
-        at_books_root = rel_dir.rstrip("/") in ("", root)
-        for it in items:
-            remote = f"{rel_dir.rstrip('/')}/{it.name}" if rel_dir else it.name
-            if it.is_dir:
-                sub_cat = (it.name.strip() or category) if at_books_root else category
-                walk(remote, sub_cat)
-                continue
-            name_l = it.name.lower()
-            if not name_l.endswith(".txt") or name_l in skip_names:
-                continue
-            src = f"webdav:{remote}"
-            cat = category if category and category != root else "未分类"
-            label = f"{cat}/{Path(it.name).stem}"
-            try:
-                raw = client.get_file(remote)
-                digest = _bytes_sha256(raw)
-                text = decode_txt_bytes(raw)
-                parsed = load_txt_book_from_text(text, Path(it.name).stem, cat)
-                action, lab = _upsert_parsed(db, src, cat, parsed, digest)
-                getattr(result, action).append(lab or label)
-            except Exception as exc:  # noqa: BLE001
-                result.failed.append(f"{label}: {exc}")
+            result.failed.append(str(e))
+            return result
 
-    try:
+        def walk(rel_dir: str, category: str) -> None:
+            try:
+                items = client.list_items(rel_dir)
+            except WebDAVError as e:
+                result.failed.append(f"{rel_dir}: {e}")
+                return
+            at_books_root = rel_dir.rstrip("/") in ("", root)
+            for it in items:
+                remote = f"{rel_dir.rstrip('/')}/{it.name}" if rel_dir else it.name
+                if it.is_dir:
+                    sub_cat = (it.name.strip() or category) if at_books_root else category
+                    walk(remote, sub_cat)
+                    continue
+                name_l = it.name.lower()
+                if not name_l.endswith(".txt") or name_l in skip_names:
+                    continue
+                src = f"webdav:{remote}"
+                cat = category if category and category != root else "未分类"
+                label = f"{cat}/{Path(it.name).stem}"
+                try:
+                    raw = client.get_file(remote)
+                    digest = _bytes_sha256(raw)
+                    text = decode_txt_bytes(raw)
+                    parsed = load_txt_book_from_text(text, Path(it.name).stem, cat)
+                    action, lab = _upsert_parsed(db, src, cat, parsed, digest)
+                    getattr(result, action).append(lab or label)
+                except Exception as exc:  # noqa: BLE001
+                    result.failed.append(f"{label}: {exc}")
+
         walk(root, "未分类")
         db.commit()
     finally:
+        # 路径探测失败也必须关闭自建会话，避免连接泄漏
         if own:
             db.close()
     return result

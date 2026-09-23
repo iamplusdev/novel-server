@@ -5,7 +5,7 @@ import re
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -15,7 +15,7 @@ from ..config import CATEGORIES, settings
 from ..database import get_db
 from ..importer import get_import_status, import_all_async
 from ..models import Book
-from ..serializers import admin_book_detail, book_list_item
+from ..serializers import admin_book_detail, book_list_item, resolve_base_url
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_dep)])
 
@@ -34,7 +34,7 @@ class BookUpdate(BaseModel):
 
 
 @router.get("/stats")
-def admin_stats(db: Session = Depends(get_db)) -> dict:
+def admin_stats(request: Request, db: Session = Depends(get_db)) -> dict:
     total_books = db.execute(select(func.count(Book.id))).scalar_one()
     total_words = db.execute(select(func.coalesce(func.sum(Book.word_count), 0))).scalar_one()
     by_cat = db.execute(select(Book.category, func.count(Book.id)).group_by(Book.category)).all()
@@ -46,7 +46,7 @@ def admin_stats(db: Session = Depends(get_db)) -> dict:
         "by_status": [{"name": s, "count": n} for s, n in by_status],
         "categories": CATEGORIES,
         "import": get_import_status(),
-        "public_base_url": settings.public_base_url,
+        "public_base_url": resolve_base_url(request),
     }
 
 
@@ -72,23 +72,11 @@ def admin_duplicates(db: Session = Depends(get_db)) -> dict:
             ],
         })
     return {"items": items, "total": len(items)}
-    total_books = db.execute(select(func.count(Book.id))).scalar_one()
-    total_words = db.execute(select(func.coalesce(func.sum(Book.word_count), 0))).scalar_one()
-    by_cat = db.execute(select(Book.category, func.count(Book.id)).group_by(Book.category)).all()
-    by_status = db.execute(select(Book.status, func.count(Book.id)).group_by(Book.status)).all()
-    return {
-        "total_books": total_books,
-        "total_words": total_words,
-        "by_category": [{"name": c, "count": n} for c, n in by_cat],
-        "by_status": [{"name": s, "count": n} for s, n in by_status],
-        "categories": CATEGORIES,
-        "import": get_import_status(),
-        "public_base_url": settings.public_base_url,
-    }
 
 
 @router.get("/books")
 def admin_list_books(
+    request: Request,
     q: str | None = Query(default=None),
     category: str | None = Query(default=None),
     status: str | None = Query(default=None),
@@ -97,6 +85,7 @@ def admin_list_books(
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> dict:
+    base = resolve_base_url(request)
     offset = (page - 1) * page_size
     stmt = select(Book)
     if category:
@@ -122,19 +111,26 @@ def admin_list_books(
     books = db.execute(
         stmt.order_by(*order).offset(offset).limit(page_size)
     ).scalars().all()
-    return {"total": total, "page": page, "page_size": page_size, "items": [book_list_item(b) for b in books]}
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [book_list_item(b, base) for b in books],
+    }
 
 
 @router.get("/books/{book_id}")
-def admin_get_book(book_id: int, db: Session = Depends(get_db)) -> dict:
+def admin_get_book(request: Request, book_id: int, db: Session = Depends(get_db)) -> dict:
     book = db.get(Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
-    return admin_book_detail(book)
+    return admin_book_detail(book, resolve_base_url(request))
 
 
 @router.patch("/books/{book_id}")
-def admin_update_book(book_id: int, payload: BookUpdate, db: Session = Depends(get_db)) -> dict:
+def admin_update_book(
+    request: Request, book_id: int, payload: BookUpdate, db: Session = Depends(get_db)
+) -> dict:
     book = db.get(Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
@@ -152,11 +148,12 @@ def admin_update_book(book_id: int, payload: BookUpdate, db: Session = Depends(g
         setattr(book, k, v)
     db.commit()
     db.refresh(book)
-    return admin_book_detail(book)
+    return admin_book_detail(book, resolve_base_url(request))
 
 
 @router.post("/books/{book_id}/cover")
 def admin_upload_cover(
+    request: Request,
     book_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -183,7 +180,7 @@ def admin_upload_cover(
     book.cover_file = new_name
     db.commit()
     db.refresh(book)
-    return admin_book_detail(book)
+    return admin_book_detail(book, resolve_base_url(request))
 
 
 @router.delete("/books/{book_id}")
@@ -213,6 +210,3 @@ def admin_import(mode: str = Query(default="local", pattern="^(local|webdav|both
 @router.get("/import/status")
 def admin_import_status() -> dict:
     return get_import_status()
-
-
-

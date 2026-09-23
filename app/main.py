@@ -75,6 +75,11 @@ def legado_source_file() -> FileResponse:
     return FileResponse(BASE_DIR / "legado_book_source.json", media_type="application/json")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    return FileResponse(BASE_DIR / "favicon.ico", media_type="image/x-icon")
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "public_base_url": settings.public_base_url}
