@@ -7,15 +7,19 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # 必改：手机能访问到的地址（局域网 IP 或穿透域名）
+      # 必改：对外访问地址（域名或局域网 IP）。
+      # 管理端封面已用相对路径；此项仍影响 Legado 书源与绝对链接兜底。
       PUBLIC_BASE_URL: "http://192.168.1.100:8000"
       HOST: "0.0.0.0"
       PORT: "8000"
       NOVELS_DIR: "/app/novels"
       DATABASE_PATH: "/app/data/novels.db"
       COVERS_DIR: "/app/covers"
+      # 可选：刮削/备份代理（默认直连，不读系统代理）
+      # SCRAPER_PROXY: "http://127.0.0.1:7890"
+      # WEBDAV_PROXY: "http://127.0.0.1:7890"
     volumes:
-      # 源 TXT、数据库、封面 持久化
+      # 源 TXT、数据库、封面 持久化（宿主机目录，不进镜像）
       - ./novels:/app/novels
       - ./data:/app/data
       - ./covers:/app/covers

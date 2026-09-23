@@ -101,11 +101,15 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         hit = mod.fetch_detail(payload.source_book_id)
     except ScrapeError as e:
         detail_err = str(e)
-        from ..scrapers.qidian import ScrapeHit as QdHit
+        # 按当前刮削源构造回退骨架，避免番茄任务落到起点 URL
+        from ..scrapers.qidian import ScrapeHit as BaseHit
 
-        hit = QdHit(
+        book_url = getattr(mod, "book_url_for", None)
+        fallback_url = book_url(payload.source_book_id) if book_url else ""
+        hit = BaseHit(
+            source=getattr(mod, "SOURCE_NAME", label),
             source_id=payload.source_book_id,
-            url=f"https://www.qidian.com/book/{payload.source_book_id}/",
+            url=fallback_url,
         )
 
     # 合并 hint

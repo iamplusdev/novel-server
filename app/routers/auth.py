@@ -82,10 +82,10 @@ def auth_change_password(
     if not data:
         raise HTTPException(400, "尚未设置账号")
     auth_mod.change_password(user, payload.old_password, payload.new_password)
-    # 改密后重新登录，旧 Token 仍可用（未轮换 secret）；这里主动换新会话
+    # 改密会轮换 secret，旧 Token 立即失效；这里换发新会话
     session = auth_mod.login(user, payload.new_password)
     auth_mod.set_session_cookie(response, session["token"])
-    return {"ok": True, "username": user, "token": session["token"]}
+    return {"ok": True, "username": user, "token": session["token"], "expires_in": session["expires_in"]}
 
 
 @router.post("/forgot")

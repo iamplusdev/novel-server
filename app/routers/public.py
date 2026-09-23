@@ -1,14 +1,20 @@
 """公开 JSON API：分类、列表、搜索、详情、目录、正文。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import CATEGORIES
 from ..database import get_db
 from ..models import Book, Chapter
-from ..serializers import book_detail, book_list_item, chapter_content, chapter_item
+from ..serializers import (
+    book_detail,
+    book_list_item,
+    chapter_content,
+    chapter_item,
+    resolve_base_url,
+)
 
 router = APIRouter(prefix="/api", tags=["public"])
 
@@ -46,6 +52,7 @@ def _query_books(
     sort: str = "updated",
     page: int = 1,
     page_size: int = 20,
+    base: str | None = None,
 ) -> dict:
     offset, limit = _paginate(page, page_size)
     stmt = select(Book)
@@ -81,12 +88,13 @@ def _query_books(
         "total": total,
         "page": page,
         "page_size": limit,
-        "items": [book_list_item(b) for b in books],
+        "items": [book_list_item(b, base) for b in books],
     }
 
 
 @router.get("/books")
 def list_books(
+    request: Request,
     category: str | None = Query(default=None),
     q: str | None = Query(default=None),
     status: str | None = Query(default=None),
@@ -103,29 +111,32 @@ def list_books(
         sort=sort,
         page=page,
         page_size=page_size,
+        base=resolve_base_url(request),
     )
 
 
 @router.get("/search")
 def search_books(
+    request: Request,
     q: str = Query(..., min_length=1),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> dict:
-    return _query_books(db, q=q, page=page, page_size=page_size)
+    return _query_books(db, q=q, page=page, page_size=page_size, base=resolve_base_url(request))
 
 
 @router.get("/books/{book_id}")
-def get_book(book_id: int, db: Session = Depends(get_db)) -> dict:
+def get_book(request: Request, book_id: int, db: Session = Depends(get_db)) -> dict:
     book = db.get(Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
-    return book_detail(book, with_chapters=False)
+    return book_detail(book, with_chapters=False, base=resolve_base_url(request))
 
 
 @router.get("/books/{book_id}/chapters")
 def list_chapters(
+    request: Request,
     book_id: int,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=200, ge=1, le=500),
@@ -152,13 +163,15 @@ def list_chapters(
         "page": page,
         "page_size": limit,
         "toc_url": f"/api/books/{book_id}/chapters",
-        "items": [chapter_item(c) for c in chapters],
+        "items": [chapter_item(c, resolve_base_url(request)) for c in chapters],
     }
 
 
 @router.get("/books/{book_id}/chapters/{chapter_id}")
-def get_chapter(book_id: int, chapter_id: int, db: Session = Depends(get_db)) -> dict:
+def get_chapter(
+    request: Request, book_id: int, chapter_id: int, db: Session = Depends(get_db)
+) -> dict:
     ch = db.get(Chapter, chapter_id)
     if not ch or ch.book_id != book_id:
         raise HTTPException(404, "章节不存在")
-    return chapter_content(ch)
+    return chapter_content(ch, resolve_base_url(request))

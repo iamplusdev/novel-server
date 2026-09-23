@@ -118,6 +118,8 @@ def change_password(username: str, old_password: str, new_password: str) -> None
     if not new_password or len(new_password) < 6:
         raise HTTPException(400, "新密码至少 6 位")
     data["password_hash"] = _hash_password(new_password)
+    # 轮换签名密钥，改密后旧会话全部失效
+    data["secret"] = secrets.token_hex(32)
     save_auth(data)
 
 
@@ -195,10 +197,11 @@ def verify_token(token: str | None) -> str:
 
 
 def extract_token(
-    authorization: str | None = Header(default=None),
-    x_session_token: str | None = Header(default=None),
-    ainovel_session: str | None = Cookie(default=None),
+    authorization: str | None = None,
+    x_session_token: str | None = None,
+    ainovel_session: str | None = None,
 ) -> str | None:
+    """从 Header / Cookie 提取会话 Token（供 Depends 与手动调用共用）。"""
     if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
     if x_session_token:
@@ -207,8 +210,7 @@ def extract_token(
 
 
 def require_admin(token: str | None = None) -> str:
-    """FastAPI 依赖：校验会话并返回用户名。"""
-    # 作为 Depends 使用时参数由 FastAPI 注入；也允许手动传入
+    """手动调用时校验会话并返回用户名。"""
     if token is None:
         token = extract_token()
     return verify_token(token)

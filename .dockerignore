@@ -1,0 +1,38 @@
+# 构建上下文排除：镜像只带代码，不带用户数据与本机补丁脚本
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# 运行数据（挂载 volume，绝不打进镜像）
+data/
+covers/
+novels/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 本机/补丁/文档，非运行必需
+scripts/
+docs/
+.env
+.env.*
+deploy/
+*.md
+!README.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# IDE / 系统
+.idea
+.vscode
+.DS_Store
+Thumbs.db

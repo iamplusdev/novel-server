@@ -12,7 +12,7 @@ from pathlib import Path
 
 BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
 USERNAME = os.environ.get("ADMIN_USER", "admin")
-PASSWORD = os.environ.get("ADMIN_PASS", "test-pass-12345")
+PASSWORD = os.environ.get("ADMIN_PASS", "admin123")
 TOKEN = os.environ.get("ADMIN_SESSION", "")
 
 
