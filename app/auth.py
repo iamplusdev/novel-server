@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
 import time
 from pathlib import Path
 
@@ -21,10 +22,50 @@ SESSION_COOKIE = "ainovel_session"
 TOKEN_TTL_SEC = 7 * 24 * 3600
 _PBKDF2_ITER = 200_000
 
+# 登录/重置失败限流（进程内即可，个人服务场景够用）
+LOGIN_MAX_FAIL = 5
+LOGIN_LOCK_SEC = 300
+_fail_lock = threading.Lock()
+_fail_map: dict[str, dict] = {}
+
 
 def auth_path() -> Path:
     settings.ensure_dirs()
     return settings.database_path.parent / AUTH_FILE_NAME
+
+
+def login_client_key(client_host: str | None, username: str = "") -> str:
+    """限流键：优先 IP，叠加用户名，避免同机多账号互不影响。"""
+    return f"{client_host or 'unknown'}|{(username or '').strip().lower()}"
+
+
+def check_login_allowed(key: str) -> None:
+    """连续失败达上限则短暂锁定，超出返回 429。"""
+    now = time.time()
+    with _fail_lock:
+        rec = _fail_map.get(key)
+        if rec and rec.get("until", 0) > now:
+            wait = int(rec["until"] - now) + 1
+            raise HTTPException(status_code=429, detail=f"尝试过于频繁，请 {wait} 秒后再试")
+
+
+def note_login_failure(key: str) -> None:
+    now = time.time()
+    with _fail_lock:
+        rec = _fail_map.setdefault(key, {"n": 0, "until": 0.0})
+        # 锁定结束后重新计数
+        if rec.get("until", 0) > now:
+            return
+        rec["until"] = 0.0
+        rec["n"] = int(rec.get("n", 0)) + 1
+        if rec["n"] >= LOGIN_MAX_FAIL:
+            rec["until"] = now + LOGIN_LOCK_SEC
+            rec["n"] = 0
+
+
+def note_login_success(key: str) -> None:
+    with _fail_lock:
+        _fail_map.pop(key, None)
 
 
 def load_auth() -> dict | None:

@@ -6,7 +6,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import CATEGORIES
-from ..database import get_db
+from ..database import escape_like, get_db
 from ..models import Book, Chapter
 from ..serializers import (
     book_detail,
@@ -61,13 +61,13 @@ def _query_books(
     if status:
         stmt = stmt.where(Book.status == status)
     if q:
-        like = f"%{q.strip()}%"
+        like = f"%{escape_like(q.strip())}%"
         stmt = stmt.where(
             or_(
-                Book.title.like(like),
-                Book.author.like(like),
-                Book.tags.like(like),
-                Book.intro.like(like),
+                Book.title.like(like, escape="\\"),
+                Book.author.like(like, escape="\\"),
+                Book.tags.like(like, escape="\\"),
+                Book.intro.like(like, escape="\\"),
             )
         )
 

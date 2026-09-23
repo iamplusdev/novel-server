@@ -1,11 +1,12 @@
 """FastAPI 入口：公开 API + Legado + 管理后台 + 静态封面/前端。"""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
@@ -49,15 +50,35 @@ start_scheduler()
 app.mount("/covers", StaticFiles(directory=str(settings.covers_dir)), name="covers")
 
 
+def _asset_ver(name: str) -> str:
+    """静态资源版本号：取文件 mtime，改完 JS/CSS 后强制刷新缓存。"""
+    try:
+        return str(int((BASE_DIR / name).stat().st_mtime))
+    except OSError:
+        return "0"
+
+
+def _render_index() -> HTMLResponse:
+    """读入 index.html，并把 css/js 的 ?v= 换成当前 mtime。"""
+    html = (BASE_DIR / "index.html").read_text(encoding="utf-8")
+    ver = _asset_ver("admin.js") + _asset_ver("admin.css")
+    html = re.sub(
+        r"(admin\.(?:css|js))\?v=[^\"']+",
+        lambda m: f"{m.group(1)}?v={ver}",
+        html,
+    )
+    return HTMLResponse(html)
+
+
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse(BASE_DIR / "index.html")
+def index() -> HTMLResponse:
+    return _render_index()
 
 
 @app.get("/admin", include_in_schema=False)
 @app.get("/admin/", include_in_schema=False)
-def admin_page() -> FileResponse:
-    return FileResponse(BASE_DIR / "index.html")
+def admin_page() -> HTMLResponse:
+    return _render_index()
 
 
 @app.get("/admin.css", include_in_schema=False)

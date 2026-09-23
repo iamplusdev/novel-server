@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+from sqlalchemy import select
+from sqlalchemy.orm import object_session
+
 from .config import settings
 from .models import Book, Chapter
 
@@ -104,8 +107,16 @@ def admin_book_detail(book: Book, base: str | None = None) -> dict:
     data["source_hash"] = book.source_hash
     data["source"] = getattr(book, "source", "") or ""
     data["source_id"] = getattr(book, "source_id", "") or ""
-    data["chapters_preview"] = [
-        {"id": c.id, "index": c.index, "title": c.title}
-        for c in book.chapters[:30]
-    ]
+    # 只取前 30 章标题做预览，避免 lazy 加载全部章节正文
+    session = object_session(book)
+    preview: list[dict] = []
+    if session is not None:
+        rows = session.execute(
+            select(Chapter.id, Chapter.index, Chapter.title)
+            .where(Chapter.book_id == book.id)
+            .order_by(Chapter.index)
+            .limit(30)
+        ).all()
+        preview = [{"id": r.id, "index": r.index, "title": r.title} for r in rows]
+    data["chapters_preview"] = preview
     return data

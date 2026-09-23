@@ -491,19 +491,5 @@
   
   
   <script src="/admin.js?v=1790128895"></script>
-  <script>
-    (function () {
-      function wipe() {
-        document.querySelectorAll('[data-aigc-mark]').forEach(function (el) { el.remove(); });
-        document.querySelectorAll('p').forEach(function (el) {
-          if (el.textContent.trim() === 'AI生成') el.remove();
-        });
-      }
-      wipe();
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', wipe);
-      }
-    })();
-  </script>
 </body>
 </html>

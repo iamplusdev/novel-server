@@ -35,7 +35,8 @@ class Book(Base):
         back_populates="book",
         cascade="all, delete-orphan",
         order_by="Chapter.index",
-        lazy="selectin",
+        # 懒加载：列表/元数据接口不再连带拉取全部章节正文
+        lazy="select",
     )
 
     @property
