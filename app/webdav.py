@@ -225,6 +225,29 @@ class WebDAVClient:
         if status not in (200, 204, 404):
             raise WebDAVError(f"DELETE {rel_path} 失败: HTTP {status}")
 
+    def move(self, src_rel: str, dest_rel: str, overwrite: bool = False) -> None:
+        """移动/重命名（WebDAV MOVE）。目标父目录不存在则先创建。"""
+        src_rel = (src_rel or "").strip().strip("/")
+        dest_rel = (dest_rel or "").strip().strip("/")
+        if not src_rel or not dest_rel:
+            raise WebDAVError("MOVE 源/目标路径不能为空")
+        # 确保目标父目录存在
+        parent = posixpath.dirname(dest_rel)
+        if parent:
+            self.mkdir(parent)
+        status, _, _ = self.request(
+            "MOVE",
+            src_rel,
+            headers={
+                # Destination 需完整 URL，部分网盘还要求带头
+                "Destination": self._url(dest_rel),
+                "Overwrite": "T" if overwrite else "F",
+            },
+        )
+        # 201 新建 / 204 覆盖或同名移动
+        if status not in (201, 204):
+            raise WebDAVError(f"MOVE {src_rel} → {dest_rel} 失败: HTTP {status}")
+
     def test_connection(self) -> str:
         self.request("OPTIONS", "")
         # 尝试列出根路径

@@ -11,10 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
+from .importer import UNCATEGORIZED, _ensure_category_tag
 from .models import Book
 from .scrapers import ALL_SOURCES, REGISTRY, SOURCE_LABELS
 from .scrapers.qidian import ScrapeError, clean_tag_token, download_cover
-from .config import settings
+from .config import CATEGORIES, settings
 
 _lock = threading.Lock()
 _status: dict = {
@@ -140,16 +141,19 @@ def _apply_hit_to_book(db: Session, book: Book, hit_dict: dict) -> None:
         book.status = st
     if hit_dict.get("latest_chapter"):
         book.latest_chapter = hit_dict["latest_chapter"][:200]
+    # 分类仅接受既定分类表；不一致（或空）则归「未分类」。刮削只写库，不移动文件。
     if hit_dict.get("category"):
-        book.category = hit_dict["category"][:50]
+        raw_cat = (hit_dict["category"] or "").strip()[:50]
+        book.category = raw_cat if raw_cat in CATEGORIES else UNCATEGORIZED
 
     raw_tags = list(hit_dict.get("tags") or [])
     cleaned = []
     for t in raw_tags:
         tok = ctt(t)
-        if tok and tok not in cleaned:
+        if tok and tok not in cleaned and tok != UNCATEGORIZED:
             cleaned.append(tok)
-    book.tags = ",".join(cleaned[:12])
+    # 已正式分类则去掉「未分类」标记
+    book.tags = _ensure_category_tag(",".join(cleaned[:12]), book.category)
 
     book.source = hit_dict.get("source") or "起点"
     book.source_id = str(hit_dict.get("source_id") or "")

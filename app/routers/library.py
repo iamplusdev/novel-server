@@ -12,6 +12,7 @@ from ..library_check import (
     merge_duplicates,
     repair_book,
     repair_books,
+    relocate_books,
     scan_issues,
 )
 
@@ -30,6 +31,11 @@ class MergeIn(BaseModel):
 class RepairIn(BaseModel):
     book_ids: list[int] | None = None
     mode: str = Field(default="auto", pattern="^(auto|clean|reparse)$")
+
+
+class RelocateIn(BaseModel):
+    """按分类归位：可选仅处理指定书，缺省全库。"""
+    book_ids: list[int] | None = None
 
 
 @router.get("/report")
@@ -73,3 +79,10 @@ def library_repair_one(book_id: int, mode: str = "auto", db: Session = Depends(g
         return repair_book(db, book_id, mode=mode)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+@router.post("/relocate")
+def library_relocate(payload: RelocateIn | None = None, db: Session = Depends(get_db)) -> dict:
+    """按书籍分类把源 TXT 归位到对应分类文件夹（本地 + WebDAV）。"""
+    book_ids = payload.book_ids if payload else None
+    return relocate_books(db, book_ids)

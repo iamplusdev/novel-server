@@ -16,6 +16,9 @@ from .database import SessionLocal
 from .models import Book, Chapter
 from .parsers import load_txt_book, load_txt_book_from_text
 
+# 「未分类」既是分类名，也是导入时打在 tags 上的标记，便于后续筛选/归位
+UNCATEGORIZED = "未分类"
+
 
 @dataclass
 class ImportResult:
@@ -103,6 +106,15 @@ def _find_book_by_title_author(db: Session, title: str, author: str) -> Book | N
     ).scalars().first()
 
 
+def _ensure_category_tag(tags: str, category: str) -> str:
+    """按分类维护「未分类」标记：归入未分类则补上，已正式分类则去掉。"""
+    items = [t.strip() for t in (tags or "").split(",") if t.strip()]
+    items = [t for t in items if t != UNCATEGORIZED]
+    if category == UNCATEGORIZED:
+        items.insert(0, UNCATEGORIZED)
+    return ",".join(items[:12])
+
+
 def _upsert_parsed(
     db: Session,
     source_key: str,
@@ -135,6 +147,8 @@ def _upsert_parsed(
         book.source_hash = content_hash
         book.source_path = source_key
         book.updated_at = datetime.now().isoformat(timespec="seconds")
+        # 未分类文件夹导入时补「未分类」标签，便于后续筛选
+        book.tags = _ensure_category_tag(book.tags, category)
         if not book.intro:
             book.intro = parsed.intro
         db.query(Chapter).filter(Chapter.book_id == book.id).delete()
@@ -146,7 +160,8 @@ def _upsert_parsed(
             category=category,
             intro=parsed.intro,
             status="完结",
-            tags="",
+            # 未分类入库即打标记
+            tags=_ensure_category_tag("", category),
             cover_file="",
             source_path=source_key,
             source_hash=content_hash,
