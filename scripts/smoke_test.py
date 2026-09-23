@@ -127,8 +127,12 @@ def main() -> int:
             check("legado content", st == 200 and "content" in lc and len(lc["content"]) > 20)
 
         st, src = fetch("/api/legado/book-source")
-        check("book-source", st == 200 and src.get("bookSourceUrl", "").startswith("http"), src.get("bookSourceUrl", ""))
-        check("book-source explore", bool(src.get("exploreUrl")))
+        # 书源须为数组（Legado 导入格式），并带 bookUrl 规则
+        src0 = (src[0] if isinstance(src, list) and src else (src if isinstance(src, dict) else {}))
+        check("book-source", st == 200 and src0.get("bookSourceUrl", "").startswith("http"), src0.get("bookSourceUrl", ""))
+        check("book-source array", isinstance(src, list) and len(src) >= 1)
+        check("book-source bookUrl rule", bool(src0.get("ruleSearch", {}).get("bookUrl")))
+        check("book-source explore", bool(src0.get("exploreUrl")))
 
         st, unauth = fetch("/api/admin/stats", token="")
         check("admin 401 without session", st == 401)
