@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .importer import decode_txt_bytes
+from .importer import UNCATEGORIZED, decode_txt_bytes
 from .models import Book, Chapter
 from .parsers import load_txt_book_from_text
 
@@ -320,3 +320,140 @@ def repair_books(db: Session, book_ids: list[int] | None = None, mode: str = "au
         except Exception as exc:  # noqa: BLE001
             results.append({"id": bid, "title": "", "actions": [f"失败: {exc}"]})
     return results
+
+
+def _rel_path_parts(rel: str) -> tuple[str, str]:
+    """拆 webdav 相对路径为 (父目录名, 文件名)。"""
+    rel = (rel or "").strip().strip("/")
+    if not rel:
+        return "", ""
+    parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+    name = rel.rsplit("/", 1)[-1]
+    parent_name = parent.rsplit("/", 1)[-1] if parent else ""
+    return parent_name, name
+
+
+def relocate_book(book: Book) -> dict:
+    """把源 TXT 归位到与 book.category 一致的分类文件夹（本地 + WebDAV 各自尝试）。
+
+    只移动文件位置并回写 source_path，不改章节内容。
+    目标夹名 = category（空则「未分类」），与项目「分类=文件夹名」约定一致。
+    """
+    from .backup import load_config
+    from .webdav import WebDAVClient, WebDAVError
+
+    target = (book.category or "").strip() or UNCATEGORIZED
+    sp = book.source_path or ""
+    is_dav = sp.startswith("webdav:")
+    actions: list[str] = []
+    failed: list[str] = []
+
+    # —— 本地 ——
+    local_src: Path | None = None
+    if sp and not is_dav:
+        p = Path(sp)
+        if p.is_file():
+            local_src = p
+    if local_src is None and not is_dav:
+        failed.append("本地源文件不存在")
+    elif local_src is None and is_dav:
+        # WebDAV 源书：若本地未分类下有同名 TXT，也一并归位
+        name = _rel_path_parts(sp[7:])[1] or Path(sp[7:]).name
+        if name:
+            guess = settings.novels_dir / UNCATEGORIZED / name
+            if guess.is_file():
+                local_src = guess
+
+    if local_src is not None:
+        parent_name = local_src.parent.name
+        if parent_name == target:
+            actions.append(f"本地已在 {target}/")
+        else:
+            dest_dir = settings.novels_dir / target
+            dest = dest_dir / local_src.name
+            try:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                if dest.exists() and dest.resolve() != local_src.resolve():
+                    failed.append(f"本地目标已存在: {target}/{dest.name}")
+                else:
+                    local_src.replace(dest)
+                    actions.append(f"本地 {parent_name}/{local_src.name} → {target}/{dest.name}")
+                    if sp and not is_dav:
+                        book.source_path = str(dest)
+            except OSError as e:
+                failed.append(f"本地移动失败: {e}")
+
+    # —— WebDAV ——
+    cfg = load_config()
+    if not cfg.webdav_url:
+        actions.append("未配置 WebDAV，跳过远端")
+    else:
+        try:
+            client = WebDAVClient(cfg.webdav_url, cfg.username, cfg.password, timeout=120)
+            root = (cfg.books_path or "books").strip().strip("/").replace("\\", "/") or "books"
+            dav_src = sp[7:].lstrip("/") if is_dav else ""
+            if not dav_src:
+                # 本地源书：远端未分类同名一并归位
+                name = Path(sp).name if sp else ""
+                if name:
+                    dav_src = f"{root}/{UNCATEGORIZED}/{name}"
+            if dav_src and client.exists(dav_src):
+                parent_name, fname = _rel_path_parts(dav_src)
+                if parent_name == target:
+                    actions.append(f"WebDAV 已在 {target}/")
+                else:
+                    dest_rel = f"{root}/{target}/{fname}"
+                    try:
+                        client.move(dav_src, dest_rel, overwrite=False)
+                        actions.append(f"WebDAV {dav_src} → {dest_rel}")
+                        if is_dav:
+                            book.source_path = f"webdav:{dest_rel}"
+                    except WebDAVError as e:
+                        failed.append(f"WebDAV 移动失败: {e}")
+            else:
+                actions.append("WebDAV 无对应源文件")
+        except Exception as e:  # noqa: BLE001
+            failed.append(f"WebDAV: {e}")
+
+    ok = bool(actions) and not failed
+    return {
+        "id": book.id,
+        "title": book.title,
+        "category": target,
+        "source_path": book.source_path,
+        "actions": actions,
+        "failed": failed,
+        "ok": ok,
+    }
+
+
+def relocate_books(db: Session, book_ids: list[int] | None = None) -> dict:
+    """批量按分类归位。book_ids 为空则处理全库。"""
+    if book_ids is None:
+        books = db.execute(select(Book).order_by(Book.id)).scalars().all()
+    else:
+        books = [b for bid in book_ids if (b := db.get(Book, bid)) is not None]
+
+    results = []
+    for book in books:
+        try:
+            results.append(relocate_book(book))
+        except Exception as exc:  # noqa: BLE001
+            results.append({
+                "id": book.id,
+                "title": book.title,
+                "category": book.category,
+                "source_path": book.source_path,
+                "actions": [],
+                "failed": [str(exc)],
+                "ok": False,
+            })
+    db.commit()
+    moved = sum(1 for r in results if any("→" in a for a in r.get("actions") or []))
+    failed_n = sum(1 for r in results if r.get("failed"))
+    return {
+        "results": results,
+        "count": len(results),
+        "moved": moved,
+        "failed": failed_n,
+    }

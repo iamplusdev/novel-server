@@ -10,8 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import require_admin_dep
-from ..config import settings
+from ..config import CATEGORIES, settings
 from ..database import get_db
+from ..importer import UNCATEGORIZED, _ensure_category_tag
 from ..models import Book
 from ..scrapers import REGISTRY, SOURCE_LABELS
 from ..scrapers.qidian import ScrapeError, download_cover
@@ -138,8 +139,10 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         book.status = hit.status
     if hit.latest_chapter:
         book.latest_chapter = hit.latest_chapter[:200]
+    # 分类仅接受既定分类表；不一致则归「未分类」。刮削只写库，不移动文件。
     if getattr(hit, "category", ""):
-        book.category = hit.category[:50]
+        raw_cat = (hit.category or "").strip()[:50]
+        book.category = raw_cat if raw_cat in CATEGORIES else UNCATEGORIZED
 
     # 标签：以详情 all-label 为准整体替换，避免残留旧的错误标签
     from ..scrapers.qidian import clean_tag_token
@@ -148,9 +151,10 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
     cleaned = []
     for t in raw_tags:
         tok = clean_tag_token(t)
-        if tok and tok not in cleaned and tok != label:
+        if tok and tok not in cleaned and tok != label and tok != UNCATEGORIZED:
             cleaned.append(tok)
-    book.tags = ",".join(cleaned[:12])
+    # 已正式分类则去掉「未分类」标记
+    book.tags = _ensure_category_tag(",".join(cleaned[:12]), book.category)
 
     book.source = label
     book.source_id = hit.source_id or payload.source_book_id

@@ -127,6 +127,7 @@
     issueList: $("issue-list"),
     checkScan: $("check-scan"),
     checkRepairAll: $("check-repair-all"),
+    checkRelocate: $("check-relocate"),
     batchScrapePreview: $("batch-scrape-preview"),
     batchScrapeRun: $("batch-scrape-run"),
     batchScrapeStatus: $("batch-scrape-status"),
@@ -1371,6 +1372,24 @@
     }
   }
 
+  // 按分类归位：把源 TXT 移到与书籍分类一致的文件夹（本地 + WebDAV）
+  async function relocateAll() {
+    if (!confirm("按书籍分类归位源 TXT？\n将把本地与 WebDAV「未分类」等目录中的文件移到对应分类文件夹（只移动位置，不改内容）。")) return;
+    try {
+      const res = await api("/api/admin/library/relocate", {
+        method: "POST",
+        body: {},
+      });
+      toast(
+        "归位完成：移动 " + (res.moved || 0) + " 本 · 失败 " + (res.failed || 0) + " 本",
+        res.failed ? "err" : "ok"
+      );
+      await Promise.all([loadLibraryReport(), loadBooks(), loadStats()]);
+    } catch (err) {
+      toast(err.message || "归位失败", "err");
+    }
+  }
+
   function renderBatchStatus(st) {
     if (!st) return;
     const lines = [];
@@ -1517,6 +1536,7 @@
   on(els.davTest, "click", testBackupConn);
   on(els.checkScan, "click", () => loadLibraryReport().catch((e) => toast(e.message, "err")));
   on(els.checkRepairAll, "click", repairAll);
+  on(els.checkRelocate, "click", relocateAll);
   on(els.batchScrapePreview, "click", () => startBatchScrape(true));
   on(els.batchScrapeRun, "click", () => {
     if (!confirm("开始对全库一键刮削？将按书名/作者最近匹配写入元数据。")) return;
