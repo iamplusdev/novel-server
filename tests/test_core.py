@@ -123,6 +123,83 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(rows)
         s.close()
 
+    def test_content_pack_offsets(self) -> None:
+        """正文出库：导入后 content 为空，正文包偏移可读回原文。"""
+        from sqlalchemy import select
+
+        from app.content_store import content_pack_path, read_chapter_text
+        from app.database import SessionLocal
+        from app.importer import import_all
+        from app.models import Chapter
+
+        novels = self._tmp / "novels" / "玄幻"
+        novels.mkdir(parents=True)
+        body = "第一章 开始\n正文甲内容\n\n第二章 继续\n正文乙内容"
+        (novels / "偏移书.txt").write_text(body, encoding="utf-8")
+        self.assertTrue(import_all().added)
+
+        s = SessionLocal()
+        chs = s.execute(select(Chapter).order_by(Chapter.index)).scalars().all()
+        s.close()
+        self.assertGreaterEqual(len(chs), 1)
+        for ch in chs:
+            self.assertEqual(ch.content, "")
+            self.assertGreater(ch.content_chars, 0)
+            self.assertGreater(ch.content_length, 0)
+        joined = "".join(
+            read_chapter_text(ch.book_id, ch.content_offset, ch.content_length, ch.content)
+            for ch in chs
+        )
+        self.assertIn("正文甲内容", joined)
+        self.assertIn("正文乙内容", joined)
+        self.assertTrue(content_pack_path(chs[0].book_id).is_file())
+
+    def test_toc_does_not_load_content(self) -> None:
+        """目录接口只投影标题列。"""
+        from sqlalchemy import select
+
+        from app.database import SessionLocal
+        from app.importer import import_all
+        from app.models import Book
+        from app.routers import public as public_mod
+
+        novels = self._tmp / "novels" / "玄幻"
+        novels.mkdir(parents=True)
+        (novels / "目录书.txt").write_text("第一章 A\n甲\n第二章 B\n乙", encoding="utf-8")
+        import_all()
+
+        s = SessionLocal()
+        book = s.execute(select(Book)).scalars().first()
+        self.assertIsNotNone(book)
+
+        class Req:
+            headers = {}
+
+        r = public_mod.list_chapters(Req(), book_id=book.id, page=1, page_size=50, db=s)
+        self.assertGreaterEqual(r["total"], 1)
+        self.assertTrue(r["items"][0]["name"])
+        # 投影结果不应包含正文字段
+        self.assertNotIn("content", r["items"][0])
+        s.close()
+
+    def test_import_status_progress_fields(self) -> None:
+        """导入完成后状态带进度字段，可供进度条/日志使用。"""
+        from app.importer import get_import_status, import_all
+
+        novels = self._tmp / "novels" / "玄幻"
+        novels.mkdir(parents=True)
+        (novels / "进度书.txt").write_text("第一章 开始\n内容", encoding="utf-8")
+        res = import_all()
+        self.assertGreaterEqual(len(res.added), 1)
+        st = get_import_status()
+        # 同步 import_all 也会写进度字段
+        self.assertIn("percent", st)
+        self.assertIn("total", st)
+        self.assertIn("done", st)
+        self.assertIn("added_n", st)
+        self.assertGreaterEqual(st.get("added_n", 0), 1)
+        self.assertEqual(st.get("total", 0), st.get("done", 0))
+
     def test_import_cancel_flag(self) -> None:
         from app.importer import get_import_status, request_import_cancel
 

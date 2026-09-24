@@ -71,7 +71,12 @@ class Chapter(Base):
     book_id: Mapped[int] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"), nullable=False, index=True)
     index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    # 遗留正文列：迁移后保持为空；读正文优先走 content_store 偏移
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # 正文包（data/contents/{book_id}.bin）内字节偏移/长度；char_len 供统计与体检
+    content_offset: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     book: Mapped[Book] = relationship("Book", back_populates="chapters")
 

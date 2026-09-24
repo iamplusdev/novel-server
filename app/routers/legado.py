@@ -145,9 +145,12 @@ def legado_toc(request: Request, book_id: int, db: Session = Depends(get_db)) ->
     book = db.get(Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
+    # 目录只取标题列，避免整本正文进内存
     chapters = db.execute(
-        select(Chapter).where(Chapter.book_id == book_id).order_by(Chapter.index)
-    ).scalars().all()
+        select(Chapter.id, Chapter.index, Chapter.title)
+        .where(Chapter.book_id == book_id)
+        .order_by(Chapter.index)
+    ).all()
     return {
         "name": book.title,
         "total": len(chapters),
@@ -173,9 +176,18 @@ def legado_content(
     ch = db.get(Chapter, chapter_id)
     if not ch or ch.book_id != book_id:
         raise HTTPException(404, "章节不存在")
+    # 正文走正文包偏移读取
+    from ..content_store import read_chapter_text
+
+    text = read_chapter_text(
+        ch.book_id,
+        ch.content_offset,
+        ch.content_length,
+        legacy_content=ch.content,
+    )
     return {
         "title": ch.title,
-        "content": ch.content,
+        "content": text,
         "content_url": _abs(f"/api/legado/content/{book_id}/{chapter_id}", base),
         "isVip": False,
         "isPay": False,

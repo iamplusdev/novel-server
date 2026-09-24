@@ -10,6 +10,7 @@ from sqlalchemy import case, delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import category_rel_parts, safe_delete_cover, settings
+from .content_store import read_book_texts, write_pack
 from .database import delete_books_safe
 from .importer import UNCATEGORIZED, decode_txt_bytes
 from .models import Book, Chapter
@@ -36,45 +37,65 @@ def _clean_text(s: str) -> str:
     return s
 
 
+def _load_chapter_texts(db: Session, book_id: int, chapters) -> list[str]:
+    """读各章正文：优先正文包偏移，回退遗留 content 列。"""
+    spans = [(c.content_offset or 0, c.content_length or 0) for c in chapters]
+    texts = read_book_texts(book_id, spans)
+    # 迁移前旧数据：偏移为空时用 content 列
+    return [t or (c.content or "") for t, c in zip(texts, chapters)]
+
+
 def scan_issues(db: Session) -> list[BookIssue]:
-    """体检扫描：统计走 SQL 聚合，控制字符按批流式扫，避免整库正文进内存。"""
+    """体检扫描：统计走 SQL 聚合（字数/空章用偏移元数据），控制字符按书读正文包。"""
     issues: list[BookIssue] = []
     books = db.execute(select(Book)).scalars().all()
 
-    # 每本书章节级聚合：数量 / 总字数 / 乱码符 / 空章，不加载正文
+    # 章节级聚合：数量 / 总字数 / 空章（不加载正文）
     stats_rows = db.execute(
         select(
             Chapter.book_id,
             func.count(Chapter.id).label("n"),
-            func.coalesce(func.sum(func.length(Chapter.content)), 0).label("total_len"),
+            func.coalesce(func.sum(Chapter.content_chars), 0).label("total_len"),
             func.coalesce(
-                func.sum(
-                    func.length(Chapter.content)
-                    - func.length(func.replace(Chapter.content, "�", ""))
-                ),
-                0,
-            ).label("repl"),
-            func.coalesce(
-                func.sum(case((func.trim(Chapter.content) == "", 1), else_=0)), 0
+                func.sum(case((Chapter.content_chars == 0, 1), else_=0)), 0
             ).label("empty_n"),
         ).group_by(Chapter.book_id)
     ).all()
     stats = {
-        r.book_id: {"n": r.n, "total_len": r.total_len, "repl": r.repl, "empty_n": r.empty_n}
+        r.book_id: {"n": r.n, "total_len": r.total_len, "empty_n": r.empty_n}
         for r in stats_rows
     }
 
-    # 控制字符：流式按批处理，内存与批大小相关而非全库
+    # 控制字符 / 乱码：按书读正文包，内存峰值约等于单本
     ctrl_counts: dict[int, int] = {}
-    stream = db.execute(
-        select(Chapter.book_id, Chapter.content).execution_options(yield_per=200)
-    )
-    for bid, content in stream:
-        if not content:
+    repl_counts: dict[int, int] = {}
+    for book in books:
+        ch_rows = db.execute(
+            select(Chapter.content_offset, Chapter.content_length, Chapter.content)
+            .where(Chapter.book_id == book.id)
+            .order_by(Chapter.index, Chapter.id)
+        ).all()
+        if not ch_rows:
             continue
-        n = len(_CTRL_RE.findall(content))
-        if n:
-            ctrl_counts[bid] = ctrl_counts.get(bid, 0) + n
+        class _Ch:
+            pass
+
+        stubs = []
+        for r in ch_rows:
+            s = _Ch()
+            s.content_offset = r.content_offset or 0
+            s.content_length = r.content_length or 0
+            s.content = r.content or ""
+            stubs.append(s)
+        for text in _load_chapter_texts(db, book.id, stubs):
+            if not text:
+                continue
+            n_ctrl = len(_CTRL_RE.findall(text))
+            if n_ctrl:
+                ctrl_counts[book.id] = ctrl_counts.get(book.id, 0) + n_ctrl
+            n_repl = text.count("�")
+            if n_repl:
+                repl_counts[book.id] = repl_counts.get(book.id, 0) + n_repl
 
     for book in books:
         st = stats.get(book.id)
@@ -95,7 +116,7 @@ def scan_issues(db: Session) -> list[BookIssue]:
                 )
             )
 
-        repl = st["repl"] or 0
+        repl = repl_counts.get(book.id, 0)
         if repl >= 5:
             issues.append(
                 BookIssue(
@@ -278,27 +299,29 @@ def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
         raise ValueError("书籍不存在")
 
     chapters = db.execute(
-        select(Chapter).where(Chapter.book_id == book.id).order_by(Chapter.index)
+        select(Chapter).where(Chapter.book_id == book.id).order_by(Chapter.index, Chapter.id)
     ).scalars().all()
     actions = []
+    texts = _load_chapter_texts(db, book.id, chapters)
 
-    # 1) 清理字符
+    # 1) 清理字符（读正文包 → 清理后整包重写并回填偏移）
     if mode in ("clean", "auto", "reparse"):
-        changed = False
-        for ch in chapters:
-            raw = ch.content or ""
-            cleaned = _clean_text(raw)
-            if cleaned != raw:
-                ch.content = cleaned
-                changed = True
-        if changed:
+        cleaned_list = [_clean_text(t or "") for t in texts]
+        if cleaned_list != texts:
+            spans = write_pack(book.id, cleaned_list)
+            for ch, txt, (off, blen, clen) in zip(chapters, cleaned_list, spans):
+                ch.content = ""
+                ch.content_offset = off
+                ch.content_length = blen
+                ch.content_chars = clen
+            texts = cleaned_list
             actions.append("已清理控制字符/零宽字符")
 
     need_reparse = mode == "reparse"
     if mode == "auto":
         need_reparse = (
             book.word_count >= 5000 and len(chapters) <= 1
-        ) or any((c.content or "").count("�") >= 5 for c in chapters) or not chapters
+        ) or any((t or "").count("�") >= 5 for t in texts) or not chapters
 
     if need_reparse:
         src = _read_source_text(book)
@@ -311,28 +334,40 @@ def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
                 actions.append("源文件仍无法分章，保留原章节结构")
             else:
                 db.execute(delete(Chapter).where(Chapter.book_id == book.id))
-                for i, ch in enumerate(parsed.chapters):
-                    db.add(
-                        Chapter(
-                            book_id=book.id,
-                            index=i,
-                            title=re.sub(r"\s+", " ", ch.title).strip()[:200],
-                            content=_clean_text(ch.content),
-                        )
+                cleaned = [_clean_text(ch.content) for ch in parsed.chapters]
+                spans = write_pack(book.id, cleaned)
+                rows = []
+                for i, (ch, txt, (off, blen, clen)) in enumerate(
+                    zip(parsed.chapters, cleaned, spans)
+                ):
+                    rows.append(
+                        {
+                            "book_id": book.id,
+                            "index": i,
+                            "title": re.sub(r"\s+", " ", ch.title).strip()[:200],
+                            "content": "",
+                            "content_offset": off,
+                            "content_length": blen,
+                            "content_chars": clen,
+                        }
                     )
+                if rows:
+                    from sqlalchemy import insert as sa_insert
+
+                    db.execute(sa_insert(Chapter), rows)
                 book.chapter_count = len(parsed.chapters)
-                book.word_count = sum(len(c.content) for c in parsed.chapters)
+                book.word_count = sum(len(t) for t in cleaned)
                 book.latest_chapter = parsed.chapters[-1].title[:200] if parsed.chapters else ""
                 if not book.intro and parsed.intro:
                     book.intro = parsed.intro
                 actions.append(f"已从源重新解析为 {len(parsed.chapters)} 章")
 
-    # 刷新统计
+    # 刷新统计（字数用正文字符数）
     chapters = db.execute(
-        select(Chapter).where(Chapter.book_id == book.id).order_by(Chapter.index)
+        select(Chapter).where(Chapter.book_id == book.id).order_by(Chapter.index, Chapter.id)
     ).scalars().all()
     book.chapter_count = len(chapters)
-    book.word_count = sum(len(c.content or "") for c in chapters)
+    book.word_count = sum(c.content_chars or len(c.content or "") for c in chapters)
     if chapters:
         book.latest_chapter = chapters[-1].title[:200]
     book.updated_at = datetime.now().isoformat(timespec="seconds")

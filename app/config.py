@@ -27,6 +27,8 @@ class Settings:
         self.novels_dir: Path = _path("NOVELS_DIR", BASE_DIR / "novels")
         self.database_path: Path = _path("DATABASE_PATH", BASE_DIR / "data" / "novels.db")
         self.covers_dir: Path = _path("COVERS_DIR", BASE_DIR / "covers")
+        # 章节正文包目录：与 DB 同卷持久化，但备份 zip 不打包（可从源 TXT 重建）
+        self.contents_dir: Path = _path("CONTENTS_DIR", self.database_path.parent / "contents")
         self.database_url: str = f"sqlite:///{self.database_path}"
         # HTTPS / 反代场景请设 COOKIE_SECURE=1，会话 Cookie 才带 Secure
         self.cookie_secure: bool = _env("COOKIE_SECURE", "0").lower() in ("1", "true", "yes", "on")
@@ -35,6 +37,7 @@ class Settings:
         self.novels_dir.mkdir(parents=True, exist_ok=True)
         self.covers_dir.mkdir(parents=True, exist_ok=True)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.contents_dir.mkdir(parents=True, exist_ok=True)
 
 
 # 允许删除的封面图片扩展名（源 TXT 等其它文件永不删除）

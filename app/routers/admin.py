@@ -140,7 +140,8 @@ def admin_list_books(
     tag: str | None = Query(default=None),
     sort: str = Query(default="updated"),  # updated|title|author|words|chapters
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
+    # 上限放宽到 200：宽屏多列时前端会请求 cols*rows，保证非末页行占满
+    page_size: int = Query(default=20, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> dict:
     base = resolve_base_url(request)

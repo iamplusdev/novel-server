@@ -248,13 +248,14 @@ def list_chapters(
     total = db.execute(
         select(func.count()).select_from(Chapter).where(Chapter.book_id == book_id)
     ).scalar_one()
+    # 目录只取标题列，避免整本正文进内存
     chapters = db.execute(
-        select(Chapter)
+        select(Chapter.id, Chapter.book_id, Chapter.index, Chapter.title)
         .where(Chapter.book_id == book_id)
         .order_by(Chapter.index)
         .offset(offset)
         .limit(limit)
-    ).scalars().all()
+    ).all()
     return {
         "book_id": book_id,
         "book_name": book.title,
