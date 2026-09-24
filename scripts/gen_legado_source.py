@@ -10,12 +10,17 @@ sys.path.insert(0, str(ROOT))
 
 from urllib.parse import quote
 
-from app.config import all_category_labels  # noqa: E402
+from app.config import UNCATEGORIZED, all_category_labels, parse_category_label  # noqa: E402
 
 
 def build() -> list:
     # Legado 导入要求根节点为书源对象数组，故返回 list
-    cats = all_category_labels()
+    # 发现页只保留书源两级分类（起点-xxx / 番茄-xxx）+ 未分类，去掉旧扁平分类
+    cats = [
+        c
+        for c in all_category_labels()
+        if c == UNCATEGORIZED or parse_category_label(c)[0]
+    ]
     return [
         {
             "bookSourceName": "爱小说",
