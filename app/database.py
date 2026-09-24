@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Generator, Sequence
 
-from sqlalchemy import create_engine, delete, event, text
+from sqlalchemy import create_engine, delete, event, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -41,6 +41,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _migrate_books()
+    _migrate_chapters_storage()
     _init_fts()
 
 
@@ -56,6 +57,60 @@ def _migrate_books() -> None:
         if "source_id" not in cols:
             conn.execute(text("ALTER TABLE books ADD COLUMN source_id VARCHAR(64) NOT NULL DEFAULT ''"))
         conn.commit()
+
+
+def _migrate_chapters_storage() -> None:
+    """章节表补偏移列，并把遗留 content 正文迁到正文包后清空。"""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(chapters)")).fetchall()
+        cols = {r[1] for r in rows}
+        if "content_offset" not in cols:
+            conn.execute(text("ALTER TABLE chapters ADD COLUMN content_offset INTEGER NOT NULL DEFAULT 0"))
+        if "content_length" not in cols:
+            conn.execute(text("ALTER TABLE chapters ADD COLUMN content_length INTEGER NOT NULL DEFAULT 0"))
+        if "content_chars" not in cols:
+            conn.execute(text("ALTER TABLE chapters ADD COLUMN content_chars INTEGER NOT NULL DEFAULT 0"))
+        conn.commit()
+    _migrate_content_to_packs()
+
+
+def _migrate_content_to_packs() -> None:
+    """把仍在 chapters.content 的正文写入正文包，并按偏移回填后清空 content 列。"""
+    from .content_store import write_pack
+    from .models import Book, Chapter
+
+    with SessionLocal() as db:
+        # 仅处理仍带正文列的书（迁移后 content 为空字符串）
+        book_ids = (
+            db.execute(select(Chapter.book_id).where(Chapter.content != "").distinct())
+            .scalars()
+            .all()
+        )
+        for bid in book_ids:
+            chapters = (
+                db.execute(
+                    select(Chapter).where(Chapter.book_id == bid).order_by(Chapter.index, Chapter.id)
+                )
+                .scalars()
+                .all()
+            )
+            texts = [c.content or "" for c in chapters]
+            spans = write_pack(bid, texts)
+            for ch, (off, blen, clen) in zip(chapters, spans):
+                ch.content_offset = off
+                ch.content_length = blen
+                ch.content_chars = clen
+                ch.content = ""  # 清空遗留正文列，SQLite 文件在 VACUUM 后才真正收缩
+            book = db.get(Book, bid)
+            if book is not None:
+                book.word_count = sum(clen for _o, _b, clen in spans)
+            db.commit()
+        # 有正文迁出时收缩库文件，回收原 content 列占用
+        if book_ids:
+            with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.execute(text("VACUUM"))
 
 
 # FTS 删除同步触发器：索引与内容表不一致时会抛 database disk image is malformed
@@ -120,7 +175,7 @@ def rebuild_fts() -> None:
 
 
 def delete_books_safe(db: Session, book_ids: Sequence[int]) -> bool:
-    """安全删除书籍及其章节，返回是否走了 FTS 恢复路径。
+    """安全删除书籍及其章节/正文包，返回是否走了 FTS 恢复路径。
 
     优先正常 DELETE 以触发 FTS 同步；若索引不同步导致触发器失败，
     则临时禁用删除触发器完成删除，再 rebuild 索引并恢复触发器。
@@ -137,9 +192,17 @@ def delete_books_safe(db: Session, book_ids: Sequence[int]) -> bool:
         db.execute(delete(Chapter).where(Chapter.book_id.in_(ids)))
         db.execute(delete(Book).where(Book.id.in_(ids)))
 
+    def _drop_packs() -> None:
+        # 正文包随书删除，避免 data/contents 残留
+        from .content_store import delete_pack
+
+        for bid in ids:
+            delete_pack(bid)
+
     try:
         _wipe()
         db.commit()
+        _drop_packs()
         return False
     except Exception:
         db.rollback()
@@ -151,6 +214,7 @@ def delete_books_safe(db: Session, book_ids: Sequence[int]) -> bool:
         try:
             _wipe()
             db.commit()
+            _drop_packs()
         except Exception:
             db.rollback()
             # 恢复触发器后原样抛出

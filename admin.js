@@ -87,6 +87,9 @@
     importCancel: $("import-cancel"),
     importRefresh: $("import-refresh"),
     importLog: $("import-log"),
+    importProgress: $("import-progress"),
+    importProgressFill: $("import-progress-fill"),
+    importProgressText: $("import-progress-text"),
     sourcePreview: $("source-preview"),
     copySource: $("copy-source"),
     backupAutoPill: $("backup-auto-pill"),
@@ -198,6 +201,8 @@
     if (els.gridSize) els.gridSize.value = String(n);
     if (els.gridWrap) els.gridWrap.style.setProperty("--cover-w", n + "px");
     localStorage.setItem(GRID_SIZE_KEY, String(n));
+    // 卡片大小变化 → 重算每页数量，保证行占满
+    schedulePageSizeRefresh();
   }
 
   function applyDrawerWidth(px) {
@@ -358,6 +363,8 @@
       applyUserUI();
     } catch (_) { /* 会话仍在则继续 */ }
     showApp();
+    // 登录后按当前网格宽度/卡片大小确定每页数量
+    state.pageSize = computePageSize();
     try {
       await Promise.all([loadStats(), loadBooks(), loadSourceJson()]);
     } catch (e) {
@@ -673,6 +680,127 @@
     return Promise.resolve();
   }
 
+  // —— 书库动态分页：page_size = 列数 × 行数，保证非末页每行占满且约等于一屏 ——
+  const GRID_GAP = 14;
+
+  function computeGridCols() {
+    const wrap = els.gridWrap;
+    if (!wrap) return 4;
+    const styles = window.getComputedStyle(wrap);
+    const coverW = parseFloat(styles.getPropertyValue("--cover-w")) || 150;
+    const width = wrap.clientWidth || wrap.getBoundingClientRect().width || 0;
+    if (width <= 0) return 4;
+    // 与 CSS auto-fill minmax(cover-w, 1fr) + gap 对齐，估算每行列数
+    return Math.max(2, Math.floor((width + GRID_GAP) / (coverW + GRID_GAP)));
+  }
+
+  function gridUsableHeight() {
+    // 网格区实际可用高度：视口底 − 网格顶 − 分页器 − 底边距
+    const wrap = els.gridWrap;
+    if (!wrap) return window.innerHeight * 0.55;
+    const top = wrap.getBoundingClientRect().top || 200;
+    const pager = document.querySelector(".pager");
+    const pagerH = pager ? pager.offsetHeight + 18 : 42;
+    const bottomPad = 12;
+    const h = window.innerHeight - top - pagerH - bottomPad;
+    return Math.max(120, h);
+  }
+
+  function estimateCardHeight() {
+    // 优先量已渲染卡片；否则按列宽估算（封面 3:4 + 元信息区）
+    const wrap = els.gridWrap;
+    if (wrap) {
+      const sample = wrap.querySelector(".book-card");
+      if (sample && sample.offsetHeight > 0) return sample.offsetHeight;
+    }
+    const cols = computeGridCols();
+    const width = (wrap && (wrap.clientWidth || wrap.getBoundingClientRect().width)) || 320;
+    const colW = Math.max(110, (width - (cols - 1) * GRID_GAP) / cols);
+    // aspect-ratio: 3/4 → 高 = 宽 × 4/3；元信息约 58px（双行书名 + 作者）
+    return colW * (4 / 3) + 58;
+  }
+
+  function rowsFromHeight(usableH, cardH) {
+    // 整行放得下的行数
+    const slot = cardH + GRID_GAP;
+    const fitted = Math.floor((usableH + GRID_GAP) / slot);
+    if (fitted <= 0) return 1;
+    // 剩余约半张卡时 +1 行：宁可溢出一点，也不空半截
+    const used = fitted * cardH + Math.max(0, fitted - 1) * GRID_GAP;
+    const leftover = usableH - used;
+    if (leftover >= cardH * 0.45) return fitted + 1;
+    return fitted;
+  }
+
+  function rowsFloorFromHeight(usableH, cardH) {
+    // 仅完整放下、不额外 +1（明显超屏时收紧用）
+    return Math.max(1, Math.floor((usableH + GRID_GAP) / (cardH + GRID_GAP)));
+  }
+
+  function computeGridRows() {
+    // 卡片越大行越少、越小行越多；略可溢出，不必刚好一屏
+    return rowsFromHeight(gridUsableHeight(), estimateCardHeight());
+  }
+
+  function computePageSize() {
+    const cols = computeGridCols();
+    const rows = computeGridRows();
+    // 必须是列数整数倍，前面页每行才铺满；至少一整行
+    return Math.min(200, cols * rows);
+  }
+
+  function computeRowsWithCardHeight(cardH) {
+    return rowsFromHeight(gridUsableHeight(), cardH);
+  }
+
+  // 渲染后微调：仅明显超出一屏时收紧；允许略溢出，不为“刚好满”加行
+  let refineSig = "";
+  function refinePageSizeAfterRender() {
+    const wrap = els.gridWrap;
+    if (!wrap || !booksLoadedOnce) return;
+    const sample = wrap.querySelector(".book-card");
+    if (!sample || !sample.offsetHeight) return;
+    const cardH = sample.offsetHeight;
+    const cols = computeGridCols();
+    const usableH = gridUsableHeight();
+    const gridH = wrap.scrollHeight || 0;
+    // 超出约 3/4 张卡才算“太多”
+    const overflow = gridH > usableH + cardH * 0.75;
+    const rows = overflow
+      ? rowsFloorFromHeight(usableH, cardH)
+      : computeRowsWithCardHeight(cardH);
+    const next = Math.min(200, cols * rows);
+    const sig = cols + "x" + rows + "@" + Math.round(cardH) + ":" + (overflow ? "o" : "k");
+    // 布局未变则不重复校正，避免加载回环
+    if (sig === refineSig) return;
+    refineSig = sig;
+    if (!overflow) return;
+    if (next >= state.pageSize) return;
+    const firstIndex = (state.page - 1) * state.pageSize;
+    state.pageSize = next;
+    state.page = Math.floor(firstIndex / next) + 1;
+    loadBooks().catch(() => {});
+  }
+
+  let pageSizeTimer = null;
+  let booksLoadedOnce = false;
+  function schedulePageSizeRefresh() {
+    clearTimeout(pageSizeTimer);
+    pageSizeTimer = setTimeout(() => {
+      const oldSize = state.pageSize || 24;
+      const next = computePageSize();
+      if (next === oldSize) return;
+      // 尽量保持当前阅读位置附近的页
+      const firstIndex = (state.page - 1) * oldSize;
+      state.pageSize = next;
+      state.page = Math.floor(firstIndex / next) + 1;
+      // 仅书库已加载过才拉列表，避免启动/登录前误请求
+      if (booksLoadedOnce && els.app && !els.app.hidden) {
+        loadBooks().catch(() => {});
+      }
+    }, 160);
+  }
+
   function currentQuery() {
     const params = new URLSearchParams();
     params.set("page", String(state.page));
@@ -750,6 +878,7 @@
   }
 
   async function loadBooks() {
+    booksLoadedOnce = true;
     const data = await api("/api/admin/books?" + currentQuery());
     state.items = data.items || [];
     state.total = data.total || 0;
@@ -760,6 +889,8 @@
     els.prevPage.disabled = state.page <= 1;
     els.nextPage.disabled = state.page >= pages;
     renderLibrary();
+    // 实测卡高后微调每页数量，尽量刚好一屏
+    refinePageSizeAfterRender();
   }
 
   function statusChip(status) {
@@ -797,19 +928,8 @@
           </div>
         </article>`;
     };
-    if (window.AinovelUI && window.AinovelUI.renderVirtualGrid) {
-      window.AinovelUI.renderVirtualGrid(
-        els.gridWrap,
-        state.items,
-        cardHtml,
-        (id) => openDrawer(id),
-        240
-      );
-      els.gridWrap.querySelectorAll(".book-card img").forEach((img) => {
-        bindCoverFallback(img, img.dataset.fallback || "");
-      });
-      return;
-    }
+    // 分页封面墙：单页条数有限，始终用普通网格，保证多列行占满
+    //（虚拟网格按一卡一行定位，与 auto-fill 多列布局不兼容）
     els.gridWrap.innerHTML = state.items.map(cardHtml).join("");
     els.gridWrap.querySelectorAll(".book-card img").forEach((img) => {
       bindCoverFallback(img, img.dataset.fallback || "");
@@ -1202,16 +1322,75 @@
     }, "删除中…");
   }
 
+  function setImportProgressVisible(on) {
+    if (!els.importProgress) return;
+    els.importProgress.hidden = !on;
+  }
+
+  function updateImportProgressBar(pct) {
+    const n = Math.min(100, Math.max(0, Number(pct) || 0));
+    if (els.importProgressFill) {
+      els.importProgressFill.style.width = n + "%";
+    }
+    return n;
+  }
+
   function renderImportLog(importStatus) {
     if (!importStatus) {
+      setImportProgressVisible(false);
       els.importLog.textContent = "尚未运行导入。";
       return;
     }
     if (importStatus.running) {
-      els.importLog.textContent = "导入进行中…\n请稍候刷新。";
+      // 实时进度：进度条 + 已处理/总数 + 当前文件 + 四类计数
+      setImportProgressVisible(true);
+      const total = Number(importStatus.total) || 0;
+      const done = Number(importStatus.done) || 0;
+      const pct = updateImportProgressBar(
+        importStatus.percent != null
+          ? importStatus.percent
+          : total
+            ? Math.floor((done * 100) / total)
+            : 0
+      );
+      const counts =
+        "新增 " + (importStatus.added_n || 0) +
+        " · 更新 " + (importStatus.updated_n || 0) +
+        " · 跳过 " + (importStatus.skipped_n || 0) +
+        " · 失败 " + (importStatus.failed_n || 0);
+      const head = total
+        ? "导入中 " + done + " / " + total + "（" + pct + "%）"
+        : "正在扫描 novels 目录…";
+      if (els.importProgressText) {
+        els.importProgressText.textContent =
+          head + (importStatus.current ? "　当前: " + importStatus.current : "");
+      }
+      const lines = [];
+      lines.push(head);
+      if (importStatus.current) lines.push("当前: " + importStatus.current);
+      lines.push(counts);
+      if (importStatus.cancel_requested) lines.push("（已请求停止…）");
+      const recent = importStatus.recent || [];
+      if (recent.length) {
+        lines.push("");
+        lines.push("[最近]");
+        recent.forEach((x) => lines.push("  " + x));
+      }
+      els.importLog.textContent = lines.join("\n");
       return;
     }
+    // 结束：展示满格进度条与完整结果日志
     const last = importStatus.last;
+    if (!last) {
+      setImportProgressVisible(false);
+      els.importLog.textContent = "尚未运行导入。";
+      return;
+    }
+    updateImportProgressBar(importStatus.percent != null ? importStatus.percent : 100);
+    if (els.importProgressText) {
+      els.importProgressText.textContent = "已完成";
+    }
+    setImportProgressVisible(true);
     if (!last) {
       els.importLog.textContent = "尚未运行导入。";
       return;
@@ -1880,6 +2059,10 @@
     loadBooks().catch((e) => toast(e.message, "err"));
   });
   on(els.gridSize, "input", () => applyGridSize(els.gridSize.value));
+  // 窗口尺寸变化 → 重算列数与每页数量
+  window.addEventListener("resize", () => {
+    schedulePageSizeRefresh();
+  });
   on(els.themeSelect, "change", () => applyTheme(els.themeSelect.value));
   if (window.matchMedia) {
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
@@ -1943,6 +2126,7 @@
 
   // Boot
   applyTheme(state.theme);
+  // 初始化封面大小（不触发列表请求，登录后再按布局定 page_size）
   applyGridSize(localStorage.getItem(GRID_SIZE_KEY) || 150);
   applyDrawerWidth(localStorage.getItem(DRAWER_W_KEY) || 520);
   initDrawerResize();

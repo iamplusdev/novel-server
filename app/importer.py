@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
 from .config import (
@@ -25,6 +25,7 @@ from .config import (
     parse_category_label,
     settings,
 )
+from .content_store import write_pack
 from .database import SessionLocal
 from .models import Book, Chapter
 from .parsers import load_txt_book, load_txt_book_from_text
@@ -39,6 +40,8 @@ class ImportResult:
     updated: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    # 最近处理记录（带动作前缀），用于导入进度展示
+    recent_log: list[str] = field(default_factory=list)
 
     @property
     def summary(self) -> str:
@@ -59,13 +62,36 @@ class ImportResult:
 
 
 _import_lock = threading.Lock()
-_import_status: dict = {"running": False, "last": None}
+_status_lock = threading.Lock()
+# 实时进度字段：total/done/current/percent/added_n/updated_n/skipped_n/failed_n/recent
+_import_status: dict = {
+    "running": False,
+    "last": None,
+    "total": 0,
+    "done": 0,
+    "current": "",
+    "percent": 0,
+    "added_n": 0,
+    "updated_n": 0,
+    "skipped_n": 0,
+    "failed_n": 0,
+    "recent": [],
+}
 # 请求中止导入（A6）
 _import_cancel = threading.Event()
 
 
+def _set_import_status(**fields) -> None:
+    """原子合并导入状态字段（进度与 SSE 读取并发安全）。"""
+    global _import_status
+    with _status_lock:
+        _import_status = {**_import_status, **fields}
+
+
 def get_import_status() -> dict:
-    out = dict(_import_status)
+    with _status_lock:
+        out = dict(_import_status)
+        out["recent"] = list(_import_status.get("recent") or [])
     out["cancel_requested"] = _import_cancel.is_set()
     return out
 
@@ -227,15 +253,25 @@ def _upsert_parsed(
         db.flush()
         action = "added"
 
-    for i, ch in enumerate(parsed.chapters, start=0):
-        db.add(
-            Chapter(
-                book_id=book.id,
-                index=i,
-                title=re.sub(r"\s+", " ", ch.title).strip()[:200],
-                content=ch.content,
-            )
+    # 正文写入独立正文包，库内只存字节偏移/长度（千章级批量插入）
+    chapter_payloads = parsed.chapters
+    spans = write_pack(book.id, [c.content for c in chapter_payloads])
+    rows = []
+    for i, (ch, (off, blen, clen)) in enumerate(zip(chapter_payloads, spans)):
+        rows.append(
+            {
+                "book_id": book.id,
+                "index": i,
+                "title": re.sub(r"\s+", " ", ch.title).strip()[:200],
+                # 不再把正文写入 SQLite
+                "content": "",
+                "content_offset": off,
+                "content_length": blen,
+                "content_chars": clen,
+            }
         )
+    if rows:
+        db.execute(insert(Chapter), rows)
 
     book.chapter_count = len(parsed.chapters)
     book.latest_chapter = parsed.chapters[-1].title[:200] if parsed.chapters else ""
@@ -331,6 +367,23 @@ def decode_txt_bytes(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _progress_fields(result: ImportResult, total: int, done: int, current: str) -> dict:
+    """组装进度字段，供前端进度条/日志使用。"""
+    percent = int(done * 100 / total) if total else (100 if done else 0)
+    recent = list(result.recent_log[-8:])
+    return {
+        "total": total,
+        "done": done,
+        "current": current,
+        "percent": percent,
+        "added_n": len(result.added),
+        "updated_n": len(result.updated),
+        "skipped_n": len(result.skipped),
+        "failed_n": len(result.failed),
+        "recent": recent,
+    }
+
+
 def import_all(db: Session | None = None) -> ImportResult:
     own = db is None
     if own:
@@ -342,24 +395,35 @@ def import_all(db: Session | None = None) -> ImportResult:
     pending = 0
     try:
         files = list(_iter_txt_files(root))
-        for category, path in files:
+        total = len(files)
+        _set_import_status(**_progress_fields(result, total, 0, ""))
+        for done, (category, path) in enumerate(files, start=1):
             # 支持中途取消（A6）
             if _import_cancel.is_set():
                 result.failed.append("（已取消）")
+                result.recent_log.append("取消")
+                _set_import_status(**_progress_fields(result, total, done - 1, ""))
                 break
+            current_name = path.name
+            _set_import_status(**_progress_fields(result, total, done - 1, current_name))
             try:
                 digest = file_sha256(path)
                 action, label = _upsert_book(db, path, category, digest)
                 getattr(result, action).append(label)
+                mark = {"added": "+", "updated": "~", "skipped": "·", "failed": "!"}.get(action, "?")
+                result.recent_log.append(f"{mark} {label}")
                 pending += 1
                 if pending >= batch_size:
                     db.commit()
                     pending = 0
             except Exception as exc:  # noqa: BLE001
-                result.failed.append(f"{path.name}: {exc}")
+                err_label = f"{path.name}: {exc}"
+                result.failed.append(err_label)
+                result.recent_log.append(f"! {err_label}")
                 # 单本失败不影响整批，回滚脏对象后继续
                 db.rollback()
                 pending = 0
+            _set_import_status(**_progress_fields(result, total, done, current_name))
         db.commit()
     finally:
         if own:
@@ -378,21 +442,42 @@ def import_all_async(mode: str = "local") -> bool:
     _import_cancel.clear()
 
     def _run() -> None:
-        global _import_status
-        _import_status = {
-            "running": True,
-            "mode": "local",
-            "last": None,
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        _set_import_status(
+            running=True,
+            mode="local",
+            last=None,
+            started_at=datetime.now().isoformat(timespec="seconds"),
+            total=0,
+            done=0,
+            current="",
+            percent=0,
+            added_n=0,
+            updated_n=0,
+            skipped_n=0,
+            failed_n=0,
+            recent=[],
+        )
         try:
             result = import_all()
-            _import_status = {"running": False, "mode": "local", "last": result.to_dict()}
+            # 结束时补全计数与百分比；total/done 沿用最后一次进度
+            _set_import_status(
+                running=False,
+                mode="local",
+                last=result.to_dict(),
+                current="",
+                percent=100,
+                added_n=len(result.added),
+                updated_n=len(result.updated),
+                skipped_n=len(result.skipped),
+                failed_n=len(result.failed),
+                recent=list(result.recent_log[-8:]),
+            )
         except Exception as exc:  # noqa: BLE001
-            _import_status = {
-                "running": False,
-                "mode": "local",
-                "last": {
+            _set_import_status(
+                running=False,
+                mode="local",
+                current="",
+                last={
                     "added": [],
                     "updated": [],
                     "skipped": [],
@@ -400,7 +485,7 @@ def import_all_async(mode: str = "local") -> bool:
                     "summary": f"导入失败: {exc}",
                     "finished_at": datetime.now().isoformat(timespec="seconds"),
                 },
-            }
+            )
         finally:
             _import_lock.release()
 

@@ -228,7 +228,10 @@ def create_backup_zip() -> tuple[Path, dict]:
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "database": "novels.db",
         "covers_dir": "covers",
+        # 大体量正文在 data/contents/ 正文包，不进备份；还原后可从 novels/ 源 TXT 重新导入
         "includes": ["novels.db", "covers/"],
+        "excludes": ["contents/", "novels/"],
+        "note": "备份仅含小库与封面；章节正文包可从源 TXT 重建",
     }
     tmp_dir = Path(tempfile.mkdtemp(prefix="novel-backup-"))
     try:

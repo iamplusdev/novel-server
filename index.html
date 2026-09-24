@@ -119,17 +119,19 @@
           </div>
           <div class="toolbar-right tools">
             <input id="search-input" class="input" type="search" placeholder="搜索书名 / 作者 / 标签…" />
-            <select id="sort-select" class="input select" title="排序">
-              <option value="updated">导入/更新时间</option>
-              <option value="title">书名</option>
-              <option value="author">作者</option>
-              <option value="words">字数</option>
-              <option value="chapters">章节</option>
-            </select>
-            <label class="size-ctrl" title="封面墙卡片大小">
-              <span class="muted tiny">大小</span>
-              <input id="grid-size" type="range" min="110" max="240" step="10" value="150" />
-            </label>
+            <div class="sort-size">
+              <select id="sort-select" class="input select" title="排序">
+                <option value="updated">导入/更新时间</option>
+                <option value="title">书名</option>
+                <option value="author">作者</option>
+                <option value="words">字数</option>
+                <option value="chapters">章节</option>
+              </select>
+              <label class="size-ctrl" title="封面墙卡片大小">
+                <span class="muted tiny">大小</span>
+                <input id="grid-size" type="range" min="110" max="240" step="10" value="150" />
+              </label>
+            </div>
           </div>
         </header>
 
@@ -164,7 +166,14 @@
           <p class="mono" id="novels-path">NOVELS_DIR（服务端配置）</p>
         </div>
         <div class="panel">
-          <div class="panel-title">导入日志</div>
+          <div class="panel-title">导入进度</div>
+          <div class="import-progress" id="import-progress" hidden>
+            <div class="import-progress-bar" aria-hidden="true">
+              <div class="import-progress-fill" id="import-progress-fill"></div>
+            </div>
+            <div class="muted tiny" id="import-progress-text"></div>
+          </div>
+          <div class="panel-title" style="margin-top:12px">导入日志</div>
           <pre id="import-log" class="log">尚未运行导入。</pre>
         </div>
       </section>

@@ -179,8 +179,17 @@ a { color: var(--accent); text-decoration: none; }
 .toolbar-left { display: flex; align-items: center; gap: 10px; }
 .toolbar-right, .tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .tools > .btn { flex: 0 0 auto; }
-.tools > .input, .tools > .select, .tools > .size-ctrl { flex: 1 1 140px; min-width: 0; }
-.tools > #search-input { flex: 2 1 200px; }
+.tools > .input, .tools > .select { flex: 1 1 140px; min-width: 0; }
+/* 书库：搜索 + 排序 + 大小 同一行，搜索占剩余宽度 */
+#view-library .tools { flex-wrap: nowrap; }
+#view-library .tools > .input, #view-library .tools > .select { flex: 0 1 auto; }
+.tools > #search-input { flex: 1 1 auto; min-width: 100px; }
+/* 排序 + 大小：紧挨排列，滑杆在排序右侧 */
+.sort-size {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
+  flex: 0 0 auto; min-width: 0;
+}
+.sort-size > .select { flex: 0 0 auto; width: auto; min-width: 112px; }
 .pill {
   background: var(--accent-soft); color: var(--accent); border-radius: 999px;
   padding: 2px 10px; font-size: 12px; border: 1px solid var(--accent-border);
@@ -188,8 +197,9 @@ a { color: var(--accent); text-decoration: none; }
 .size-ctrl {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+  flex: 0 0 auto;
 }
-.size-ctrl input[type="range"] { width: 88px; accent-color: var(--accent); cursor: pointer; }
+.size-ctrl input[type="range"] { width: 96px; accent-color: var(--accent); cursor: pointer; }
 
 .cat-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; align-items: center; }
 .cat-bar + .cat-bar { margin-bottom: 14px; }
@@ -276,6 +286,17 @@ a { color: var(--accent); text-decoration: none; }
   background: var(--log-bg); border: 1px solid var(--border); border-radius: 8px;
   padding: 12px 14px; color: var(--log-ink); font-family: var(--mono); font-size: 12px;
   white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; margin: 8px 0 0;
+}
+
+/* 导入进度条 */
+.import-progress { display: flex; flex-direction: column; gap: 8px; }
+.import-progress-bar {
+  height: 8px; border-radius: 999px; overflow: hidden;
+  background: var(--elevated); border: 1px solid var(--border);
+}
+.import-progress-fill {
+  height: 100%; width: 0%; background: var(--accent, #3b82f6);
+  transition: width .25s ease;
 }
 .api-list { margin: 0; padding-left: 18px; color: var(--log-ink); line-height: 1.8; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
@@ -380,10 +401,13 @@ a { color: var(--accent); text-decoration: none; }
   .side-foot { margin-top: 0; }
   .main { padding: 12px 12px 32px; }
   .toolbar { flex-direction: column; align-items: stretch; gap: 10px; }
-  .tools { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .tools { display: flex; flex-wrap: wrap; width: 100%; }
   .tools > * { min-width: 0 !important; }
-  .tools > #search-input { grid-column: 1 / -1; }
-  .tools > .size-ctrl { grid-column: 1 / -1; }
+  #view-library .tools { flex-wrap: wrap; }
+  .tools > #search-input { flex: 1 1 100%; }
+  .sort-size { flex: 1 1 auto; width: auto; }
+  .sort-size > .select { flex: 1 1 auto; min-width: 0; }
+  .size-ctrl { flex: 0 0 auto; }
   .tools > .btn { width: 100%; justify-content: center; }
   .input, select.input, textarea.input { font-size: 16px; min-height: 40px; }
   .btn, .btn-sm { min-height: 40px; }

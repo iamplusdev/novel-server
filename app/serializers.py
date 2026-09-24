@@ -78,7 +78,8 @@ def book_detail(book: Book, with_chapters: bool = False, base: str | None = None
     return data
 
 
-def chapter_item(ch: Chapter, base: str | None = None) -> dict:
+def chapter_item(ch, base: str | None = None) -> dict:
+    """目录条目：仅需 id/book_id/index/title，避免加载正文。"""
     root = (base or settings.public_base_url).rstrip("/")
     return {
         "id": ch.id,
@@ -91,12 +92,21 @@ def chapter_item(ch: Chapter, base: str | None = None) -> dict:
 
 def chapter_content(ch: Chapter, base: str | None = None) -> dict:
     root = (base or settings.public_base_url).rstrip("/")
+    # 正文优先读正文包偏移；迁移前旧数据回退 content 列
+    from .content_store import read_chapter_text
+
+    text = read_chapter_text(
+        ch.book_id,
+        ch.content_offset,
+        ch.content_length,
+        legacy_content=ch.content,
+    )
     return {
         "id": ch.id,
         "book_id": ch.book_id,
         "index": ch.index,
         "title": ch.title,
-        "content": ch.content,
+        "content": text,
         "content_url": f"{root}/api/books/{ch.book_id}/chapters/{ch.id}",
     }
 
