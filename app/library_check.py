@@ -9,7 +9,8 @@ from pathlib import Path
 from sqlalchemy import case, delete, func, select
 from sqlalchemy.orm import Session
 
-from .config import category_rel_parts, settings
+from .config import category_rel_parts, safe_delete_cover, settings
+from .database import delete_books_safe
 from .importer import UNCATEGORIZED, decode_txt_bytes
 from .models import Book, Chapter
 from .parsers import load_txt_book_from_text
@@ -190,30 +191,33 @@ def merge_duplicates(db: Session, keep_id: int, delete_ids: list[int]) -> dict:
         raise ValueError(f"保留的书不存在: {keep_id}")
 
     deleted = []
+    to_delete: list[int] = []
     for bid in delete_ids:
         book = db.get(Book, bid)
         if not book:
             continue
         if book.title != keep.title or book.author != keep.author:
             raise ValueError(f"《{book.title}》与保留项书名/作者不一致，已中止")
-        if book.cover_file and not keep.cover_file:
-            keep.cover_file = book.cover_file  # 迁移封面
-            book.cover_file = ""
+        cover_name = book.cover_file
         if book.source and not keep.source:
             keep.source = book.source
             keep.source_id = book.source_id
         deleted.append({"id": book.id, "title": book.title, "source_path": book.source_path})
-        if book.cover_file:
-            p = settings.covers_dir / book.cover_file
-            if p.is_file():
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
-        db.delete(book)
+        # 封面优先迁移给保留项，否则删封面图（源 TXT 永不删除）
+        if cover_name and not keep.cover_file:
+            keep.cover_file = cover_name
+        elif cover_name:
+            safe_delete_cover(cover_name)
+        to_delete.append(book.id)
 
     keep.updated_at = datetime.now().isoformat(timespec="seconds")
+    # 先提交保留项修改，避免删除失败回滚时丢掉封面迁移/来源补全
     db.commit()
+    try:
+        # 批量删章节+书籍；FTS 触发器失败时自动重建索引
+        delete_books_safe(db, to_delete)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"删除失败：{e}") from e
     return {"kept": {"id": keep.id, "title": keep.title}, "deleted": deleted}
 
 

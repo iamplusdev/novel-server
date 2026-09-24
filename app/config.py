@@ -37,6 +37,38 @@ class Settings:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
 
 
+# 允许删除的封面图片扩展名（源 TXT 等其它文件永不删除）
+ALLOWED_COVER_IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+
+def safe_delete_cover(cover_file: str) -> bool:
+    """仅删除 covers 目录内的封面图片；拒绝 txt / 路径穿越 / 非图片。
+
+    删除书籍只清库内数据 + 封面图，绝不触碰 novels/ 下源 TXT。
+    """
+    name = (cover_file or "").strip()
+    if not name:
+        return False
+    # 禁止路径分隔与盘符，防止误删 novels/ 或其它目录下的 txt
+    if any(ch in name for ch in ("/", "\\", ":")) or name.startswith("."):
+        return False
+    ext = Path(name).suffix.lower()
+    if ext not in ALLOWED_COVER_IMG_EXT:
+        return False
+    covers_dir = settings.covers_dir.resolve()
+    path = (covers_dir / name).resolve()
+    # 必须落在 covers 目录内
+    if path.parent != covers_dir:
+        return False
+    if not path.is_file():
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 # 未分类（既是分类名，也是 tags 标记）
 UNCATEGORIZED = "未分类"
 

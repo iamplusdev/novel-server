@@ -22,9 +22,10 @@ from ..config import (
     map_site_category,
     normalize_source,
     parse_category_label,
+    safe_delete_cover,
     settings,
 )
-from ..database import escape_like, fts_available, get_db
+from ..database import delete_books_safe, escape_like, fts_available, get_db
 from ..importer import get_import_status, import_all_async, relocate_local_txt, request_import_cancel
 from ..models import Book
 from ..serializers import admin_book_detail, book_list_item, resolve_base_url
@@ -345,14 +346,9 @@ def admin_upload_cover(
     if magic_ext is None:
         raise HTTPException(400, "不是有效的图片文件（支持 jpg / png / webp / gif）")
     settings.covers_dir.mkdir(parents=True, exist_ok=True)
-    # 删除旧封面
+    # 删除旧封面（仅 covers 内图片，源 TXT 不受影响）
     if book.cover_file:
-        old = settings.covers_dir / book.cover_file
-        if old.is_file():
-            try:
-                old.unlink()
-            except OSError:
-                pass
+        safe_delete_cover(book.cover_file)
     # 统一用魔数识别的扩展名落盘
     new_name = f"{book.id}_{int(time.time())}{magic_ext}"
     dest = settings.covers_dir / new_name
@@ -368,17 +364,16 @@ def admin_delete_book(book_id: int, db: Session = Depends(get_db)) -> dict:
     book = db.get(Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
+    # 只删封面图片，绝不删除 novels/ 下源 TXT
     if book.cover_file:
-        cover = settings.covers_dir / book.cover_file
-        if cover.is_file():
-            try:
-                cover.unlink()
-            except OSError:
-                pass
+        safe_delete_cover(book.cover_file)
     title = book.title
-    db.delete(book)
-    db.commit()
-    return {"ok": True, "deleted": title, "id": book_id}
+    try:
+        # 批量删章节+书籍；FTS 触发器失败时自动重建索引，避免裸 500
+        repaired = delete_books_safe(db, [book_id])
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"删除失败：{e}") from e
+    return {"ok": True, "deleted": title, "id": book_id, "fts_repaired": repaired}
 
 
 @router.post("/import")
