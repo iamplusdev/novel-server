@@ -1,9 +1,9 @@
 """SQLAlchemy 引擎与会话。"""
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, delete, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -58,10 +58,16 @@ def _migrate_books() -> None:
         conn.commit()
 
 
+# FTS 删除同步触发器：索引与内容表不一致时会抛 database disk image is malformed
+_FTS_AD_TRIGGER_SQL = (
+    "CREATE TRIGGER IF NOT EXISTS books_ad_fts AFTER DELETE ON books BEGIN "
+    "INSERT INTO books_fts(books_fts, rowid, title, author, tags, intro) "
+    "VALUES ('delete', old.id, old.title, old.author, old.tags, old.intro); END"
+)
+
+
 def _init_fts() -> None:
     """书籍全文检索（A9）：FTS5 外部内容表 + 触发器同步；失败则仅用 LIKE。"""
-    from sqlalchemy import text
-
     with engine.connect() as conn:
         try:
             conn.execute(
@@ -83,12 +89,7 @@ def _init_fts() -> None:
                     "INSERT INTO books_fts(rowid, title, author, tags, intro) "
                     "VALUES (new.id, new.title, new.author, new.tags, new.intro); END",
                 ),
-                (
-                    "books_ad_fts",
-                    "CREATE TRIGGER IF NOT EXISTS books_ad_fts AFTER DELETE ON books BEGIN "
-                    "INSERT INTO books_fts(books_fts, rowid, title, author, tags, intro) "
-                    "VALUES ('delete', old.id, old.title, old.author, old.tags, old.intro); END",
-                ),
+                ("books_ad_fts", _FTS_AD_TRIGGER_SQL),
                 (
                     "books_au_fts",
                     "CREATE TRIGGER IF NOT EXISTS books_au_fts AFTER UPDATE ON books BEGIN "
@@ -99,10 +100,10 @@ def _init_fts() -> None:
                 ),
             ):
                 conn.execute(text(sql))
-            # 首次建表后按需重建索引（书籍有、FTS 空时）
+            # 书籍数与 FTS 不一致（含 FTS 为空/半同步）时重建，避免删除触发器报错
             n_fts = conn.execute(text("SELECT count(*) FROM books_fts")).scalar() or 0
             n_books = conn.execute(text("SELECT count(*) FROM books")).scalar() or 0
-            if n_books and not n_fts:
+            if n_books != n_fts:
                 conn.execute(text("INSERT INTO books_fts(books_fts) VALUES('rebuild')"))
             conn.commit()
         except Exception:  # noqa: BLE001
@@ -110,10 +111,61 @@ def _init_fts() -> None:
             conn.rollback()
 
 
+def rebuild_fts() -> None:
+    """全量重建 books_fts 索引；无 FTS 时静默忽略。"""
+    if not fts_available():
+        return
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO books_fts(books_fts) VALUES('rebuild')"))
+
+
+def delete_books_safe(db: Session, book_ids: Sequence[int]) -> bool:
+    """安全删除书籍及其章节，返回是否走了 FTS 恢复路径。
+
+    优先正常 DELETE 以触发 FTS 同步；若索引不同步导致触发器失败，
+    则临时禁用删除触发器完成删除，再 rebuild 索引并恢复触发器。
+    使用 Core 批量删除，避免 ORM 级联加载全部章节正文。
+    """
+    from .models import Book, Chapter  # 延迟导入，避免循环依赖
+
+    ids = [int(i) for i in book_ids if i is not None]
+    if not ids:
+        return False
+
+    def _wipe() -> None:
+        # 先删章节再删书；与 FK ON DELETE CASCADE 双保险
+        db.execute(delete(Chapter).where(Chapter.book_id.in_(ids)))
+        db.execute(delete(Book).where(Book.id.in_(ids)))
+
+    try:
+        _wipe()
+        db.commit()
+        return False
+    except Exception:
+        db.rollback()
+        if not fts_available():
+            raise
+        # FTS 不同步：禁用删除触发器后重试
+        with engine.begin() as conn:
+            conn.execute(text("DROP TRIGGER IF EXISTS books_ad_fts"))
+        try:
+            _wipe()
+            db.commit()
+        except Exception:
+            db.rollback()
+            # 恢复触发器后原样抛出
+            with engine.begin() as conn:
+                conn.execute(text(_FTS_AD_TRIGGER_SQL))
+            raise
+        # 删除成功后重建索引并恢复触发器
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO books_fts(books_fts) VALUES('rebuild')"))
+            conn.execute(text(_FTS_AD_TRIGGER_SQL))
+        return True
+
+
 def fts_available() -> bool:
     """当前库是否启用了 books_fts。"""
-    from sqlalchemy import text
-
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1 FROM books_fts LIMIT 1"))
