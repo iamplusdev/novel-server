@@ -80,25 +80,6 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(any("Secure" in c for c in cookies))
         self.assertTrue(any("HttpOnly" in c for c in cookies))
 
-    def test_backup_password_encrypted(self) -> None:
-        from app import auth as auth_mod
-        from app.backup import BackupConfig, decrypt_secret, encrypt_secret, load_config, save_config
-
-        auth_mod.create_account("admin", "secret123")
-        token = encrypt_secret("p@ss")
-        self.assertTrue(token.startswith("enc:v1:"))
-        self.assertNotIn("p@ss", token)
-        self.assertEqual(decrypt_secret(token), "p@ss")
-        self.assertEqual(decrypt_secret("plain-pw"), "plain-pw")
-
-        cfg = BackupConfig(
-            webdav_url="https://dav.example.com/dav/", username="u", password="p@ss"
-        )
-        save_config(cfg)
-        raw = (self.cfg.settings.database_path.parent / "backup_config.json").read_text("utf-8")
-        self.assertNotIn("p@ss", raw)
-        self.assertEqual(load_config().password, "p@ss")
-
     def test_import_and_fts_search(self) -> None:
         from sqlalchemy import select, text
 

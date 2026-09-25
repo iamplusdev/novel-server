@@ -10,10 +10,11 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..auth import require_admin_dep
+from ..book_query import build_books_stmt, count_books
 from ..config import (
     CATEGORIES,
     UNCATEGORIZED,
@@ -21,11 +22,10 @@ from ..config import (
     make_category_label,
     map_site_category,
     normalize_source,
-    parse_category_label,
     safe_delete_cover,
     settings,
 )
-from ..database import delete_books_safe, escape_like, fts_available, get_db
+from ..database import delete_books_safe, get_db
 from ..importer import get_import_status, import_all_async, relocate_local_txt, request_import_cancel
 from ..models import Book
 from ..serializers import admin_book_detail, book_list_item, resolve_base_url
@@ -146,116 +146,20 @@ def admin_list_books(
 ) -> dict:
     base = resolve_base_url(request)
     offset = (page - 1) * page_size
-    stmt = select(Book)
-    # 书源 + 分类：支持「起点」「都市」「起点-都市」等组合（统一归一化）
-    src_raw = (source or "").strip()
-    cat_raw = (category or "").strip()
-    if cat_raw:
-        psrc, pure = parse_category_label(cat_raw)
-        if psrc:
-            src_raw = src_raw or psrc
-            cat_raw = pure or cat_raw
-        else:
-            cat_raw = pure or cat_raw
-    if src_raw in ("本地", "none", "-"):
-        src_raw = ""
-        local_only = True
-    else:
-        local_only = False
-    if local_only:
-        stmt = stmt.where(
-            ~Book.category.like("起点-%", escape="\\"),
-            ~Book.category.like("番茄-%", escape="\\"),
-        )
-    elif src_raw in ("起点", "番茄"):
-        # 有书源时：合成串前缀 或 source 字段
-        stmt = stmt.where(
-            or_(
-                Book.category.startswith(f"{src_raw}-"),
-                Book.source == src_raw,
-            )
-        )
-    if cat_raw and cat_raw != "全部":
-        if src_raw in ("起点", "番茄"):
-            # 书源+分类：优先整标签，再纯名 / 后缀
-            label = f"{src_raw}-{cat_raw}"
-            stmt = stmt.where(
-                or_(
-                    Book.category == label,
-                    Book.category == cat_raw,
-                    and_(
-                        Book.category.startswith(f"{src_raw}-"),
-                        Book.category.endswith(f"-{cat_raw}"),
-                    ),
-                    and_(Book.source == src_raw, Book.category == cat_raw),
-                )
-            )
-        else:
-            stmt = stmt.where(
-                or_(
-                    Book.category == cat_raw,
-                    Book.category.endswith(f"-{cat_raw}"),
-                )
-            )
-    if status:
-        stmt = stmt.where(Book.status == status)
-    # 标签筛选（保留 API，界面已隐藏）
-    if tag:
-        tag = tag.strip()
-        stmt = stmt.where(
-            or_(
-                Book.tags == tag,
-                Book.tags.like(f"{tag},%", escape="\\"),
-                Book.tags.like(f"%,{tag}", escape="\\"),
-                Book.tags.like(f"%,{tag},%", escape="\\"),
-            )
-        )
-    if q:
-        q = q.strip()
-        # 与公开搜索一致：FTS 优先（A9）
-        if fts_available():
-            from sqlalchemy import text as sa_text
-
-            fts_ids = [
-                r[0]
-                for r in db.execute(
-                    sa_text("SELECT rowid FROM books_fts WHERE books_fts MATCH :q"),
-                    {"q": q.replace('"', " ")},
-                ).all()
-            ]
-            if fts_ids:
-                stmt = stmt.where(Book.id.in_(fts_ids))
-            else:
-                like = f"%{escape_like(q)}%"
-                stmt = stmt.where(
-                    or_(
-                        Book.title.like(like, escape="\\"),
-                        Book.author.like(like, escape="\\"),
-                        Book.tags.like(like, escape="\\"),
-                    )
-                )
-        else:
-            like = f"%{escape_like(q)}%"
-            stmt = stmt.where(
-                or_(
-                    Book.title.like(like, escape="\\"),
-                    Book.author.like(like, escape="\\"),
-                    Book.tags.like(like, escape="\\"),
-                )
-            )
-    total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
-    if sort == "title":
-        order = (Book.title.asc(), Book.id.asc())
-    elif sort == "author":
-        order = (Book.author.asc(), Book.title.asc())
-    elif sort == "words":
-        order = (Book.word_count.desc(), Book.title.asc())
-    elif sort == "chapters":
-        order = (Book.chapter_count.desc(), Book.title.asc())
-    else:
-        order = (Book.updated_at.desc(), Book.id.desc())
+    # 与公开 API 共用查询构造；管理端搜索不含简介
+    stmt = build_books_stmt(
+        db,
+        category=category,
+        q=q,
+        status=status,
+        tag=tag,
+        source=source,
+        sort=sort,
+        with_intro_search=False,
+    )
+    total = count_books(db, stmt)
     books = db.execute(
-        stmt.order_by(*order).offset(offset).limit(page_size)
+        stmt.offset(offset).limit(page_size)
     ).scalars().all()
     return {
         "total": total,
@@ -401,13 +305,14 @@ def _sse_pack(obj: dict) -> str:
 
 
 @router.get("/import/stream")
-def admin_import_stream():
-    """导入进度 SSE（C5）：每 1s 推送状态，结束后关闭。"""
+async def admin_import_stream(request: Request):
+    """导入进度 SSE（C5）。"""
     import asyncio
 
     async def gen():
-        # 最多推送 10 分钟，防止挂死连接
         for _ in range(600):
+            if await request.is_disconnected():
+                break
             st = get_import_status()
             yield _sse_pack(st)
             if not st.get("running"):
@@ -418,7 +323,7 @@ def admin_import_stream():
 
 
 @router.get("/scrape/batch/stream")
-def admin_batch_stream():
+async def admin_batch_stream(request: Request):
     """批量刮削进度 SSE（C5）。"""
     import asyncio
 
@@ -426,6 +331,8 @@ def admin_batch_stream():
 
     async def gen():
         for _ in range(600):
+            if await request.is_disconnected():
+                break
             st = get_batch_status()
             yield _sse_pack(st)
             if not st.get("running"):

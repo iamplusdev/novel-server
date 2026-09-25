@@ -228,14 +228,22 @@ def delete_books_safe(db: Session, book_ids: Sequence[int]) -> bool:
         return True
 
 
+# FTS 可用性缓存：库生命周期内只探测一次，避免每次搜索都查虚拟表
+_fts_available: bool | None = None
+
+
 def fts_available() -> bool:
-    """当前库是否启用了 books_fts。"""
+    """当前库是否启用了 books_fts（结果缓存，reset_database 后失效）。"""
+    global _fts_available
+    if _fts_available is not None:
+        return _fts_available
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1 FROM books_fts LIMIT 1"))
-            return True
+            _fts_available = True
     except Exception:  # noqa: BLE001
-        return False
+        _fts_available = False
+    return _fts_available
 
 
 def dispose_engine() -> None:
@@ -245,10 +253,11 @@ def dispose_engine() -> None:
 
 def reset_database() -> None:
     """替换 novels.db 文件后重建引擎与会话工厂。"""
-    global engine, SessionLocal
+    global engine, SessionLocal, _fts_available
     engine.dispose()
     engine = _make_engine()
     SessionLocal.configure(bind=engine)
+    _fts_available = None
     init_db()
 
 
@@ -268,3 +277,26 @@ def escape_like(text: str) -> str:
         .replace("%", "\\%")
         .replace("_", "\\_")
     )
+
+
+def escape_fts_query(q: str) -> str:
+    """FTS5 MATCH 安全短语：去掉引号后包成双引号短语，避免 * ^ NEAR 等语法误伤。"""
+    cleaned = " ".join((q or "").replace('"', " ").split())
+    return f'"{cleaned}"' if cleaned else ""
+
+
+def fts_search_ids(db: Session, q: str) -> list[int] | None:
+    """FTS 搜索返回 id 列表；无 FTS 或语法失败返回 None（调用方回退 LIKE）。"""
+    if not fts_available():
+        return None
+    phrase = escape_fts_query(q)
+    if not phrase:
+        return None
+    try:
+        rows = db.execute(
+            text("SELECT rowid FROM books_fts WHERE books_fts MATCH :q"),
+            {"q": phrase},
+        ).all()
+        return [r[0] for r in rows]
+    except Exception:  # noqa: BLE001
+        return None

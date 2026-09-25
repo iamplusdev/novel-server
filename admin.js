@@ -13,6 +13,7 @@
     pageSize: 24,
     total: 0,
     items: [],
+    totalPages: 1,
     theme: localStorage.getItem(THEME_KEY) || "auto",
     source: "", // 书源行："" 全部 / 起点 / 番茄
     category: "",
@@ -83,6 +84,8 @@
     prevPage: $("prev-page"),
     nextPage: $("next-page"),
     pageLabel: $("page-label"),
+    pageInput: $("page-input"),
+    navToggle: $("nav-toggle"),
     importBtn: $("import-btn"),
     importCancel: $("import-cancel"),
     importRefresh: $("import-refresh"),
@@ -92,21 +95,6 @@
     importProgressText: $("import-progress-text"),
     sourcePreview: $("source-preview"),
     copySource: $("copy-source"),
-    backupAutoPill: $("backup-auto-pill"),
-    backupRun: $("backup-run"),
-    backupListRefresh: $("backup-list-refresh"),
-    davUrl: $("dav-url"),
-    davPath: $("dav-path"),
-    davBooks: $("dav-books"),
-    davUser: $("dav-user"),
-    davPass: $("dav-pass"),
-    davInterval: $("dav-interval"),
-    davKeep: $("dav-keep"),
-    davAuto: $("dav-auto"),
-    davSave: $("dav-save"),
-    davTest: $("dav-test"),
-    backupTableBody: $("backup-table-body"),
-    backupLog: $("backup-log"),
     checkSummary: $("check-summary"),
     dupList: $("dup-list"),
     issueList: $("issue-list"),
@@ -529,7 +517,7 @@
     return String(n);
   }
 
-  // —— 两级分类：书源 + 站内分类 ——
+  // —— 两级分类：书源 + 站内分类（默认兜底；登录后由 category_tree 覆盖）——
   const CATEGORY_TREE = {
     "": {
       label: "本地",
@@ -554,6 +542,17 @@
       ],
     },
   };
+
+  // A5：后端 category_tree → 前端分类树，避免前后端双份维护
+  function applyCategoryTree(tree) {
+    if (!Array.isArray(tree) || !tree.length) return;
+    tree.forEach((node) => {
+      const key = node.key == null ? "" : String(node.key);
+      const cats = Array.isArray(node.categories) ? node.categories.slice() : [];
+      if (!cats.length) return;
+      CATEGORY_TREE[key] = { label: node.label || key || "本地", categories: cats };
+    });
+  }
 
   function sourceKeys() {
     return Object.keys(CATEGORY_TREE);
@@ -658,6 +657,8 @@
     // 统计卡片 DOM 已移除，这里只保留会话内状态
     setText(els.baseUrlLabel, data.public_base_url || location.origin);
     setText(els.apiBase, data.public_base_url || location.origin);
+    // A5：用服务端分类树覆盖本地兜底
+    if (data.category_tree) applyCategoryTree(data.category_tree);
     fillCategorySelects(data.categories);
     renderSourceBar();
     renderCategoryBar();
@@ -884,13 +885,33 @@
     state.total = data.total || 0;
     setText(els.libCount, String(state.total));
     const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
+    state.totalPages = pages;
     if (state.page > pages) state.page = pages;
     setText(els.pageLabel, state.page + " / " + pages);
+    if (els.pageInput) {
+      els.pageInput.max = String(pages);
+      if (document.activeElement !== els.pageInput) {
+        els.pageInput.value = String(state.page);
+      }
+    }
     els.prevPage.disabled = state.page <= 1;
     els.nextPage.disabled = state.page >= pages;
     renderLibrary();
     // 实测卡高后微调每页数量，尽量刚好一屏
     refinePageSizeAfterRender();
+  }
+
+  // A3：页码跳转
+  function gotoPage(n) {
+    const pages = state.totalPages || Math.max(1, Math.ceil(state.total / state.pageSize));
+    const p = Math.min(pages, Math.max(1, Math.floor(Number(n) || 1)));
+    if (p === state.page) {
+      if (els.pageInput) els.pageInput.value = String(p);
+      return;
+    }
+    state.page = p;
+    if (els.pageInput) els.pageInput.value = String(p);
+    loadBooks().catch((e) => toast(e.message, "err"));
   }
 
   function statusChip(status) {
@@ -1423,7 +1444,7 @@
   }
 
   async function startImport(mode) {
-    // 仅本地导入（WebDAV 导入已移除）
+    // 仅本地导入
     await withBusy(els.importBtn, async () => {
       try {
         const res = await api("/api/admin/import?mode=local", { method: "POST" });
@@ -1543,173 +1564,6 @@
     try { document.execCommand("copy"); toast("已复制", "ok"); }
     catch (_) { toast("复制失败，请手动选择", "err"); }
     document.body.removeChild(ta);
-  }
-
-  // —— WebDAV 备份 ——
-  function fmtSize(n) {
-    if (!n && n !== 0) return "—";
-    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
-    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
-    return n + " B";
-  }
-
-  function backupLog(text) {
-    els.backupLog.textContent = text || "";
-  }
-
-  function appendBackupLog(text) {
-    const prev = els.backupLog.textContent || "";
-    const line = "[" + new Date().toLocaleTimeString() + "] " + text;
-    els.backupLog.textContent = (prev && prev !== "尚未操作。" ? prev + "\n" : "") + line;
-    els.backupLog.scrollTop = els.backupLog.scrollHeight;
-  }
-
-  async function loadBackupConfig() {
-    const cfg = await api("/api/admin/backup/config");
-    els.davUrl.value = cfg.webdav_url || "";
-    els.davPath.value = cfg.remote_path || "novel-server-backups";
-    if (els.davBooks) els.davBooks.value = cfg.books_path || "books";
-    els.davUser.value = cfg.username || "";
-    els.davPass.placeholder = cfg.password_set ? "已保存，留空表示不修改" : "输入 WebDAV 密码";
-    els.davInterval.value = cfg.interval_hours || 24;
-    els.davKeep.value = cfg.keep_count || 7;
-    els.davAuto.checked = !!cfg.auto_enabled;
-    els.backupAutoPill.textContent = cfg.auto_enabled
-      ? ("自动备份 · 每 " + (cfg.interval_hours || 24) + "h")
-      : "未启用自动";
-  }
-
-  async function collectBackupConfig() {
-    const payload = {
-      webdav_url: els.davUrl.value.trim(),
-      username: els.davUser.value.trim(),
-      remote_path: els.davPath.value.trim() || "novel-server-backups",
-      books_path: (els.davBooks && els.davBooks.value.trim()) || "books",
-      auto_enabled: els.davAuto.checked,
-      interval_hours: Number(els.davInterval.value) || 24,
-      keep_count: Number(els.davKeep.value) || 7,
-    };
-    const pass = els.davPass.value;
-    if (pass) payload.password = pass;
-    return payload;
-  }
-
-  async function saveBackupConfig() {
-    await withBusy(els.davSave, async () => {
-      try {
-        const payload = await collectBackupConfig();
-        const saved = await api("/api/admin/backup/config", { method: "PUT", body: payload });
-        els.davPass.value = "";
-        els.davPass.placeholder = saved.password_set ? "已保存，留空表示不修改" : "输入 WebDAV 密码";
-        els.backupAutoPill.textContent = saved.auto_enabled
-          ? ("自动备份 · 每 " + saved.interval_hours + "h")
-          : "未启用自动";
-        appendBackupLog("配置已保存");
-        toast("备份配置已保存", "ok");
-      } catch (err) {
-        toast(err.message || "保存失败", "err");
-      }
-    }, "保存中…");
-  }
-
-  async function testBackupConn() {
-    await withBusy(els.davTest, async () => {
-      try {
-        const payload = await collectBackupConfig();
-        const res = await api("/api/admin/backup/test", { method: "POST", body: payload });
-        appendBackupLog("测试连接: " + res.message);
-        toast(res.message || "连接成功", "ok");
-      } catch (err) {
-        appendBackupLog("测试失败: " + (err.message || err));
-        toast(err.message || "连接失败", "err");
-      }
-    }, "测试中…");
-  }
-
-  function renderBackupList(items) {
-    if (!items || !items.length) {
-      els.backupTableBody.innerHTML = '<tr><td colspan="4"><div class="empty-hint">暂无备份，点「立即备份」创建</div></td></tr>';
-      return;
-    }
-    els.backupTableBody.innerHTML = items.map((it) => `
-      <tr data-name="${escapeAttr(it.name)}">
-        <td class="mono">${escapeHtml(it.name)}</td>
-        <td>${fmtSize(it.size)}</td>
-        <td class="muted tiny">${escapeHtml(it.modified || "")}</td>
-        <td class="actions">
-          <button class="btn btn-ghost btn-sm" data-restore="${escapeAttr(it.name)}">还原</button>
-        </td>
-      </tr>`).join("");
-    els.backupTableBody.querySelectorAll("[data-restore]").forEach((btn) => {
-      btn.addEventListener("click", () => restoreBackup(btn.dataset.restore));
-    });
-  }
-
-  async function loadBackupList() {
-    const res = await api("/api/admin/backup/list");
-    renderBackupList(res.items || []);
-  }
-
-  async function runBackupNow() {
-    els.backupRun.disabled = true;
-    try {
-      appendBackupLog("开始备份…");
-      const res = await api("/api/admin/backup/run", { method: "POST" });
-      appendBackupLog("本地: " + res.local_file + " · 远程: " + (res.remote || "(仅本地)"));
-      if (res.manifest) {
-        appendBackupLog("规模: 书 " + res.manifest.book_count + " · 章 " + res.manifest.chapter_count + " · 封面 " + res.manifest.cover_count);
-      }
-      toast("备份完成", "ok");
-      await Promise.all([loadBackupList(), loadBackupStatus(), loadStats()]);
-    } catch (err) {
-      appendBackupLog("备份失败: " + (err.message || err));
-      toast(err.message || "备份失败", "err");
-    } finally {
-      els.backupRun.disabled = false;
-    }
-  }
-
-  async function restoreBackup(filename) {
-    if (!await openConfirm("确认从备份「" + filename + "」还原？\n当前数据库与封面将被覆盖，操作不可撤销。", "还原备份")) return;
-    els.backupRun.disabled = true;
-    try {
-      appendBackupLog("还原 " + filename + " …");
-      const res = await api("/api/admin/backup/restore", {
-        method: "POST",
-        body: { filename: filename },
-      });
-      appendBackupLog("还原完成 " + (res.restored_at || ""));
-      toast("还原完成，书库数据已恢复", "ok");
-      state.page = 1;
-      await Promise.all([loadBooks(), loadStats(), loadBackupStatus()]);
-    } catch (err) {
-      appendBackupLog("还原失败: " + (err.message || err));
-      toast(err.message || "还原失败", "err");
-    } finally {
-      els.backupRun.disabled = false;
-    }
-  }
-
-  function renderBackupStatus(st) {
-    if (!st) return;
-    const lines = [];
-    if (st.last_backup_at) lines.push("上次备份: " + st.last_backup_at);
-    if (st.last_restore_at) lines.push("上次还原: " + st.last_restore_at);
-    if (st.running) lines.push("任务进行中: " + (st.action || ""));
-    if (st.message) lines.push("最新消息: " + st.message);
-    if (st.last_error) lines.push("最近错误: " + st.last_error);
-    if ((st.history || []).length) {
-      lines.push("");
-      (st.history || []).slice(-10).forEach((h) => {
-        lines.push(h.time + "  " + h.message);
-      });
-    }
-    if (lines.length) backupLog(lines.join("\n"));
-  }
-
-  async function loadBackupStatus() {
-    const st = await api("/api/admin/backup/status");
-    renderBackupStatus(st);
   }
 
   // —— 书库体检 ——
@@ -1832,9 +1686,9 @@
     }, "修复中…");
   }
 
-  // 按分类归位：把源 TXT 移到与书籍分类一致的文件夹（本地 + WebDAV）
+  // 按分类归位：把源 TXT 移到与书籍分类一致的文件夹
   async function relocateAll() {
-    if (!await openConfirm("按书籍分类归位源 TXT？\n将把本地与 WebDAV「未分类」等目录中的文件移到对应分类文件夹（只移动位置，不改内容）。", "按分类归位")) return;
+    if (!await openConfirm("按书籍分类归位源 TXT？\n将把「未分类」等目录中的文件移到对应分类文件夹（只移动位置，不改内容）。", "按分类归位")) return;
     await withBusy(els.checkRelocate, async () => {
       try {
         const res = await api("/api/admin/library/relocate", {
@@ -1958,15 +1812,10 @@
     document.querySelectorAll("[data-view]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.view === name);
     });
-    ["library", "import", "check", "backup", "api", "settings"].forEach((v) => {
+    ["library", "import", "check", "api", "settings"].forEach((v) => {
       const el = $("view-" + v);
       if (el) el.hidden = v !== name;
     });
-    if (name === "backup") {
-      loadBackupConfig().catch(() => {});
-      loadBackupList().catch(() => {});
-      loadBackupStatus().catch(() => {});
-    }
     if (name === "check") {
       loadLibraryReport().catch((e) => toast(e.message, "err"));
       refreshBatchStatus().catch(() => {});
@@ -2047,6 +1896,34 @@
     const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
     if (state.page < pages) { state.page += 1; loadBooks().catch(toast); }
   });
+  // A3：输入页码后回车/失焦跳转
+  if (els.pageInput) {
+    on(els.pageInput, "keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        gotoPage(els.pageInput.value);
+      }
+    });
+    on(els.pageInput, "change", () => gotoPage(els.pageInput.value));
+    on(els.pageInput, "blur", () => {
+      if (els.pageInput) els.pageInput.value = String(state.page);
+    });
+  }
+  // A7：窄屏折叠导航
+  if (els.navToggle) {
+    const sidebar = document.querySelector(".sidebar");
+    // 小屏默认收起，减少顶栏占高
+    if (window.matchMedia && window.matchMedia("(max-width: 860px)").matches && sidebar) {
+      sidebar.classList.add("collapsed");
+      els.navToggle.setAttribute("aria-expanded", "false");
+    }
+    on(els.navToggle, "click", () => {
+      if (!sidebar) return;
+      const collapsed = sidebar.classList.toggle("collapsed");
+      els.navToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      els.navToggle.setAttribute("aria-label", collapsed ? "展开导航" : "收起导航");
+    });
+  }
   let searchTimer = null;
   on(els.searchInput, "input", () => {
     clearTimeout(searchTimer);
@@ -2073,10 +1950,6 @@
   on(els.importCancel, "click", cancelImport);
   on(els.importRefresh, "click", () => refreshImport().catch(toast));
   on(els.copySource, "click", copySource);
-  on(els.backupRun, "click", runBackupNow);
-  on(els.backupListRefresh, "click", () => loadBackupList().catch((e) => toast(e.message, "err")));
-  on(els.davSave, "click", saveBackupConfig);
-  on(els.davTest, "click", testBackupConn);
   on(els.checkScan, "click", () => {
     withBusy(els.checkScan, () => loadLibraryReport().catch((e) => toast(e.message, "err")), "扫描中…");
   });

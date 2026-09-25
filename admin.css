@@ -92,6 +92,10 @@ a { color: var(--accent); text-decoration: none; }
   box-shadow: var(--shadow);
 }
 .brand { display: flex; gap: 14px; align-items: center; margin-bottom: 20px; }
+.brand-text { flex: 1; min-width: 0; }
+.nav-toggle { display: none; margin-left: auto; }
+.sidebar.collapsed .nav,
+.sidebar.collapsed .side-foot { display: none; }
 .brand h1 { margin: 0; font-size: 20px; font-weight: 600; }
 .brand-mark {
   width: 40px; height: 40px; border-radius: 10px;
@@ -278,6 +282,14 @@ a { color: var(--accent); text-decoration: none; }
 .table tr:hover td { background: var(--hover-row); }
 .table .actions { display: flex; gap: 6px; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; }
+.page-jump { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.page-input {
+  width: 56px; min-height: 28px; padding: 2px 6px; text-align: center;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+}
+.page-input::-webkit-outer-spin-button,
+.page-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.page-input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
 .panel.card { border-radius: 12px; }
@@ -396,6 +408,8 @@ a { color: var(--accent); text-decoration: none; }
     position: sticky; top: 0; z-index: 20; height: auto;
     border-right: none; border-bottom: 1px solid var(--border); padding: 12px; gap: 10px;
   }
+  .nav-toggle { display: inline-flex; }
+  .sidebar.collapsed .brand { margin-bottom: 0; }
   .nav { flex-direction: row; flex-wrap: wrap; gap: 6px; overflow-x: auto; }
   .nav-item { min-height: 40px; display: flex; align-items: center; white-space: nowrap; }
   .side-foot { margin-top: 0; }

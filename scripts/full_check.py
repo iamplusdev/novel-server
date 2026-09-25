@@ -118,22 +118,6 @@ def main():
     st, bs = call("/api/admin/scrape/batch/status", token=tok)
     check("batch status", st == 200 and "running" in (bs or {}))
 
-    # backup config roundtrip
-    st, cfg = call("/api/admin/backup/config", token=tok)
-    check("backup config get", st == 200 and "webdav_url" in (cfg or {}))
-    st, cfg2 = call("/api/admin/backup/config", "PUT", {
-        "webdav_url": cfg.get("webdav_url") or "",
-        "username": cfg.get("username") or "",
-        "remote_path": cfg.get("remote_path") or "novel-server-backups",
-        "books_path": cfg.get("books_path") or "books",
-        "auto_enabled": False,
-        "interval_hours": 24,
-        "keep_count": 5,
-    }, token=tok)
-    check("backup config put", st == 200 and "books_path" in (cfg2 or {}))
-    st, bstat = call("/api/admin/backup/status", token=tok)
-    check("backup status", st == 200 and "running" in (bstat or {}))
-
     # import status
     st, ist = call("/api/admin/import/status", token=tok)
     check("import status", st == 200 and "running" in (ist or {}))

@@ -87,16 +87,16 @@
     <aside class="sidebar">
       <div class="brand brand-side">
         <span class="brand-mark">爱</span>
-        <div>
+        <div class="brand-text">
           <strong>爱小说</strong>
           <div class="muted tiny" id="base-url-label">—</div>
         </div>
+        <button type="button" id="nav-toggle" class="icon-btn nav-toggle" aria-label="展开导航" aria-expanded="false">☰</button>
       </div>
       <nav class="nav">
         <button type="button" class="nav-item active" data-view="library">书库</button>
         <button type="button" class="nav-item" data-view="import">导入</button>
         <button type="button" class="nav-item" data-view="check">体检</button>
-        <button type="button" class="nav-item" data-view="backup">备份</button>
         <button type="button" class="nav-item" data-view="api">API / 书源</button>
         <button type="button" class="nav-item" data-view="settings">设置</button>
       </nav>
@@ -142,7 +142,10 @@
         <div id="grid-wrap" class="book-grid"></div>
         <div class="pager">
           <button type="button" id="prev-page" class="btn btn-ghost btn-sm">上一页</button>
-          <span id="page-label" class="muted">1 / 1</span>
+          <label class="page-jump muted">
+            <input id="page-input" class="input page-input" type="number" min="1" value="1" />
+            <span id="page-label">1 / 1</span>
+          </label>
           <button type="button" id="next-page" class="btn btn-ghost btn-sm">下一页</button>
         </div>
       </section>
@@ -188,7 +191,7 @@
           <div class="toolbar-right tools">
             <button type="button" id="check-scan" class="btn btn-primary">重新扫描</button>
             <button type="button" id="check-repair-all" class="btn btn-ghost">修复全部问题</button>
-            <button type="button" id="check-relocate" class="btn btn-ghost" title="按书籍分类把本地与 WebDAV 的 TXT 移到对应分类文件夹">按分类归位</button>
+            <button type="button" id="check-relocate" class="btn btn-ghost" title="按书籍分类把本地 TXT 移到对应分类文件夹">按分类归位</button>
           </div>
         </header>
 
@@ -232,73 +235,6 @@
             </label>
           </div>
           <pre id="batch-scrape-log" class="log">尚未运行。</pre>
-        </div>
-      </section>
-
-      <!-- 备份 -->
-      <section id="view-backup" class="view" hidden>
-        <header class="toolbar">
-          <div class="toolbar-left">
-            <h2>WebDAV 备份</h2>
-            <span class="pill" id="backup-auto-pill">未启用自动</span>
-          </div>
-          <div class="toolbar-right tools">
-            <button type="button" id="backup-run" class="btn btn-primary">立即备份</button>
-            <button type="button" id="backup-list-refresh" class="btn btn-ghost">刷新列表</button>
-          </div>
-        </header>
-
-        <div class="panel">
-          <div class="panel-title">WebDAV 配置</div>
-          <div class="form-grid">
-            <label class="field"><span>WebDAV 地址</span>
-              <input id="dav-url" class="input" placeholder="https://dav.example.com/dav/" />
-            </label>
-            <label class="field"><span>远程目录</span>
-              <input id="dav-path" class="input" placeholder="novel-server-backups" />
-            </label>
-            <label class="field"><span>书籍目录（导入用）</span>
-              <input id="dav-books" class="input" placeholder="books 或 novels/小说 等" />
-            </label>
-            <label class="field"><span>账号</span>
-              <input id="dav-user" class="input" autocomplete="username" />
-            </label>
-            <label class="field"><span>密码</span>
-              <input id="dav-pass" class="input" type="password" autocomplete="new-password" placeholder="已保存则留空表示不修改" />
-            </label>
-            <label class="field"><span>自动备份间隔（小时）</span>
-              <input id="dav-interval" class="input" type="number" min="1" max="720" value="24" />
-            </label>
-            <label class="field"><span>保留份数</span>
-              <input id="dav-keep" class="input" type="number" min="1" max="100" value="7" />
-            </label>
-          </div>
-          <label class="check-row">
-            <input id="dav-auto" type="checkbox" />
-            <span>启用自动备份（服务运行时按间隔检查）</span>
-          </label>
-          <div class="row">
-            <button type="button" id="dav-save" class="btn btn-primary">保存配置</button>
-            <button type="button" id="dav-test" class="btn btn-ghost">测试连接</button>
-          </div>
-          <p class="muted tiny">备份内容：SQLite 数据库 + covers 封面 + manifest。不打包 novels/ 源 TXT。密码保存在服务器 <code>data/backup_config.json</code>，接口不会回传明文。</p>
-        </div>
-
-        <div class="panel">
-          <div class="panel-title">备份列表（WebDAV）</div>
-          <div class="table-wrap">
-            <table class="table">
-              <thead>
-                <tr><th>文件名</th><th>大小</th><th>修改时间</th><th>操作</th></tr>
-              </thead>
-              <tbody id="backup-table-body"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-title">状态日志</div>
-          <pre id="backup-log" class="log">尚未操作。</pre>
         </div>
       </section>
 

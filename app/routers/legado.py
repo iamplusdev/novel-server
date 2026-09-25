@@ -90,10 +90,10 @@ def legado_search(
     base = resolve_base_url(request)
     page_size = min(max(1, page_size), 50)
     offset = (page - 1) * page_size
-    like = f"%{q.strip()}%"
-    stmt = select(Book).where(
-        or_(Book.title.like(like), Book.author.like(like), Book.tags.like(like))
-    )
+    # 与公开搜索对齐：FTS 优先 + LIKE 转义兜底
+    from ..book_query import apply_search
+
+    stmt = apply_search(select(Book), db, q, with_intro_search=False)
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     books = db.execute(
         stmt.order_by(Book.title).offset(offset).limit(page_size)

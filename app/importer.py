@@ -279,16 +279,14 @@ def _upsert_parsed(
 
 
 def relocate_local_txt(book: Book) -> bool:
-    """把 TXT 归位到 <书源>/<分类>/（本地 novels/ 与 WebDAV books/ 同构），并更新 source_path。
+    """把本地 TXT 归位到 novels/<书源>/<分类>/，并更新 source_path。
 
-    支持本地路径与 webdav: 相对路径；返回是否发生了移动。
+    仅处理本地路径；webdav: 前缀的历史数据跳过。返回是否发生了移动。
     """
     sp = (book.source_path or "").strip()
-    if not sp:
+    if not sp or sp.startswith("webdav:"):
         return False
     parts = category_rel_parts(book.category or UNCATEGORIZED)
-    if sp.startswith("webdav:"):
-        return _relocate_webdav_txt(book, sp[len("webdav:") :].lstrip("/"), parts)
     return _relocate_local_txt(book, Path(sp), parts)
 
 
@@ -309,44 +307,6 @@ def _relocate_local_txt(book: Book, src: Path, parts: tuple[str, ...]) -> bool:
         return False
     book.source_path = str(dest)
     return True
-
-
-def _relocate_webdav_txt(book: Book, src_rel: str, parts: tuple[str, ...]) -> bool:
-    """WebDAV TXT → books/<书源>/<分类>/（MOVE），成功则更新 source_path。"""
-    if not src_rel:
-        return False
-    try:
-        from .backup import load_config
-        from .webdav import WebDAVClient
-    except Exception:  # noqa: BLE001
-        return False
-    cfg = load_config()
-    if not cfg.webdav_url:
-        return False
-    try:
-        client = WebDAVClient(cfg.webdav_url, cfg.username, cfg.password, timeout=120)
-        root = (cfg.books_path or "books").strip().strip("/").replace("\\", "/") or "books"
-        fname = src_rel.rsplit("/", 1)[-1]
-        if not fname:
-            return False
-        dest_parent = "/".join([root, *parts])
-        src_parent = src_rel.rsplit("/", 1)[0] if "/" in src_rel else ""
-        # 已在目标目录则跳过
-        if src_parent.rstrip("/") == dest_parent.rstrip("/"):
-            return False
-        dest_rel = f"{dest_parent}/{fname}"
-        # 目标已存在则改名，避免 MOVE 冲突
-        if client.exists(dest_rel):
-            stem, dot, ext = fname.rpartition(".")
-            if not dot:
-                stem, ext = fname, ""
-            dest_rel = f"{dest_parent}/{stem}_{book.id}{dot}{ext}"
-        client.move(src_rel, dest_rel, overwrite=False)
-        book.source_path = f"webdav:{dest_rel}"
-        return True
-    except Exception:  # noqa: BLE001
-        # 远端失败不阻断库内写入
-        return False
 
 
 def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> tuple[str, str]:
