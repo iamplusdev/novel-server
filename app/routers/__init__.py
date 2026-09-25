@@ -1,1 +1,1 @@
-from . import admin, auth, backup, batch_scrape, legado, library, public, scrape  # noqa: F401
+from . import admin, auth, batch_scrape, legado, library, public, scrape  # noqa: F401

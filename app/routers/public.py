@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..config import CATEGORIES, all_category_labels
-from ..database import escape_like, fts_available, get_db
+from ..book_query import build_books_stmt, count_books
+from ..config import all_category_labels
+from ..database import get_db
 from ..models import Book, Chapter
 from ..serializers import (
     book_detail,
@@ -57,109 +58,18 @@ def _query_books(
     base: str | None = None,
 ) -> dict:
     offset, limit = _paginate(page, page_size)
-    stmt = select(Book)
-    src_raw = (source or "").strip()
-    cat_raw = (category or "").strip()
-    if cat_raw:
-        from ..config import parse_category_label
-
-        psrc, pure = parse_category_label(cat_raw)
-        if psrc:
-            src_raw = src_raw or psrc
-            cat_raw = pure or cat_raw
-        else:
-            cat_raw = pure or cat_raw
-    if src_raw in ("本地", "none", "-"):
-        src_raw = ""
-        stmt = stmt.where(
-            ~Book.category.like("起点-%", escape="\\"),
-            ~Book.category.like("番茄-%", escape="\\"),
-        )
-    elif src_raw in ("起点", "番茄"):
-        stmt = stmt.where(
-            or_(Book.category.startswith(f"{src_raw}-"), Book.source == src_raw)
-        )
-    if cat_raw and cat_raw != "全部":
-        from sqlalchemy import and_
-
-        if src_raw in ("起点", "番茄"):
-            label = f"{src_raw}-{cat_raw}"
-            stmt = stmt.where(
-                or_(
-                    Book.category == label,
-                    Book.category == cat_raw,
-                    and_(
-                        Book.category.startswith(f"{src_raw}-"),
-                        Book.category.endswith(f"-{cat_raw}"),
-                    ),
-                    and_(Book.source == src_raw, Book.category == cat_raw),
-                )
-            )
-        else:
-            stmt = stmt.where(
-                or_(Book.category == cat_raw, Book.category.endswith(f"-{cat_raw}"))
-            )
-    if status:
-        stmt = stmt.where(Book.status == status)
-    if tag:
-        tag = tag.strip()
-        stmt = stmt.where(
-            or_(
-                Book.tags == tag,
-                Book.tags.like(f"{tag},%", escape="\\"),
-                Book.tags.like(f"%,{tag}", escape="\\"),
-                Book.tags.like(f"%,{tag},%", escape="\\"),
-            )
-        )
-    if q:
-        q = q.strip()
-        # 优先 FTS5（A9），失败或无索引则退回 LIKE
-        if fts_available():
-            from sqlalchemy import text as sa_text
-
-            fts_ids = [
-                r[0]
-                for r in db.execute(
-                    sa_text("SELECT rowid FROM books_fts WHERE books_fts MATCH :q"),
-                    {"q": q.replace('"', " ")},
-                ).all()
-            ]
-            if fts_ids:
-                stmt = stmt.where(Book.id.in_(fts_ids))
-            else:
-                # FTS 无命中时也做 LIKE 兜底（拼音/部分词）
-                like = f"%{escape_like(q)}%"
-                stmt = stmt.where(
-                    or_(
-                        Book.title.like(like, escape="\\"),
-                        Book.author.like(like, escape="\\"),
-                        Book.tags.like(like, escape="\\"),
-                        Book.intro.like(like, escape="\\"),
-                    )
-                )
-        else:
-            like = f"%{escape_like(q)}%"
-            stmt = stmt.where(
-                or_(
-                    Book.title.like(like, escape="\\"),
-                    Book.author.like(like, escape="\\"),
-                    Book.tags.like(like, escape="\\"),
-                    Book.intro.like(like, escape="\\"),
-                )
-            )
-
-    total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
-    if sort == "title":
-        stmt = stmt.order_by(Book.title)
-    elif sort == "author":
-        stmt = stmt.order_by(Book.author, Book.title)
-    elif sort == "words":
-        stmt = stmt.order_by(Book.word_count.desc(), Book.title)
-    elif sort == "chapters":
-        stmt = stmt.order_by(Book.chapter_count.desc(), Book.title)
-    else:
-        stmt = stmt.order_by(Book.updated_at.desc(), Book.id.desc())
-
+    # 公开搜索带简介；筛选/排序统一走 book_query
+    stmt = build_books_stmt(
+        db,
+        category=category,
+        q=q,
+        status=status,
+        tag=tag,
+        source=source,
+        sort=sort,
+        with_intro_search=True,
+    )
+    total = count_books(db, stmt)
     books = db.execute(stmt.offset(offset).limit(limit)).scalars().all()
     return {
         "total": total,

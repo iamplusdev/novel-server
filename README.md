@@ -13,7 +13,6 @@
 - **两级分类**：书源（起点 / 番茄 / 本地）+ 站内分类，与 TXT 目录层级一致
 - **刮削**：起点 / 番茄 元数据（书名、作者、简介、状态、分类、标签、封面）
 - **Legado 书源**：发现页分类、搜索、详情、目录、正文（完整 URL），手机阅读主路径
-- WebDAV 备份 / 还原：数据库 + 封面，可自动备份
 - 封面本地 `covers/` 由服务直接提供
 
 ## 技术栈
@@ -123,7 +122,6 @@ docker compose exec novel-server python import_novels.py
 | 改元数据 / 封面 / 分类 | 管理后台书库，点封面卡片 |
 | 再次导入 | 管理后台「导入」或 `docker compose exec novel-server python import_novels.py` |
 | 刮削补全 | 管理后台编辑抽屉「刮削…」或体检页「一键刮削」 |
-| 备份 | 管理后台「备份」配置 WebDAV |
 | 升级 | `docker compose build && docker compose up -d`（卷数据保留） |
 
 ---
@@ -256,8 +254,7 @@ python run.py
 3. **编辑**：书源 / 分类两级下拉、刮削、封面、删除
 4. **导入**：扫描本地 `NOVELS_DIR`
 5. **体检**：重复合并、损坏修复、一键刮削、按分类归位
-6. **备份**：WebDAV 配置、立即/自动备份、还原
-7. **API / 书源**：查看接口、复制 Legado JSON
+6. **API / 书源**：查看接口、复制 Legado JSON
 
 忘记密码：登录页「忘记密码」+ 恢复码，或容器内 `python reset_auth.py`。
 
@@ -274,7 +271,6 @@ novel-server/
 ├── legado_book_source.json
 ├── Dockerfile docker-compose.yml
 ├── novels/              # 源 TXT（按 书源/分类 子目录）
-├── data/                # novels.db、auth.json、backup_config.json
 └── covers/              # 封面
 ```
 
@@ -284,24 +280,11 @@ novel-server/
 
 ---
 
-## WebDAV 备份
-
-管理后台 →「备份」：
-
-1. 填 WebDAV 地址、账号、远程目录  
-2. 测试连接 → 保存  
-3. 立即备份 / 勾选自动备份  
-
-备份内容：`novels.db` + `covers/` + manifest（不含 `novels/` 源 TXT）。  
-密码加密存于 `data/backup_config.json`，接口不回传明文。
-
----
-
 ## 维护
 
 - 源 TXT 内容未变时重复导入几乎无开销（SHA256 跳过）
 - 升级：重新 `docker compose build && up -d`，卷数据保留
-- 勿将密码、恢复码、WebDAV 密码提交进仓库
+- 勿将密码、恢复码提交进仓库
 - 一次性补丁脚本在 `scripts/_archive/`，日常无需执行
 
 ## License

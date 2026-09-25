@@ -243,22 +243,11 @@ def merge_duplicates(db: Session, keep_id: int, delete_ids: list[int]) -> dict:
 
 
 def _read_source_text(book: Book) -> str | None:
-    """读取源 TXT 文本（本地路径或 webdav:）。失败返回 None。"""
+    """读取本地源 TXT 文本。失败返回 None。"""
     sp = book.source_path or ""
+    # WebDAV 备份已移除，历史 webdav: 路径无法再读取
     if sp.startswith("webdav:"):
-        rel = sp[len("webdav:") :].lstrip("/")
-        try:
-            from .backup import load_config
-            from .webdav import WebDAVClient
-
-            cfg = load_config()
-            if not cfg.webdav_url:
-                return None
-            client = WebDAVClient(cfg.webdav_url, cfg.username, cfg.password, timeout=120)
-            raw = client.get_file(rel)
-            return decode_txt_bytes(raw)
-        except Exception:  # noqa: BLE001
-            return None
+        return None
     p = Path(sp)
     if not sp or not p.is_file():
         return None
@@ -395,105 +384,43 @@ def repair_books(db: Session, book_ids: list[int] | None = None, mode: str = "au
     return results
 
 
-def _rel_path_parts(rel: str) -> tuple[str, str]:
-    """拆 webdav 相对路径为 (父目录名, 文件名)。"""
-    rel = (rel or "").strip().strip("/")
-    if not rel:
-        return "", ""
-    parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
-    name = rel.rsplit("/", 1)[-1]
-    parent_name = parent.rsplit("/", 1)[-1] if parent else ""
-    return parent_name, name
-
-
 def relocate_book(book: Book) -> dict:
-    """把源 TXT 归位到 novels/<书源>/<分类>/ 或 books/<书源>/<分类>/。
+    """把本地源 TXT 归位到 novels/<书源>/<分类>/。
 
     只移动文件位置并回写 source_path，不改章节内容。
-    目标层级 = category_rel_parts(book.category)，与本地/WebDAV 同构。
+    目标层级 = category_rel_parts(book.category)。
     """
-    from .backup import load_config
-    from .webdav import WebDAVClient, WebDAVError
-
     target = (book.category or "").strip() or UNCATEGORIZED
     parts = category_rel_parts(target)
     target_disp = "/".join(parts)
     sp = book.source_path or ""
-    is_dav = sp.startswith("webdav:")
     actions: list[str] = []
     failed: list[str] = []
 
-    # —— 本地 ——
-    local_src: Path | None = None
-    if sp and not is_dav:
-        p = Path(sp)
-        if p.is_file():
-            local_src = p
-    if local_src is None and not is_dav:
-        failed.append("本地源文件不存在")
-    elif local_src is None and is_dav:
-        # WebDAV 源书：若本地未分类下有同名 TXT，也一并归位
-        name = _rel_path_parts(sp[7:])[1] or Path(sp[7:]).name
-        if name:
-            guess = settings.novels_dir / UNCATEGORIZED / name
-            if guess.is_file():
-                local_src = guess
-
-    if local_src is not None:
-        dest_dir = settings.novels_dir.joinpath(*parts)
-        try:
-            if local_src.parent.resolve() == dest_dir.resolve():
-                actions.append(f"本地已在 {target_disp}/")
-            else:
-                dest = dest_dir / local_src.name
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                if dest.exists() and dest.resolve() != local_src.resolve():
-                    dest = dest_dir / f"{local_src.stem}_{book.id}{local_src.suffix}"
-                local_src.replace(dest)
-                actions.append(f"本地 → {target_disp}/{dest.name}")
-                if sp and not is_dav:
-                    book.source_path = str(dest)
-        except OSError as e:
-            failed.append(f"本地移动失败: {e}")
-
-    # —— WebDAV ——
-    cfg = load_config()
-    if not cfg.webdav_url:
-        actions.append("未配置 WebDAV，跳过远端")
+    # WebDAV 已移除，仅处理本地路径
+    if sp.startswith("webdav:"):
+        failed.append("WebDAV 源路径已不支持")
+    elif not sp:
+        failed.append("缺少源路径")
     else:
-        try:
-            client = WebDAVClient(cfg.webdav_url, cfg.username, cfg.password, timeout=120)
-            root = (cfg.books_path or "books").strip().strip("/").replace("\\", "/") or "books"
-            dav_src = sp[7:].lstrip("/") if is_dav else ""
-            if not dav_src:
-                # 本地源书：远端未分类同名一并归位
-                name = Path(sp).name if sp else ""
-                if name:
-                    dav_src = f"{root}/{UNCATEGORIZED}/{name}"
-            if dav_src and client.exists(dav_src):
-                fname = dav_src.rsplit("/", 1)[-1]
-                dest_parent = "/".join([root, *parts])
-                src_parent = dav_src.rsplit("/", 1)[0] if "/" in dav_src else ""
-                if src_parent.rstrip("/") == dest_parent.rstrip("/"):
-                    actions.append(f"WebDAV 已在 {target_disp}/")
+        local_src = Path(sp)
+        if not local_src.is_file():
+            failed.append("本地源文件不存在")
+        else:
+            dest_dir = settings.novels_dir.joinpath(*parts)
+            try:
+                if local_src.parent.resolve() == dest_dir.resolve():
+                    actions.append(f"本地已在 {target_disp}/")
                 else:
-                    dest_rel = f"{dest_parent}/{fname}"
-                    try:
-                        if client.exists(dest_rel):
-                            stem, dot, ext = fname.rpartition(".")
-                            if not dot:
-                                stem, ext = fname, ""
-                            dest_rel = f"{dest_parent}/{stem}_{book.id}{dot}{ext}"
-                        client.move(dav_src, dest_rel, overwrite=False)
-                        actions.append(f"WebDAV {dav_src} → {dest_rel}")
-                        if is_dav:
-                            book.source_path = f"webdav:{dest_rel}"
-                    except WebDAVError as e:
-                        failed.append(f"WebDAV 移动失败: {e}")
-            else:
-                actions.append("WebDAV 无对应源文件")
-        except Exception as e:  # noqa: BLE001
-            failed.append(f"WebDAV: {e}")
+                    dest = dest_dir / local_src.name
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    if dest.exists() and dest.resolve() != local_src.resolve():
+                        dest = dest_dir / f"{local_src.stem}_{book.id}{local_src.suffix}"
+                    local_src.replace(dest)
+                    actions.append(f"本地 → {target_disp}/{dest.name}")
+                    book.source_path = str(dest)
+            except OSError as e:
+                failed.append(f"本地移动失败: {e}")
 
     ok = bool(actions) and not failed
     return {

@@ -11,9 +11,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .database import init_db
-from .routers import admin, auth, backup, batch_scrape, legado, library, public, scrape
+from .routers import admin, auth, batch_scrape, legado, library, public, scrape
 from .importer import ensure_category_dirs
-from .backup import start_scheduler
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -36,7 +35,6 @@ app.include_router(auth.router)
 app.include_router(public.router)
 app.include_router(legado.router)
 app.include_router(admin.router)
-app.include_router(backup.router)
 app.include_router(scrape.router)
 app.include_router(library.router)
 app.include_router(batch_scrape.router)
@@ -44,7 +42,6 @@ app.include_router(batch_scrape.router)
 settings.ensure_dirs()
 ensure_category_dirs()
 init_db()
-start_scheduler()
 
 # 封面静态目录
 app.mount("/covers", StaticFiles(directory=str(settings.covers_dir)), name="covers")

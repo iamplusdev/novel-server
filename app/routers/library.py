@@ -83,6 +83,6 @@ def library_repair_one(book_id: int, mode: str = "auto", db: Session = Depends(g
 
 @router.post("/relocate")
 def library_relocate(payload: RelocateIn | None = None, db: Session = Depends(get_db)) -> dict:
-    """按书籍分类把源 TXT 归位到对应分类文件夹（本地 + WebDAV）。"""
+    """按书籍分类把源 TXT 归位到对应分类文件夹（本地）。"""
     book_ids = payload.book_ids if payload else None
     return relocate_books(db, book_ids)
