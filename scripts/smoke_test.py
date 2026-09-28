@@ -165,8 +165,8 @@ def main() -> int:
     req = urllib.request.Request(BASE + "/")
     with urllib.request.urlopen(req, timeout=10) as resp:
         html = resp.read().decode("utf-8")
-    check("index.html", "爱小说" in html or "admin" in html)
-    for asset in ("/admin.css", "/admin.js", "/legado_book_source.json"):
+    check("index.html", "爱小说" in html or "id=\"app\"" in html)
+    for asset in ("/legado_book_source.json", "/api/auth/status"):
         req = urllib.request.Request(BASE + asset)
         with urllib.request.urlopen(req, timeout=10) as resp:
             check(f"asset {asset}", resp.status == 200)

@@ -284,7 +284,7 @@ python run.py
 ```text
 novel-server/
 ├── app/                 # FastAPI 应用
-├── index.html admin.css admin.js admin.ui.js
+├── frontend/            # Vue3 + Vite 管理后台（构建产物 frontend/dist）
 ├── import_novels.py     # CLI 导入
 ├── run.py
 ├── legado_book_source.json

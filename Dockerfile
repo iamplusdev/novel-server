@@ -28,8 +28,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 只拷运行所需代码（.dockerignore 已排除 data/covers/novels/scripts）
 COPY app ./app
 COPY run.py import_novels.py reset_auth.py ./
-# 旧 Vanilla 保留至 P8，便于镜像内回退
-COPY index.html admin.css admin.js admin.ui.js favicon.ico legado_book_source.json ./
+COPY favicon.ico legado_book_source.json ./
 # 新前端构建产物
 COPY --from=frontend-builder /build/dist ./frontend/dist
 
