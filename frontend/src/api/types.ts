@@ -73,3 +73,27 @@ export interface BookDetail extends BookListItem {
   category_name?: string;
   chapters_preview?: { id: number; index: number; title: string }[];
 }
+
+/** 站外刮削命中项 */
+export interface ScrapeHit {
+  source: string;
+  source_id: string;
+  name: string;
+  author: string;
+  latest_chapter?: string;
+  cover_url?: string;
+  url?: string;
+  intro?: string;
+  status?: string;
+  category?: string;
+  word_count?: number;
+  tags?: string[];
+}
+
+export interface ScrapeSearchResponse {
+  source: string;
+  source_key: string;
+  query: string;
+  items: ScrapeHit[];
+  count: number;
+}
