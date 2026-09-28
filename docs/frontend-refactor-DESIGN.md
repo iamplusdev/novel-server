@@ -1,6 +1,7 @@
 # 前端重构设计（Vue3 + Vite + Element Plus + Pinia + Vue Router）
 
-> 目标：将现有 Vanilla 单页后台（`index.html` / `admin.css` / `admin.js` / `admin.ui.js`）重写为可维护的 Vue3 SPA，API 契约保持不变。
+> 目标：将原 Vanilla 单页后台重写为可维护的 Vue3 SPA，API 契约保持不变。
+> **状态（P8）**：Vue 前端已全面接管，旧 `index.html` / `admin.css` / `admin.js` / `admin.ui.js` 已删除。
 
 ## 1. 风格锚点
 

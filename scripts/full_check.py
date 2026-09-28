@@ -137,8 +137,8 @@ def main():
     st, lt = call(f"/api/legado/toc/{bid}")
     check("legado toc", st == 200 and lt.get("chapters") is not None)
 
-    # static
-    for pth in ("/", "/admin.css", "/admin.js"):
+    # static：Vue SPA 入口与公开资源
+    for pth in ("/", "/legado_book_source.json"):
         st, raw = call(pth, raw=True)
         check("static " + pth, st == 200 and raw and len(raw) > 100)
 
