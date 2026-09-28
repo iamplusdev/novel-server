@@ -203,7 +203,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(map_site_category("番茄", "西方奇幻"), ("番茄", "西方奇幻"))
         self.assertEqual(map_site_category("fanqie", "衍生"), ("番茄", "男频衍生"))
         self.assertEqual(make_category_label(*map_site_category("起点", "历史")), "起点-历史")
-        self.assertEqual([x["key"] for x in category_tree()], ["", "起点", "番茄"])
+        self.assertEqual([x["key"] for x in category_tree()], ["", "起点", "番茄", "纵横"])
 
     def test_source_category_filter(self) -> None:
         """书源+分类筛选：起点-都市 应能被 source=起点 & category=都市 命中。"""

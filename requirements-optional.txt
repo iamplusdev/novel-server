@@ -1,0 +1,4 @@
+# 可选依赖：浏览器兜底（fnOS tieron Chrome / Playwright CDP）
+# 用法：pip install -r requirements-optional.txt
+# 启用：SCRAPER_BROWSER_FALLBACK=1 且 CDP_URL 指向 Chrome 网关
+playwright>=1.40,<2.0

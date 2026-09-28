@@ -21,6 +21,20 @@ class HttpError(Exception):
     """网络请求失败（连接/超时/HTTP 等）。"""
 
 
+# 浏览器兜底模式：为 True 时 http_get 走 Playwright/CDP（批量第二阶段）
+_BROWSER_MODE = False
+
+
+def set_browser_mode(on: bool) -> None:
+    """开启/关闭浏览器取页模式（批量失败汇总重试用）。"""
+    global _BROWSER_MODE
+    _BROWSER_MODE = bool(on)
+
+
+def browser_mode() -> bool:
+    return _BROWSER_MODE
+
+
 # 整次进程/刮削会话共用 Cookie，贴近真实浏览器会话
 _COOKIE_JAR = http.cookiejar.CookieJar()
 _UA_LOCK = threading.Lock()
@@ -109,7 +123,14 @@ def http_get(
     timeout: int = 20,
     referer: str = "",
 ) -> str:
-    """GET 并按 gzip / charset 解码为文本。"""
+    """GET 并按 gzip / charset 解码为文本。浏览器兜底模式下走 CDP。"""
+    if _BROWSER_MODE:
+        try:
+            from .browser_fallback import fetch_text
+
+            return fetch_text(url)
+        except Exception as e:  # noqa: BLE001
+            raise HttpError(f"浏览器取页失败: {e}") from e
     hdrs = {
         "User-Agent": session_user_agent(),
         "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",

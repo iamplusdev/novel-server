@@ -234,6 +234,54 @@ def _apply_hit_to_book(db: Session, book: Book, hit_dict: dict) -> None:
     book.updated_at = datetime.now().isoformat(timespec="seconds")
 
 
+def _scrape_one(
+    db: Session,
+    mod,
+    label: str,
+    book: Book,
+    *,
+    min_score: float,
+    dry_run: bool,
+) -> str:
+    """刮削单本并写入。返回 skip|preview|ok；失败抛异常。"""
+    title, author = book.title, book.author
+    search_kw = _search_keyword(title)
+    match_author = _author_from_title_field(title, author) or author
+    # enrich=False：批量不再给搜索结果补详情，单本请求量从约 8～15 降到 2～4
+    hits = mod.search(search_kw or title, limit=8, enrich=False)
+    fake_book = Book(title=search_kw or title, author=match_author)
+    hit, score = pick_best_hit(fake_book, hits, min_score=min_score)
+    if not hit:
+        _log(f"跳过《{title}》无足够匹配（最佳 {score:.2f}）")
+        return "skip"
+    hd = _hit_to_dict(hit)
+    src_id = str(hd.get("source_id") or "")
+    preview = f"《{title}》→《{hd.get('name')}》/{hd.get('author')} 分数{score:.2f} id={src_id}"
+    if dry_run:
+        _log(f"[预览] {preview}")
+        return "preview"
+    # 详情 + 写入（与单本一致）
+    detail_blocked = False
+    try:
+        detail = mod.fetch_detail(src_id)
+        d = detail.to_dict()
+        for k in ("name", "author", "intro", "status", "cover_url", "latest_chapter", "tags", "category", "word_count"):
+            if not d.get(k) and hd.get(k):
+                d[k] = hd[k]
+        d["source"] = label
+        d["source_id"] = src_id or d.get("source_id")
+    except ScrapeError as e:
+        d = dict(hd)
+        d["source"] = label
+        d.setdefault("source_id", src_id)
+        _log(f"《{title}》详情失败，用搜索结果回退：{e}")
+        detail_blocked = bool(getattr(e, "blocked", False))
+    _apply_hit_to_book(db, book, d)
+    db.commit()
+    _log(f"完成 {preview}")
+    return "blocked_ok" if detail_blocked else "ok"
+
+
 def run_batch_scrape(
     source: str = "qidian",
     only_missing: bool = True,
@@ -241,7 +289,10 @@ def run_batch_scrape(
     limit: int | None = None,
     dry_run: bool = False,
 ) -> dict:
-    """同步执行一批刮削（供后台线程调用）。"""
+    """同步执行一批刮削（供后台线程调用）。
+
+    默认 HTTP；阶段1 失败项汇总后，若开启浏览器兜底则用 Playwright/CDP 重试。
+    """
     mod = REGISTRY.get(source) or REGISTRY.get("qidian")
     label = SOURCE_LABELS.get(source, "起点")
     db = SessionLocal()
@@ -259,10 +310,14 @@ def run_batch_scrape(
         _status["skipped"] = 0
         _status["failed"] = 0
         _status["dry_run"] = dry_run
+        _status["browser_retried"] = 0
+        _status["browser_recovered"] = 0
 
         # 风控退避状态：连续被拦计数 + 当前退避档位
         block_streak = 0
         backoff_idx = 0
+        # HTTP 阶段失败清单，留给浏览器兜底
+        failed_jobs: list[tuple[int, str]] = []
 
         for book in books:
             # 支持中途取消（A6）
@@ -270,62 +325,31 @@ def run_batch_scrape(
                 _log("（已取消）")
                 break
             _status["done"] += 1
-            title, author = book.title, book.author
-            search_kw = _search_keyword(title)
-            match_author = _author_from_title_field(title, author) or author
+            title = book.title
             try:
-                # enrich=False：批量不再给搜索结果补详情，单本请求量从约 8～15 降到 2～4
-                hits = mod.search(search_kw or title, limit=8, enrich=False)
-                fake_book = Book(title=search_kw or title, author=match_author)
-                hit, score = pick_best_hit(fake_book, hits, min_score=min_score)
-                if not hit:
+                result = _scrape_one(db, mod, label, book, min_score=min_score, dry_run=dry_run)
+                if result == "skip":
                     _status["skipped"] += 1
-                    _log(f"跳过《{title}》无足够匹配（最佳 {score:.2f}）")
+                    block_streak = 0
+                elif result == "preview":
+                    _status["matched"] += 1
+                    block_streak = 0
+                    backoff_idx = 0
+                elif result == "blocked_ok":
+                    _status["matched"] += 1
+                    block_streak += 1
                 else:
-                    hd = _hit_to_dict(hit)
-                    src_id = str(hd.get("source_id") or "")
-                    preview = f"《{title}》→《{hd.get('name')}》/{hd.get('author')} 分数{score:.2f} id={src_id}"
-                    if dry_run:
-                        _status["matched"] += 1
-                        _log(f"[预览] {preview}")
-                    else:
-                        # 详情 + 写入（与单本一致）
-                        detail_blocked = False
-                        try:
-                            detail = mod.fetch_detail(src_id)
-                            d = detail.to_dict()
-                            # 合并搜索 hint
-                            for k in ("name", "author", "intro", "status", "cover_url", "latest_chapter", "tags", "category", "word_count"):
-                                if not d.get(k) and hd.get(k):
-                                    d[k] = hd[k]
-                            d["source"] = label
-                            d["source_id"] = src_id or d.get("source_id")
-                        except ScrapeError as e:
-                            d = dict(hd)
-                            d["source"] = label
-                            d.setdefault("source_id", src_id)
-                            _log(f"《{title}》详情失败，用搜索结果回退：{e}")
-                            # 详情被拦仍属风控信号，计入退避（用搜索结果写完本轮）
-                            detail_blocked = bool(getattr(e, "blocked", False))
-                            if detail_blocked:
-                                block_streak += 1
-
-                        _apply_hit_to_book(db, book, d)
-                        db.commit()
-                        _status["matched"] += 1
-                        _log(f"完成 {preview}")
-                        # 完全成功才重置风控退避；详情被拦则保留计数
-                        if not detail_blocked:
-                            block_streak = 0
-                            backoff_idx = 0
+                    _status["matched"] += 1
+                    block_streak = 0
+                    backoff_idx = 0
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
                 _status["failed"] += 1
+                failed_jobs.append((book.id, title))
                 blocked = bool(getattr(exc, "blocked", False))
                 if blocked:
                     block_streak += 1
                     _log(f"失败《{title}》(风控拦截 # {block_streak}): {exc}")
-                    # 连续被拦 → 熔断冷却，避免继续猛刷导致整段 IP 被封
                     if block_streak >= _BLOCK_BREAK_AT:
                         _log(
                             f"连续 {block_streak} 次被拦截，暂停 {_BLOCK_BREAK_SECONDS:.0f}s 冷却后继续…"
@@ -359,15 +383,72 @@ def run_batch_scrape(
                 _log(f"节奏暂停 {pause:.1f}s（每 {_LONG_PAUSE_EVERY} 本）")
             time.sleep(delay)
 
+        # 阶段2：汇总 HTTP 失败项，用浏览器（CDP）兜底重试
+        if failed_jobs and not dry_run and not _cancel.is_set():
+            _run_browser_fallback(db, mod, label, failed_jobs, min_score=min_score)
+
         summary = (
             f"共 {_status['total']} 本 · 写入 {_status['matched']} · "
             f"跳过 {_status['skipped']} · 失败 {_status['failed']}"
+            + (f" · 浏览器兜底恢复 {_status['browser_recovered']}" if _status.get("browser_retried") else "")
             + ("（预览）" if dry_run else "")
         )
         _log(summary)
         return dict(_status)
     finally:
         db.close()
+
+
+def _run_browser_fallback(
+    db: Session,
+    mod,
+    label: str,
+    failed_jobs: list[tuple[int, str]],
+    *,
+    min_score: float,
+) -> None:
+    """失败汇总后用 Playwright/CDP 重试（fnOS tieron Chrome）。"""
+    from .scrapers import http_util
+    from .scrapers.browser_fallback import (
+        browser_fallback_enabled,
+        ensure_browser_ready,
+        last_browser_error,
+    )
+
+    if not browser_fallback_enabled():
+        _log(f"失败 {len(failed_jobs)} 本未重试（未开 SCRAPER_BROWSER_FALLBACK）")
+        return
+    _log(f"HTTP 阶段失败 {len(failed_jobs)} 本，唤醒浏览器并兜底重试…")
+    if not ensure_browser_ready():
+        _log(f"浏览器未就绪，保留失败待人工处理：{last_browser_error()}")
+        return
+
+    http_util.set_browser_mode(True)
+    try:
+        for book_id, title in failed_jobs:
+            if _cancel.is_set():
+                _log("（已取消）")
+                break
+            book = db.get(Book, book_id)
+            if not book:
+                continue
+            _status["browser_retried"] = _status.get("browser_retried", 0) + 1
+            try:
+                result = _scrape_one(db, mod, label, book, min_score=min_score, dry_run=False)
+                if result in ("ok", "blocked_ok"):
+                    _status["browser_recovered"] = _status.get("browser_recovered", 0) + 1
+                    # 成功则从 failed 计数里扣回
+                    _status["failed"] = max(0, _status["failed"] - 1)
+                    _log(f"[浏览器] 恢复《{title}》")
+                elif result == "skip":
+                    _log(f"[浏览器] 《{title}》仍无匹配")
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                _log(f"[浏览器] 《{title}》仍失败: {exc}")
+            time.sleep(_BASE_DELAY + random.uniform(0.0, _JITTER_MAX))
+    finally:
+        http_util.set_browser_mode(False)
+        _log("浏览器兜底阶段结束")
 
 
 def start_batch_scrape(**kwargs) -> bool:

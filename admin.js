@@ -817,15 +817,16 @@
     return params.toString();
   }
 
-  // —— 书源行：全部 / 起点 / 番茄 ——
-  const SOURCE_OPTS = ["", "起点", "番茄"];
-  const SOURCE_LABEL = { "": "全部", "起点": "起点", "番茄": "番茄" };
+  // —— 书源行：全部 / 起点 / 番茄 / 纵横 ——
+  const SOURCE_OPTS = ["", "起点", "番茄", "纵横"];
+  const SOURCE_LABEL = { "": "全部", "起点": "起点", "番茄": "番茄", "纵横": "纵横" };
 
   function catListForSource(src) {
     // 默认（全部）只展示第一个书源的分类，避免并集过长；
     // 点选书源后再切换到对应栏目
-    if (src === "番茄") return CATEGORY_TREE["番茄"].categories.slice();
-    return CATEGORY_TREE["起点"].categories.slice();
+    if (src === "番茄" && CATEGORY_TREE["番茄"]) return CATEGORY_TREE["番茄"].categories.slice();
+    if (src === "纵横" && CATEGORY_TREE["纵横"]) return CATEGORY_TREE["纵横"].categories.slice();
+    return (CATEGORY_TREE["起点"] || CATEGORY_TREE[""] || { categories: [] }).categories.slice();
   }
 
   function renderSourceBar() {
@@ -1036,7 +1037,7 @@
       : "来源：未刮削";
     // 刮削弹窗书源默认与当前书源一致
     if (els.scrapeSource) {
-      const map = { "起点": "qidian", "番茄": "fanqie", "qidian": "qidian", "fanqie": "fanqie" };
+      const map = { "起点": "qidian", "番茄": "fanqie", "纵横": "zongheng", "qidian": "qidian", "fanqie": "fanqie", "zongheng": "zongheng" };
       els.scrapeSource.value = map[book.source] || map[lv.category_source] || "qidian";
     }
     els.scrapeResults.innerHTML = "";
@@ -1049,7 +1050,7 @@
     els.scrapeKeyword.value = localName;
     // 选择书源后第一级（书源）自动匹配
     const srcKey = (els.editSource && els.editSource.value) || "";
-    const map = { "起点": "qidian", "番茄": "fanqie" };
+    const map = { "起点": "qidian", "番茄": "fanqie", "纵横": "zongheng" };
     if (els.scrapeSource && map[srcKey]) els.scrapeSource.value = map[srcKey];
     els.scrapeLocal.innerHTML =
       "当前书籍：<strong>" + escapeHtml(localName || "(未命名)") + "</strong>" +
@@ -1135,7 +1136,7 @@
       return;
     }
     const src0 = (els.scrapeSource && els.scrapeSource.value) || "qidian";
-    const idLike = /^\d{5,24}$/.test(keyword) || /qidian\.com\/book\/\d+|fanqienovel\.com\/page\/\d+/.test(keyword);
+    const idLike = /^\d{5,24}$/.test(keyword) || /qidian\.com\/book\/\d+|fanqienovel\.com\/page\/\d+|zongheng\.com\/(?:detail|book)\/\d+/.test(keyword);
     if (idLike) {
       els.scrapeSearchBtn.disabled = true;
       els.scrapeResults.innerHTML = '<div class="muted tiny">按书号拉取详情…</div>';
@@ -1210,7 +1211,7 @@
         : splitCategory(res.category, res.source);
       setTwoLevelCategory(lv.category_source, lv.category_name);
       if (els.scrapeSource) {
-        const map = { "起点": "qidian", "番茄": "fanqie" };
+        const map = { "起点": "qidian", "番茄": "fanqie", "纵横": "zongheng" };
         if (map[lv.category_source]) els.scrapeSource.value = map[lv.category_source];
       }
       els.editStatus.value = res.status || "完结";
@@ -2000,7 +2001,7 @@
   on(els.scrapeSearchBtn, "click", runScrapeSearch);
   // 刮削源变更 → 同步编辑页第一级书源
   on(els.scrapeSource, "change", () => {
-    const map = { qidian: "起点", fanqie: "番茄" };
+    const map = { qidian: "起点", fanqie: "番茄", zongheng: "纵横" };
     const want = map[els.scrapeSource.value] || "";
     if (els.editSource && els.editSource.value !== want) {
       setTwoLevelCategory(want, els.editCategory.value);
