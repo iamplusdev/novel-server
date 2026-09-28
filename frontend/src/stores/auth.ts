@@ -26,6 +26,19 @@ export const useAuthStore = defineStore("auth", {
       this.username = me.username;
       return me;
     },
+    /** 会话是否有效（Cookie / 内存 token） */
+    async tryRestore() {
+      await this.fetchStatus();
+      if (this.setupRequired) return false;
+      try {
+        await this.fetchMe();
+        return true;
+      } catch {
+        this.username = "";
+        this.token = "";
+        return false;
+      }
+    },
     async login(username: string, password: string) {
       const s = await http.post<SessionInfo>("/api/auth/login", { username, password });
       this.username = s.username;
@@ -38,6 +51,25 @@ export const useAuthStore = defineStore("auth", {
       this.username = s.username;
       this.token = s.token || "";
       this.setupRequired = false;
+      return s;
+    },
+    async forgot(payload: {
+      recovery_code: string;
+      username?: string | null;
+      new_password: string;
+    }) {
+      const s = await http.post<SessionInfo>("/api/auth/forgot", payload);
+      this.username = s.username;
+      this.token = s.token || "";
+      this.setupRequired = false;
+      return s;
+    },
+    async changePassword(oldPassword: string, newPassword: string) {
+      const s = await http.post<SessionInfo>("/api/auth/change-password", {
+        old_password: oldPassword,
+        new_password: newPassword,
+      });
+      this.token = s.token || "";
       return s;
     },
     async logout() {
