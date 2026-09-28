@@ -70,13 +70,14 @@ def apply_source_category(
         stmt = stmt.where(
             ~Book.category.like("起点-%", escape="\\"),
             ~Book.category.like("番茄-%", escape="\\"),
+            ~Book.category.like("纵横-%", escape="\\"),
         )
-    elif src_raw in ("起点", "番茄"):
+    elif src_raw in ("起点", "番茄", "纵横"):
         stmt = stmt.where(
             or_(Book.category.startswith(f"{src_raw}-"), Book.source == src_raw)
         )
     if cat_raw and cat_raw != "全部":
-        if src_raw in ("起点", "番茄"):
+        if src_raw in ("起点", "番茄", "纵横"):
             label = f"{src_raw}-{cat_raw}"
             stmt = stmt.where(
                 or_(

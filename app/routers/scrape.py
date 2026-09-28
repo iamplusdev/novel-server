@@ -216,5 +216,6 @@ def scrape_sources() -> dict:
         "items": [
             {"key": "qidian", "label": "起点", "enabled": True},
             {"key": "fanqie", "label": "番茄", "enabled": True},
+            {"key": "zongheng", "label": "纵横", "enabled": True},
         ]
     }

@@ -10,7 +10,7 @@
 
 - 扫描 `novels/<书源>/<分类>/*.txt`，解析章节写入 SQLite（内容哈希未变则跳过）
 - 管理后台（`/admin`）：账号登录、封面墙、书源/分类筛选、元数据编辑、刮削、体检、备份
-- **两级分类**：书源（起点 / 番茄 / 本地）+ 站内分类，与 TXT 目录层级一致
+- **两级分类**：书源（起点 / 番茄 / 纵横 / 本地）+ 站内分类，与 TXT 目录层级一致
 - **刮削**：起点 / 番茄 元数据（书名、作者、简介、状态、分类、标签、封面）
 - **Legado 书源**：发现页分类、搜索、详情、目录、正文（完整 URL），手机阅读主路径
 - 封面本地 `covers/` 由服务直接提供
@@ -121,7 +121,7 @@ docker compose exec novel-server python import_novels.py
 |------|------|
 | 改元数据 / 封面 / 分类 | 管理后台书库，点封面卡片 |
 | 再次导入 | 管理后台「导入」或 `docker compose exec novel-server python import_novels.py` |
-| 刮削补全 | 管理后台编辑抽屉「刮削…」或体检页「一键刮削」 |
+| 刮削补全 | 管理后台编辑抽屉「刮削…」或体检页「一键刮削」（起点 / 番茄 / 纵横） |
 | 升级 | `docker compose build && docker compose up -d`（卷数据保留） |
 
 ---
@@ -206,6 +206,19 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 | `SCRAPER_LONG_PAUSE_MIN` / `MAX` | `6` / `12` | 长休息随机秒数范围 |
 | `SCRAPER_BLOCK_BREAK_AT` | `3` | 连续被拦截多少次后熔断冷却 |
 | `SCRAPER_BLOCK_BREAK_SECONDS` | `180` | 熔断冷却时长（秒） |
+| `SCRAPER_BROWSER_FALLBACK` | （空） | `1` 开启浏览器兜底（HTTP 失败后 Playwright/CDP 重试） |
+| `CDP_URL` | `http://127.0.0.1:16002` | fnOS tieron Chrome CDP 网关（需 host 网络或可达） |
+| `CDP_READY_WAIT` | `20` | 唤醒/等待 Chrome ready 超时（秒） |
+
+### 浏览器兜底（fnOS + tieron Chrome）
+
+批量刮削默认 HTTP；失败项会在结束后汇总，用 Playwright 连宿主 Chrome（CDP）重试：
+
+1. `pip install -r requirements-optional.txt`（镜像内可选装）
+2. `docker-compose.yml` 已用 `network_mode: host`，容器内 `127.0.0.1:16002` 即宿主机 CDP
+3. 环境变量：`SCRAPER_BROWSER_FALLBACK=1`、`CDP_URL=http://127.0.0.1:16002`
+
+日志中会看到「唤醒浏览器并兜底重试 / [浏览器] 恢复」等字样。
 
 ---
 

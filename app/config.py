@@ -116,9 +116,25 @@ FANQIE_CATEGORIES = [
     "男频衍生",
 ]
 
+# 纵横中文网站内栏目（与官网一致）
+ZONGHENG_CATEGORIES = [
+    "玄幻奇幻",
+    "武侠仙侠",
+    "历史",
+    "都市",
+    "游戏",
+    "竞技",
+    "科幻",
+    "灵异",
+    "同人",
+    "女生",
+    "短篇",
+]
+
 SOURCE_CATEGORIES: dict[str, list[str]] = {
     "起点": QIDIAN_CATEGORIES,
     "番茄": FANQIE_CATEGORIES,
+    "纵横": ZONGHENG_CATEGORIES,
 }
 
 # 兼容旧代码/旧数据的扁平分类名（不含书源前缀）
@@ -129,8 +145,10 @@ LEGACY_CATEGORIES = list(QIDIAN_CATEGORIES)
 _SOURCE_ALIASES = {
     "qidian": "起点",
     "fanqie": "番茄",
+    "zongheng": "纵横",
     "起点": "起点",
     "番茄": "番茄",
+    "纵横": "纵横",
 }
 
 
@@ -258,6 +276,7 @@ def category_tree() -> list[dict]:
         {"key": "", "label": "本地", "categories": list(LEGACY_CATEGORIES) + [UNCATEGORIZED]},
         {"key": "起点", "label": "起点", "categories": list(QIDIAN_CATEGORIES)},
         {"key": "番茄", "label": "番茄", "categories": list(FANQIE_CATEGORIES)},
+        {"key": "纵横", "label": "纵横", "categories": list(ZONGHENG_CATEGORIES)},
     ]
 
 
