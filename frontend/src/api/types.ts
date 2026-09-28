@@ -132,4 +132,37 @@ export interface BatchStatus {
   log?: { time: string; message: string }[];
   last_error?: string;
   cancel_requested?: boolean;
+  dry_run?: boolean;
+}
+
+/** 书库体检报告 */
+export interface DupGroup {
+  title: string;
+  author: string;
+  count: number;
+  keep_id: number;
+  books: {
+    id: number;
+    source_path?: string | null;
+    source?: string | null;
+    source_id?: string | null;
+    chapter_count?: number;
+    word_count?: number;
+    cover_file?: string | null;
+  }[];
+}
+
+export interface LibraryIssue {
+  book_id: number;
+  title: string;
+  kind: string;
+  message: string;
+  detail?: string;
+}
+
+export interface LibraryReport {
+  duplicates: DupGroup[];
+  issues: LibraryIssue[];
+  duplicate_groups: number;
+  issue_count: number;
 }
