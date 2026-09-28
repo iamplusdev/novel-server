@@ -6,6 +6,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { deleteBook, fetchBook, fetchStats, updateBook, uploadCover } from "@/api/admin";
+import ScrapeDialog from "@/components/ScrapeDialog.vue";
 import type { AdminStats, BookDetail } from "@/api/types";
 
 const route = useRoute();
@@ -30,6 +31,7 @@ const form = reactive({
 
 const coverPreview = ref("");
 const coverFile = ref<File | null>(null);
+const scrapeOpen = ref(false);
 
 const bookId = computed(() => String(route.params.id || ""));
 
@@ -184,13 +186,10 @@ watch(bookId, () => void load());
           <input type="file" accept="image/*" hidden @change="onCoverPick" />
         </label>
         <p class="muted">支持 jpg / png / webp / gif</p>
-        <el-button
-          size="small"
-          disabled
-          title="刮削将在阶段 5 接入"
-        >
-          刮削…
-        </el-button>
+        <el-button type="primary" size="small" @click="scrapeOpen = true">刮削…</el-button>
+        <div class="muted" v-if="book?.source">
+          来源：{{ book.source }}<template v-if="book.source_id"> · {{ book.source_id }}</template>
+        </div>
         <div class="meta muted">
           <div>字数：{{ fmtWords(book?.word_count) }}</div>
           <div>章节：{{ book?.chapter_count ?? "—" }}</div>
@@ -241,6 +240,14 @@ watch(bookId, () => void load());
         </el-form>
       </div>
     </div>
+
+    <ScrapeDialog
+      v-model:visible="scrapeOpen"
+      :book-id="bookId"
+      :local-name="form.title"
+      :local-author="form.author"
+      @applied="applyBook"
+    />
   </div>
 </template>
 
