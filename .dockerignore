@@ -31,6 +31,11 @@ Dockerfile
 docker-compose.yml
 .dockerignore
 
+# 前端：依赖与本机构建产物不进上下文（镜像内 npm install + build）
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
 # IDE / 系统
 .idea
 .vscode

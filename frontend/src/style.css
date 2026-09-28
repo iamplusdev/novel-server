@@ -1,0 +1,51 @@
+/* 全局轻量样式：布局骨架，组件样式交给 Element Plus */
+:root {
+  --app-bg: #f5f7fa;
+  --app-side-bg: #ffffff;
+  --app-border: #e4e7ed;
+}
+
+html.dark {
+  --app-bg: #0f1419;
+  --app-side-bg: #1a2332;
+  --app-border: #2a3444;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  background: var(--app-bg);
+  color: var(--el-text-color-primary);
+}
+
+.mono {
+  font-family: ui-monospace, Consolas, "Cascadia Mono", monospace;
+}
+
+.page-card {
+  background: var(--el-bg-color);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.muted {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}

@@ -9,6 +9,11 @@ covers/
 *.db-wal
 *.db-shm
 .DS_Store
+# 前端依赖与构建产物（Docker 内构建 dist）
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
 # Docker 镜像导出包与小说运行数据不入库
 *.tar
 novels/
+frontend/*.tsbuildinfo
