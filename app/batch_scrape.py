@@ -1,6 +1,8 @@
 """全库一键刮削：按书名/作者相似度选最近匹配后写入。"""
 from __future__ import annotations
 
+import os
+import random
 import re
 import threading
 import time
@@ -16,6 +18,38 @@ from .models import Book
 from .scrapers import ALL_SOURCES, REGISTRY, SOURCE_LABELS
 from .scrapers.qidian import ScrapeError, clean_tag_token, download_cover
 from .config import UNCATEGORIZED, make_category_label, map_site_category, normalize_source, settings
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = (os.environ.get(key) or "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
+def _env_int(key: str, default: int) -> int:
+    raw = (os.environ.get(key) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+# 书与书之间的基础间隔（秒）；过大容易拖慢，过小易触发起点 WAF
+_BASE_DELAY = max(0.3, _env_float("SCRAPER_DELAY", 2.0))
+# 在基础间隔上随机抖动（秒），避免固定节拍被识别为脚本
+_JITTER_MAX = max(0.0, _env_float("SCRAPER_JITTER_MAX", 1.5))
+# 每完成 N 本插入一次「像人休息」的长间隔；0 = 关闭
+_LONG_PAUSE_EVERY = max(0, _env_int("SCRAPER_LONG_PAUSE_EVERY", 10))
+_LONG_PAUSE_MIN = max(3.0, _env_float("SCRAPER_LONG_PAUSE_MIN", 6.0))
+_LONG_PAUSE_MAX = max(_LONG_PAUSE_MIN, _env_float("SCRAPER_LONG_PAUSE_MAX", 12.0))
+# 被拦截后的退避序列（秒），超过则取最后一档
+_BACKOFF_STEPS = [5.0, 15.0, 60.0]
+# 连续被拦达到该次数则熔断暂停
+_BLOCK_BREAK_AT = max(2, _env_int("SCRAPER_BLOCK_BREAK_AT", 3))
+# 熔断冷却时长（秒）
+_BLOCK_BREAK_SECONDS = max(30.0, _env_float("SCRAPER_BLOCK_BREAK_SECONDS", 180.0))
 
 _lock = threading.Lock()
 _status: dict = {
@@ -226,6 +260,10 @@ def run_batch_scrape(
         _status["failed"] = 0
         _status["dry_run"] = dry_run
 
+        # 风控退避状态：连续被拦计数 + 当前退避档位
+        block_streak = 0
+        backoff_idx = 0
+
         for book in books:
             # 支持中途取消（A6）
             if _cancel.is_set():
@@ -236,46 +274,90 @@ def run_batch_scrape(
             search_kw = _search_keyword(title)
             match_author = _author_from_title_field(title, author) or author
             try:
-                hits = mod.search(search_kw or title, limit=8)
+                # enrich=False：批量不再给搜索结果补详情，单本请求量从约 8～15 降到 2～4
+                hits = mod.search(search_kw or title, limit=8, enrich=False)
                 fake_book = Book(title=search_kw or title, author=match_author)
                 hit, score = pick_best_hit(fake_book, hits, min_score=min_score)
                 if not hit:
                     _status["skipped"] += 1
                     _log(f"跳过《{title}》无足够匹配（最佳 {score:.2f}）")
-                    continue
-                hd = _hit_to_dict(hit)
-                src_id = str(hd.get("source_id") or "")
-                preview = f"《{title}》→《{hd.get('name')}》/{hd.get('author')} 分数{score:.2f} id={src_id}"
-                if dry_run:
-                    _status["matched"] += 1
-                    _log(f"[预览] {preview}")
-                    continue
+                else:
+                    hd = _hit_to_dict(hit)
+                    src_id = str(hd.get("source_id") or "")
+                    preview = f"《{title}》→《{hd.get('name')}》/{hd.get('author')} 分数{score:.2f} id={src_id}"
+                    if dry_run:
+                        _status["matched"] += 1
+                        _log(f"[预览] {preview}")
+                    else:
+                        # 详情 + 写入（与单本一致）
+                        detail_blocked = False
+                        try:
+                            detail = mod.fetch_detail(src_id)
+                            d = detail.to_dict()
+                            # 合并搜索 hint
+                            for k in ("name", "author", "intro", "status", "cover_url", "latest_chapter", "tags", "category", "word_count"):
+                                if not d.get(k) and hd.get(k):
+                                    d[k] = hd[k]
+                            d["source"] = label
+                            d["source_id"] = src_id or d.get("source_id")
+                        except ScrapeError as e:
+                            d = dict(hd)
+                            d["source"] = label
+                            d.setdefault("source_id", src_id)
+                            _log(f"《{title}》详情失败，用搜索结果回退：{e}")
+                            # 详情被拦仍属风控信号，计入退避（用搜索结果写完本轮）
+                            detail_blocked = bool(getattr(e, "blocked", False))
+                            if detail_blocked:
+                                block_streak += 1
 
-                # 详情 + 写入（与单本一致）
-                try:
-                    detail = mod.fetch_detail(src_id)
-                    d = detail.to_dict()
-                    # 合并搜索 hint
-                    for k in ("name", "author", "intro", "status", "cover_url", "latest_chapter", "tags", "category", "word_count"):
-                        if not d.get(k) and hd.get(k):
-                            d[k] = hd[k]
-                    d["source"] = label
-                    d["source_id"] = src_id or d.get("source_id")
-                except ScrapeError as e:
-                    d = dict(hd)
-                    d["source"] = label
-                    d.setdefault("source_id", src_id)
-                    _log(f"《{title}》详情失败，用搜索结果回退：{e}")
-
-                _apply_hit_to_book(db, book, d)
-                db.commit()
-                _status["matched"] += 1
-                _log(f"完成 {preview}")
+                        _apply_hit_to_book(db, book, d)
+                        db.commit()
+                        _status["matched"] += 1
+                        _log(f"完成 {preview}")
+                        # 完全成功才重置风控退避；详情被拦则保留计数
+                        if not detail_blocked:
+                            block_streak = 0
+                            backoff_idx = 0
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
                 _status["failed"] += 1
-                _log(f"失败《{title}》: {exc}")
-            time.sleep(0.6)  # 限速，降低风控
+                blocked = bool(getattr(exc, "blocked", False))
+                if blocked:
+                    block_streak += 1
+                    _log(f"失败《{title}》(风控拦截 # {block_streak}): {exc}")
+                    # 连续被拦 → 熔断冷却，避免继续猛刷导致整段 IP 被封
+                    if block_streak >= _BLOCK_BREAK_AT:
+                        _log(
+                            f"连续 {block_streak} 次被拦截，暂停 {_BLOCK_BREAK_SECONDS:.0f}s 冷却后继续…"
+                        )
+                        _cancel.wait(_BLOCK_BREAK_SECONDS)
+                        if _cancel.is_set():
+                            _log("（已取消）")
+                            break
+                        block_streak = 0
+                        backoff_idx = 0
+                else:
+                    block_streak = 0
+                    _log(f"失败《{title}》: {exc}")
+
+            if _cancel.is_set():
+                break
+            # 间隔：2s 基准 + 随机抖动；被拦时改为指数退避；偶发长休息更像真人
+            delay = _BASE_DELAY + random.uniform(0.0, _JITTER_MAX)
+            if block_streak > 0:
+                step = _BACKOFF_STEPS[min(backoff_idx, len(_BACKOFF_STEPS) - 1)]
+                backoff_idx = min(backoff_idx + 1, len(_BACKOFF_STEPS) - 1)
+                delay = step
+                _log(f"风控退避，等待 {delay:.0f}s…")
+            elif (
+                _LONG_PAUSE_EVERY > 0
+                and _status["done"] > 0
+                and _status["done"] % _LONG_PAUSE_EVERY == 0
+            ):
+                pause = random.uniform(_LONG_PAUSE_MIN, _LONG_PAUSE_MAX)
+                delay += pause
+                _log(f"节奏暂停 {pause:.1f}s（每 {_LONG_PAUSE_EVERY} 本）")
+            time.sleep(delay)
 
         summary = (
             f"共 {_status['total']} 本 · 写入 {_status['matched']} · "

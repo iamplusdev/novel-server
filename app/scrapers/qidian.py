@@ -23,7 +23,36 @@ SOURCE_NAME = "起点"
 
 
 class ScrapeError(Exception):
-    pass
+    """刮削失败。blocked=True 表示疑似被站点风控/限流拦截。"""
+
+    blocked = False
+
+
+class RateLimitedError(ScrapeError):
+    """被起点 WAF/验证码探针拦截，应退避等待而不是继续猛刷。"""
+
+    blocked = True
+
+
+# 风控/验证探针页特征（响应头/正文里常见）
+_BLOCK_MARKERS = (
+    "probe.js",
+    "probev3.js",
+    "TCaptcha",
+    "turing.captcha",
+    "x-waf-captcha",
+    "安全验证",
+    "环境异常",
+    "请完成验证",
+)
+
+
+def looks_blocked(page: str | None) -> bool:
+    """判断是否为风控/验证探针页（而非正常书目 HTML）。"""
+    if not page:
+        return False
+    head = page[:3000]
+    return any(m in head for m in _BLOCK_MARKERS)
 
 
 @dataclass
@@ -118,11 +147,15 @@ def extract_detail_tags(page: str) -> list[str]:
 
 
 def _http_get(url: str) -> str:
-    """统一走 http_util：默认直连，避免本地代理未启动导致批量失败。"""
+    """统一走 http_util：默认直连，避免本地代理未启动导致批量失败。
+
+    移动端页面固定使用阅读器/手机 UA，与 m.qidian.com 访问形态一致。
+    """
     try:
         return http_get(
             url,
             headers={
+                "User-Agent": UA,
                 "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
                 "Referer": "https://m.qidian.com/",
             },
@@ -364,17 +397,23 @@ def _parse_pc_search(page: str, limit: int) -> list[ScrapeHit]:
     return hits
 
 
-def search(keyword: str, limit: int = 10) -> list[ScrapeHit]:
+def search(keyword: str, limit: int = 10, enrich: bool = True) -> list[ScrapeHit]:
+    """搜书。enrich=True 时会给部分结果补详情（请求多，手动刮削用）；批量请传 False。"""
     keyword = _norm_keyword(keyword)
     if not keyword:
         raise ScrapeError("请填写搜索关键词")
     enc = urllib.parse.quote(keyword)
 
     page = _http_get(f"https://m.qidian.com/search?kw={enc}")
+    # 搜索页本身被风控且无结果时，明确报拦截，便于上层退避
+    if looks_blocked(page) and "data-bid" not in page:
+        raise RateLimitedError("起点搜索触发风控拦截，请稍后再试")
     hits = _parse_mobile_search(page, limit)
     if not hits and ("probe" not in page and "data-bid" not in page):
         # 回退 PC 搜索
         page = _http_get(f"https://www.qidian.com/so/{enc}.html")
+        if looks_blocked(page) and "data-bid" not in page:
+            raise RateLimitedError("起点搜索触发风控拦截，请稍后再试")
         hits = _parse_pc_search(page, limit)
     if not hits:
         # PC 结构兜底扫 data-bid
@@ -393,23 +432,24 @@ def search(keyword: str, limit: int = 10) -> list[ScrapeHit]:
             if len(hits) >= limit:
                 break
 
-    # 尝试补最新章节（详情页，最多 5 条；WAF 失败则忽略）
-    for h in hits[: min(5, len(hits))]:
-        if h.latest_chapter and h.tags:
-            continue
-        try:
-            detail = fetch_detail(h.source_id)
-        except ScrapeError:
-            continue
-        h.latest_chapter = detail.latest_chapter or h.latest_chapter
-        if not h.author:
-            h.author = detail.author
-        if not h.intro:
-            h.intro = detail.intro[:300]
-        if not h.status and detail.status:
-            h.status = detail.status
-        if not h.tags and detail.tags:
-            h.tags = detail.tags
+    # 补最新章节（详情页，最多 5 条）；批量刮削传 enrich=False 跳过，降低请求量
+    if enrich:
+        for h in hits[: min(5, len(hits))]:
+            if h.latest_chapter and h.tags:
+                continue
+            try:
+                detail = fetch_detail(h.source_id)
+            except ScrapeError:
+                continue
+            h.latest_chapter = detail.latest_chapter or h.latest_chapter
+            if not h.author:
+                h.author = detail.author
+            if not h.intro:
+                h.intro = detail.intro[:300]
+            if not h.status and detail.status:
+                h.status = detail.status
+            if not h.tags and detail.tags:
+                h.tags = detail.tags
     return hits
 
 
@@ -423,18 +463,20 @@ def fetch_detail(book_id: str) -> ScrapeHit:
     for url in (book_url_for(book_id), f"https://m.qidian.com/book/{book_id}/"):
         try:
             page = _http_get(url)
-            if len(page) > 3000 and "probe.js" not in page[:500]:
+            if len(page) > 3000 and not looks_blocked(page):
                 break
         except ScrapeError as e:
             last_err = e
             page = ""
-    if not page or (len(page) < 3000 and "probe.js" in (page or "")[:500]):
+    if not page or (len(page) < 3000 and looks_blocked(page)):
         # 风控探针页再试一次 PC 详情
         try:
             page = _http_get(book_url_for(book_id))
         except ScrapeError as e:
             last_err = e
     if not page or len(page) < 500:
+        if looks_blocked(page) or (last_err is not None and getattr(last_err, "blocked", False)):
+            raise RateLimitedError("起点详情触发风控拦截，请稍后再试") from last_err
         raise ScrapeError(str(last_err) if last_err else "无法获取起点详情（可能被风控拦截）")
 
     hit = ScrapeHit(source_id=book_id, url=book_url_for(book_id), cover_url=cover_url_for(book_id))

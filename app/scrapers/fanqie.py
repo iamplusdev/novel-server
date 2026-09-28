@@ -123,7 +123,8 @@ def _hit_from_search_item(d: dict) -> ScrapeHit:
     )
 
 
-def search(keyword: str, limit: int = 10) -> list[ScrapeHit]:
+def search(keyword: str, limit: int = 10, enrich: bool = True) -> list[ScrapeHit]:
+    """搜书。enrich 仅与起点接口对齐（番茄搜索不额外拉详情），保持调用方统一。"""
     keyword = (keyword or "").strip()
     if not keyword:
         raise ScrapeError("请填写搜索关键词")

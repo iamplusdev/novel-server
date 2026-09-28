@@ -200,6 +200,12 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 | `COVERS_DIR` | `./covers` | 封面目录 |
 | `COOKIE_SECURE` | `0` | HTTPS/反代设 `1` |
 | `SCRAPER_PROXY` | （空） | 刮削代理，默认直连 |
+| `SCRAPER_DELAY` | `2.0` | 批量刮削书与书基础间隔（秒），调大更不易被起点风控 |
+| `SCRAPER_JITTER_MAX` | `1.5` | 在基础间隔上随机抖动上限（秒），避免固定节拍 |
+| `SCRAPER_LONG_PAUSE_EVERY` | `10` | 每多少本插入一次长休息；`0` 关闭 |
+| `SCRAPER_LONG_PAUSE_MIN` / `MAX` | `6` / `12` | 长休息随机秒数范围 |
+| `SCRAPER_BLOCK_BREAK_AT` | `3` | 连续被拦截多少次后熔断冷却 |
+| `SCRAPER_BLOCK_BREAK_SECONDS` | `180` | 熔断冷却时长（秒） |
 
 ---
 
