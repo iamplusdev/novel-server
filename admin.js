@@ -777,10 +777,9 @@
     refineSig = sig;
     if (!overflow) return;
     if (next >= state.pageSize) return;
-    const firstIndex = (state.page - 1) * state.pageSize;
+    // 只记录更合适的 page_size 供下次分页使用，不在此二次请求
+    //（避免分类切换时「拉两次」造成卡顿）
     state.pageSize = next;
-    state.page = Math.floor(firstIndex / next) + 1;
-    loadBooks().catch(() => {});
   }
 
   let pageSizeTimer = null;
@@ -840,17 +839,6 @@
         '" data-v="' + escapeAttr(s) + '">' + escapeHtml(SOURCE_LABEL[s] || s || "全部") + "</button>"
       );
     }).join("");
-    bar.querySelectorAll("[data-v]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.source = btn.getAttribute("data-v") || "";
-        // 换书源后分类回到「全部」
-        state.category = "";
-        state.page = 1;
-        renderSourceBar();
-        renderCategoryBar();
-        loadBooks().catch((e) => toast(e.message, "err"));
-      });
-    });
   }
 
   function renderCategoryBar() {
@@ -868,37 +856,69 @@
       );
     });
     bar.innerHTML = chips.join("");
-    bar.querySelectorAll("[data-cat]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.category = btn.dataset.cat || "";
+  }
+
+  // 书源/分类条：事件委托只绑一次，切换时仅重绘 HTML
+  function bindBarDelegates() {
+    if (els.sourceBar) {
+      els.sourceBar.addEventListener("click", (e) => {
+        const btn = e.target.closest && e.target.closest("[data-v]");
+        if (!btn || !els.sourceBar.contains(btn)) return;
+        state.source = btn.getAttribute("data-v") || "";
+        // 换书源后分类回到「全部」
+        state.category = "";
+        state.page = 1;
+        renderSourceBar();
+        renderCategoryBar();
+        loadBooks().catch((e2) => toast(e2.message, "err"));
+      });
+    }
+    if (els.categoryBar) {
+      els.categoryBar.addEventListener("click", (e) => {
+        const btn = e.target.closest && e.target.closest("[data-cat]");
+        if (!btn || !els.categoryBar.contains(btn)) return;
+        state.category = btn.getAttribute("data-cat") || "";
         state.page = 1;
         renderCategoryBar();
-        loadBooks().catch((e) => toast(e.message, "err"));
+        loadBooks().catch((e2) => toast(e2.message, "err"));
       });
-    });
+    }
   }
+
+  // 书库请求序号：只应用最后一次结果，避免连点分类时旧响应覆盖新列表
+  let booksReqSeq = 0;
 
   async function loadBooks() {
     booksLoadedOnce = true;
-    const data = await api("/api/admin/books?" + currentQuery());
-    state.items = data.items || [];
-    state.total = data.total || 0;
-    setText(els.libCount, String(state.total));
-    const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
-    state.totalPages = pages;
-    if (state.page > pages) state.page = pages;
-    setText(els.pageLabel, state.page + " / " + pages);
-    if (els.pageInput) {
-      els.pageInput.max = String(pages);
-      if (document.activeElement !== els.pageInput) {
-        els.pageInput.value = String(state.page);
+    const seq = ++booksReqSeq;
+    const wrap = els.gridWrap;
+    if (wrap) wrap.classList.add("is-loading");
+    try {
+      const data = await api("/api/admin/books?" + currentQuery());
+      // 过期响应直接丢弃
+      if (seq !== booksReqSeq) return;
+      state.items = data.items || [];
+      state.total = data.total || 0;
+      setText(els.libCount, String(state.total));
+      const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
+      state.totalPages = pages;
+      if (state.page > pages) state.page = pages;
+      setText(els.pageLabel, state.page + " / " + pages);
+      if (els.pageInput) {
+        els.pageInput.max = String(pages);
+        if (document.activeElement !== els.pageInput) {
+          els.pageInput.value = String(state.page);
+        }
       }
+      els.prevPage.disabled = state.page <= 1;
+      els.nextPage.disabled = state.page >= pages;
+      renderLibrary();
+      // 实测卡高后微调每页数量（只记账，不二次请求）
+      refinePageSizeAfterRender();
+    } finally {
+      // 仅当前请求负责收起 loading
+      if (seq === booksReqSeq && wrap) wrap.classList.remove("is-loading");
     }
-    els.prevPage.disabled = state.page <= 1;
-    els.nextPage.disabled = state.page >= pages;
-    renderLibrary();
-    // 实测卡高后微调每页数量，尽量刚好一屏
-    refinePageSizeAfterRender();
   }
 
   // A3：页码跳转
@@ -936,7 +956,8 @@
     const cardHtml = (b) => {
       const coverSrc = b.cover_path || b.cover_url;
       const cover = coverSrc
-        ? `<img src="${escapeAttr(coverSrc)}" alt="" loading="lazy" data-fallback="${escapeAttr(b.name || "")}" />`
+        ? // 固定宽高属性，减少图片解码引起的布局抖动
+          `<img src="${escapeAttr(coverSrc)}" alt="" width="150" height="200" loading="lazy" decoding="async" data-fallback="${escapeAttr(b.name || "")}" />`
         : `<div class="placeholder">${escapeHtml(b.name)}</div>`;
       return `
         <article class="book-card" data-id="${b.id}" tabindex="0" role="link">
@@ -952,18 +973,27 @@
     // 分页封面墙：单页条数有限，始终用普通网格，保证多列行占满
     //（虚拟网格按一卡一行定位，与 auto-fill 多列布局不兼容）
     els.gridWrap.innerHTML = state.items.map(cardHtml).join("");
+    // 只为封面绑 fallback；卡片点击用委托（见 bindGridDelegates）
     els.gridWrap.querySelectorAll(".book-card img").forEach((img) => {
       bindCoverFallback(img, img.dataset.fallback || "");
     });
-    els.gridWrap.querySelectorAll(".book-card").forEach((card) => {
-      const open = () => openDrawer(Number(card.dataset.id));
-      card.addEventListener("click", open);
-      card.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          open();
-        }
-      });
+  }
+
+  // 封面墙点击/键盘：事件委托只绑一次
+  function bindGridDelegates() {
+    const wrap = els.gridWrap;
+    if (!wrap) return;
+    wrap.addEventListener("click", (e) => {
+      const card = e.target.closest && e.target.closest(".book-card");
+      if (!card || !wrap.contains(card)) return;
+      openDrawer(Number(card.dataset.id));
+    });
+    wrap.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const card = e.target.closest && e.target.closest(".book-card");
+      if (!card || !wrap.contains(card)) return;
+      e.preventDefault();
+      openDrawer(Number(card.dataset.id));
     });
   }
 
@@ -2003,6 +2033,9 @@
   applyGridSize(localStorage.getItem(GRID_SIZE_KEY) || 150);
   applyDrawerWidth(localStorage.getItem(DRAWER_W_KEY) || 520);
   initDrawerResize();
+  // 分类/书源条与封面墙：事件委托只绑一次
+  bindBarDelegates();
+  bindGridDelegates();
   if (els.sortSelect) els.sortSelect.value = state.sort || "updated";
   Promise.resolve()
     .then(() => bootAuth())
