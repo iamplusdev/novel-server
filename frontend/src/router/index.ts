@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 import type { RouteRecordRaw } from "vue-router";
+import { useAuthStore } from "@/stores/auth";
 
 /** 路由表：与旧 UI 视图一一对应，具体页面按阶段逐步落地 */
 const routes: RouteRecordRaw[] = [
@@ -58,6 +59,24 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+});
+
+/** 会话守卫：未登录进 login；已登录访问 login 回书库 */
+router.beforeEach(async (to) => {
+  const auth = useAuthStore();
+  if (!auth.checked) {
+    try {
+      await auth.tryRestore();
+    } catch {
+      /* 网络异常时放行到登录页展示错误 */
+    }
+  }
+  if (to.meta.public) {
+    if (auth.isAuthed && to.name === "login") return { name: "library" };
+    return true;
+  }
+  if (!auth.isAuthed) return { name: "login" };
+  return true;
 });
 
 export default router;
