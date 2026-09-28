@@ -97,3 +97,39 @@ export interface ScrapeSearchResponse {
   items: ScrapeHit[];
   count: number;
 }
+
+/** 本地导入实时状态 */
+export interface ImportStatus {
+  running: boolean;
+  last?: {
+    added: string[];
+    updated: string[];
+    skipped: string[];
+    failed: string[];
+    summary: string;
+    finished_at: string;
+  } | null;
+  total?: number;
+  done?: number;
+  current?: string;
+  percent?: number;
+  added_n?: number;
+  updated_n?: number;
+  skipped_n?: number;
+  failed_n?: number;
+  recent?: string[];
+  cancel_requested?: boolean;
+}
+
+/** 批量刮削实时状态 */
+export interface BatchStatus {
+  running: boolean;
+  total?: number;
+  done?: number;
+  matched?: number;
+  skipped?: number;
+  failed?: number;
+  log?: { time: string; message: string }[];
+  last_error?: string;
+  cancel_requested?: boolean;
+}
