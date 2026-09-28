@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +15,10 @@ from .routers import admin, auth, batch_scrape, legado, library, public, scrape
 from .importer import ensure_category_dirs
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+# Vue3 新前端构建产物目录（P1 起优先托管；P8 前旧 Vanilla 仍作回退）
+DIST_DIR = BASE_DIR / "frontend" / "dist"
+# SPA fallback 时不拦截的前缀（API / 静态资源 / 健康检查）
+SPA_EXCLUDE_PREFIXES = ("/api", "/covers", "/health", "/legado_book_source.json", "/favicon.ico")
 
 app = FastAPI(
     title="Personal Novel Library",
@@ -55,8 +59,18 @@ def _asset_ver(name: str) -> str:
         return "0"
 
 
-def _render_index() -> HTMLResponse:
-    """读入 index.html，并把 css/js 的 ?v= 换成当前 mtime。"""
+def _has_vue_dist() -> bool:
+    """是否已构建 Vue 新前端（存在 dist/index.html）。"""
+    return (DIST_DIR / "index.html").is_file()
+
+
+def _render_vue_index() -> FileResponse:
+    """托管 Vue 构建产物入口（Vite 已带 contenthash，无需额外版本号）。"""
+    return FileResponse(DIST_DIR / "index.html", media_type="text/html")
+
+
+def _render_legacy_index() -> HTMLResponse:
+    """旧 Vanilla 入口：读入 index.html，并把 css/js 的 ?v= 换成当前 mtime。"""
     html = (BASE_DIR / "index.html").read_text(encoding="utf-8")
     ver = (
         _asset_ver("admin.js")
@@ -71,14 +85,21 @@ def _render_index() -> HTMLResponse:
     return HTMLResponse(html)
 
 
+def _render_index() -> HTMLResponse | FileResponse:
+    """优先新前端，未构建时回退旧页面。"""
+    if _has_vue_dist():
+        return _render_vue_index()
+    return _render_legacy_index()
+
+
 @app.get("/", include_in_schema=False)
-def index() -> HTMLResponse:
+def index():
     return _render_index()
 
 
 @app.get("/admin", include_in_schema=False)
 @app.get("/admin/", include_in_schema=False)
-def admin_page() -> HTMLResponse:
+def admin_page():
     return _render_index()
 
 
@@ -110,6 +131,31 @@ def favicon() -> FileResponse:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "public_base_url": settings.public_base_url}
+
+
+# Vue 静态资源（assets、favicon 等）；须在 SPA fallback 之前挂载
+if _has_vue_dist():
+    app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="vue-assets")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_fallback(full_path: str):
+    """history 路由回退：非 API/静态请求一律返回 Vue index.html。"""
+    path = "/" + full_path
+    if any(path.startswith(p) for p in SPA_EXCLUDE_PREFIXES):
+        # API / 资源前缀不走 SPA 回退
+        raise HTTPException(status_code=404)
+    if _has_vue_dist():
+        # dist 内真实静态文件（如 favicon 已在 public）
+        candidate = (DIST_DIR / full_path).resolve()
+        try:
+            candidate.relative_to(DIST_DIR.resolve())
+        except ValueError:
+            return _render_vue_index()
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return _render_vue_index()
+    return _render_legacy_index()
 
 
 def create_app() -> FastAPI:
