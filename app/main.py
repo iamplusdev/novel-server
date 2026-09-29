@@ -14,8 +14,11 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .database import init_db
+from .logging_setup import setup_logging
 from .routers import admin, auth, batch_scrape, legado, library, public, scrape
 from .importer import ensure_category_dirs
+
+setup_logging()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 

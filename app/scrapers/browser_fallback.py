@@ -25,7 +25,15 @@ def _env(name: str, default: str = "") -> str:
 
 
 def browser_fallback_enabled() -> bool:
-    return _env("SCRAPER_BROWSER_FALLBACK").lower() in ("1", "true", "yes", "on")
+    """浏览器模式是否可用：环境变量开启，或当前刮削方式为 chrome。"""
+    if _env("SCRAPER_BROWSER_FALLBACK").lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        from .mode import MODE_CHROME, get_scrape_mode
+
+        return get_scrape_mode() == MODE_CHROME
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def cdp_url() -> str:

@@ -22,6 +22,8 @@ class BatchIn(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=5000)
     # 非空时只刮削指定书（书库多选批量刮削）；为空则按 only_missing 扫全库
     book_ids: list[int] | None = Field(default=None, max_length=500)
+    # 取数方式：api / chrome / auto
+    mode: str = Field(default="auto", max_length=20)
 
 
 class ScoreIn(BaseModel):
@@ -39,6 +41,7 @@ def batch_start(payload: BatchIn) -> dict:
         min_score=payload.min_score,
         limit=payload.limit,
         book_ids=payload.book_ids or None,
+        mode=payload.mode,
     )
     return {"started": started, "status": get_batch_status()}
 

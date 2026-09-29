@@ -44,6 +44,8 @@ const batch = ref<BatchStatus | null>(null);
 const source = ref("all");
 const onlyMissing = ref(true);
 const minScore = ref(0.8);
+/** 刮削取数方式：auto / api / chrome（fnOS Chrome） */
+const scrapeMode = ref("auto");
 const starting = ref(false);
 const acting = ref(false);
 let handle: SseHandle | null = null;
@@ -242,6 +244,7 @@ async function onStartBatch() {
       source: source.value,
       only_missing: onlyMissing.value,
       min_score: minScore.value,
+      mode: scrapeMode.value,
     });
     batch.value = res.status;
     ElMessage.success(res.started ? "一键刮削已开始" : "批处理已在运行");
@@ -399,6 +402,12 @@ onUnmounted(stopWatch);
             <option value="qidian">起点</option>
             <option value="fanqie">番茄</option>
             <option value="zongheng">纵横</option>
+          </select>
+          <span class="label">刮削方式</span>
+          <select v-model="scrapeMode" class="field-input" title="API 直连 / Chrome 浏览器 / 自动">
+            <option value="auto">自动（API→Chrome）</option>
+            <option value="api">API 直连</option>
+            <option value="chrome">Chrome 浏览器</option>
           </select>
           <label class="check-label">
             <input v-model="onlyMissing" type="checkbox" />
@@ -622,6 +631,19 @@ onUnmounted(stopWatch);
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+@media (max-width: 576px) {
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .controls .field-input,
+  .controls .primary-btn,
+  .controls .ghost-btn {
+    width: 100%;
+  }
 }
 
 .label {

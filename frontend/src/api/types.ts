@@ -14,10 +14,12 @@ export interface SessionInfo {
   recovery_code?: string;
 }
 
-/** 书库列表项（后端字段为 name，不是 title） */
+/** 书库列表项（name 与 title 同值：列表用 name，体检报告用 title） */
 export interface BookListItem {
   id: number;
   name: string;
+  /** 与 name 同值，契约统一（issue/duplicates 用 title） */
+  title?: string;
   author: string;
   category: string;
   tags: string[];
@@ -145,6 +147,7 @@ export interface DupGroup {
   title: string;
   author: string;
   count: number;
+  /** 默认保留章节最多的那本 */
   keep_id: number;
   books: {
     id: number;
@@ -155,6 +158,21 @@ export interface DupGroup {
     word_count?: number;
     cover_file?: string | null;
   }[];
+}
+
+/** 刮削取数方式 */
+export type ScrapeMode = "api" | "chrome" | "auto";
+
+export interface ScrapeModeInfo {
+  value: ScrapeMode | string;
+  label: string;
+  hint: string;
+}
+
+export interface ScrapeModesResponse {
+  current: ScrapeMode;
+  items: ScrapeModeInfo[];
+  browser_ready: boolean;
 }
 
 export interface LibraryIssue {
