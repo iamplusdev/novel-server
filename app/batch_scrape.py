@@ -331,10 +331,12 @@ def run_batch_scrape(
     only_missing: bool = True,
     min_score: float = 0.8,
     limit: int | None = None,
+    book_ids: list[int] | None = None,
 ) -> dict:
     """同步执行一批刮削（供后台线程调用）。
 
     source="all" 时按 起点→番茄→ 纵横 顺序匹配，命中即停；
+    book_ids 非空时只刮削指定书（书库多选批量刮削）；
     默认 HTTP；阶段1 失败项汇总后，若开启浏览器兜底则用 Playwright/CDP 重试。
     """
     source_pairs = _resolve_source_list(source)
@@ -345,7 +347,11 @@ def run_batch_scrape(
     db = SessionLocal()
     try:
         stmt = select(Book).order_by(Book.id)
-        if only_missing:
+        if book_ids:
+            # 定向批量：仅处理前端多选的书
+            ids = sorted({int(i) for i in book_ids if i})
+            stmt = stmt.where(Book.id.in_(ids))
+        elif only_missing:
             stmt = stmt.where((Book.source == "") | (Book.source.is_(None)) | (Book.source_id == ""))
         books = db.execute(stmt).scalars().all()
         if limit:

@@ -2,8 +2,8 @@
 /**
  * 书库体检：重复 / 异常 / 刮削 三页签。
  */
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   BATCH_STREAM_URL,
@@ -21,11 +21,21 @@ import {
 import type { BatchStatus, LibraryReport } from "@/api/types";
 import { openSse, pollStatus, type SseHandle } from "@/utils/sse";
 import { useLibraryStore } from "@/stores/library";
+import AppIcon from "@/components/AppIcon.vue";
 
 const router = useRouter();
+const route = useRoute();
 const lib = useLibraryStore();
 
 const activeTab = ref("dup");
+// 支持 ?tab=dup|issue|scrape（书库「批量刮削」跳转用）
+watch(
+  () => route.query.tab,
+  (t) => {
+    if (t === "dup" || t === "issue" || t === "scrape") activeTab.value = t;
+  },
+  { immediate: true },
+);
 const report = ref<LibraryReport | null>(null);
 const reportLoading = ref(false);
 
@@ -42,6 +52,14 @@ const summary = computed(() => {
   const r = report.value;
   if (!r) return "未检查";
   return `重复 ${r.duplicate_groups || 0} 组 · 异常 ${r.issue_count || 0}`;
+});
+
+const batchPercent = computed(() => {
+  const st = batch.value;
+  if (!st) return 0;
+  const total = Number(st.total) || 0;
+  const done = Number(st.done) || 0;
+  return total ? Math.min(100, Math.floor((done * 100) / total)) : 0;
 });
 
 const batchLog = computed(() => {
@@ -261,151 +279,301 @@ onUnmounted(stopWatch);
 </script>
 
 <template>
-  <div class="check-page" v-loading="reportLoading || acting">
-    <header class="toolbar">
-      <div class="toolbar-left">
-        <h2>书库体检</h2>
-        <el-tag round type="info">{{ summary }}</el-tag>
+  <div v-loading="reportLoading || acting" class="page check-page">
+    <header class="page-header">
+      <div class="title-row">
+        <h1 class="page-title">书库体检</h1>
+        <span class="count-pill">{{ summary }}</span>
       </div>
-      <div class="toolbar-right">
-        <el-button @click="loadReport">重新扫描</el-button>
-        <el-button @click="onRepairAll">修复全部问题</el-button>
-        <el-button title="按书籍分类把本地 TXT 移到对应分类文件夹" @click="onRelocate">
+      <div class="page-actions">
+        <button type="button" class="ghost-btn" @click="loadReport">
+          <AppIcon name="refresh" :size="14" />
+          重新扫描
+        </button>
+        <button type="button" class="ghost-btn" @click="onRepairAll">修复全部问题</button>
+        <button
+          type="button"
+          class="ghost-btn"
+          title="按书籍分类把本地 TXT 移到对应分类文件夹"
+          @click="onRelocate"
+        >
           按分类归位
-        </el-button>
+        </button>
       </div>
     </header>
 
-    <el-tabs v-model="activeTab" class="check-tabs">
+    <section class="page-card tabs-card">
+      <div class="tab-nav" role="tablist">
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ 'is-active': activeTab === 'dup' }"
+          @click="activeTab = 'dup'"
+        >
+          重复书籍
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ 'is-active': activeTab === 'issue' }"
+          @click="activeTab = 'issue'"
+        >
+          异常书籍
+        </button>
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ 'is-active': activeTab === 'scrape' }"
+          @click="activeTab = 'scrape'"
+        >
+          刮削书籍
+        </button>
+      </div>
+
       <!-- 重复书籍 -->
-      <el-tab-pane label="重复书籍" name="dup">
+      <div v-if="activeTab === 'dup'" class="tab-panel">
         <p class="muted">
           合并规则：保留章节/字数最多的一本，删除其余重复项（章节与多余封面一并删，源 TXT 不动）。
         </p>
-        <el-empty
-          v-if="!report?.duplicates?.length"
-          description="没有发现重复书。"
-          :image-size="60"
-        />
+        <div v-if="!report?.duplicates?.length" class="empty">
+          <AppIcon name="check" :size="24" />
+          <span>没有发现重复书。</span>
+        </div>
         <div v-for="(g, gi) in report?.duplicates || []" :key="gi" class="check-item">
           <div class="body">
             <div class="title">
               {{ g.title }}<template v-if="g.author"> · {{ g.author }}</template>
             </div>
             <div v-for="b in g.books" :key="b.id" class="muted row">
-              <el-tag size="small" :type="b.id === g.keep_id ? 'success' : 'info'">
+              <span class="tag-soft" :class="b.id === g.keep_id ? 'is-success' : ''">
                 {{ b.id === g.keep_id ? "保留" : "待删" }}
-              </el-tag>
+              </span>
               <span>
                 ID {{ b.id }} · {{ b.chapter_count ?? 0 }} 章 · {{ fmtWords(b.word_count) }}
                 · <span class="mono">{{ b.source_path || "" }}</span>
               </span>
             </div>
           </div>
-          <el-button type="primary" size="small" @click="onMerge(g)">一键合并</el-button>
+          <button type="button" class="primary-btn sm" @click="onMerge(g)">一键合并</button>
         </div>
-      </el-tab-pane>
+      </div>
 
       <!-- 异常书籍 -->
-      <el-tab-pane label="异常书籍" name="issue">
+      <div v-else-if="activeTab === 'issue'" class="tab-panel">
         <p class="muted">修复：清理控制字符；若源 TXT 仍可读且未分章/乱码，则重新解析章节。</p>
-        <el-empty
-          v-if="!report?.issues?.length"
-          description="没有发现异常，书库健康。"
-          :image-size="60"
-        />
+        <div v-if="!report?.issues?.length" class="empty">
+          <AppIcon name="check" :size="24" />
+          <span>没有发现异常，书库健康。</span>
+        </div>
         <div v-for="it in report?.issues || []" :key="it.book_id + it.kind" class="check-item">
           <div class="body">
             <div class="title">
               {{ it.title }}
-              <el-tag size="small">{{ kindLabel[it.kind] || it.kind }}</el-tag>
+              <span class="tag-soft is-warning">{{ kindLabel[it.kind] || it.kind }}</span>
             </div>
             <div class="muted">{{ it.message }} · ID {{ it.book_id }}</div>
           </div>
           <div class="ops">
-            <el-button size="small" @click="onRepairOne(it.book_id)">修复</el-button>
-            <el-button
-              size="small"
-              text
-              type="primary"
+            <button type="button" class="ghost-btn sm" @click="onRepairOne(it.book_id)">修复</button>
+            <button
+              type="button"
+              class="link-btn"
               @click="router.push({ name: 'book-detail', params: { id: String(it.book_id) } })"
             >
               编辑
-            </el-button>
+            </button>
           </div>
         </div>
-      </el-tab-pane>
+      </div>
 
       <!-- 刮削书籍 -->
-      <el-tab-pane label="刮削书籍" name="scrape">
+      <div v-else class="tab-panel">
         <p class="muted">
           按所选刮削源对书库批量识别：以<strong>书名+作者</strong>相似度取最近匹配后写入。
           选「全部」时按<strong>起点 → 番茄 → 纵横</strong>顺序，达到阈值即写入并停止，不再试后续书源。
         </p>
         <div class="controls">
           <span class="label">刮削源</span>
-          <el-select v-model="source" style="width: 130px">
-            <el-option label="全部（顺序匹配）" value="all" />
-            <el-option label="起点" value="qidian" />
-            <el-option label="番茄" value="fanqie" />
-            <el-option label="纵横" value="zongheng" />
-          </el-select>
-          <el-checkbox v-model="onlyMissing">仅未刮削</el-checkbox>
+          <select v-model="source" class="field-input">
+            <option value="all">全部（顺序匹配）</option>
+            <option value="qidian">起点</option>
+            <option value="fanqie">番茄</option>
+            <option value="zongheng">纵横</option>
+          </select>
+          <label class="check-label">
+            <input v-model="onlyMissing" type="checkbox" />
+            仅未刮削
+          </label>
           <span class="label">匹配阈值</span>
-          <el-input-number
-            v-model="minScore"
-            :min="0.3"
-            :max="1"
-            :step="0.05"
-            controls-position="right"
-            style="width: 100px"
+          <input
+            v-model.number="minScore"
+            type="number"
+            min="0.3"
+            max="1"
+            step="0.05"
+            class="field-input narrow"
           />
-          <el-button type="primary" :loading="starting" @click="onStartBatch">开始一键刮削</el-button>
-          <el-button type="danger" plain @click="onCancelBatch">停止</el-button>
-          <el-button @click="onRefreshBatch">刷新进度</el-button>
+          <button type="button" class="primary-btn" :disabled="starting" @click="onStartBatch">
+            {{ starting ? "启动中…" : "开始一键刮削" }}
+          </button>
+          <button type="button" class="ghost-btn danger" @click="onCancelBatch">停止</button>
+          <button type="button" class="ghost-btn" @click="onRefreshBatch">刷新进度</button>
         </div>
-        <pre class="log">{{ batchLog }}</pre>
-      </el-tab-pane>
-    </el-tabs>
+
+        <div v-if="batch" class="batch-status">
+          <div class="status-line">
+            <span
+              class="status-dot"
+              :class="batch.running ? 'is-info' : batch.failed ? 'is-danger' : 'is-success'"
+            >
+              {{ batch.running ? "运行中" : "已结束" }}
+            </span>
+            <span class="muted">
+              {{ batch.done || 0 }} / {{ batch.total || 0 }} · 写入 {{ batch.matched || 0 }}
+              · 跳过 {{ batch.skipped || 0 }} · 失败 {{ batch.failed || 0 }}
+            </span>
+            <span class="progress-label">{{ batchPercent }}%</span>
+          </div>
+          <div class="progress-track">
+            <div
+              class="progress-bar"
+              :class="{ 'is-success': !batch.running && batchPercent >= 100 }"
+              :style="{ width: batchPercent + '%' }"
+            />
+          </div>
+        </div>
+
+        <pre class="log-panel">{{ batchLog }}</pre>
+      </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.check-page {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.toolbar-left {
+.title-row {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.toolbar-left h2 {
-  margin: 0;
+.count-pill {
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+  font-size: var(--text-xs);
+  border: 1px solid var(--color-border);
 }
 
-.toolbar-right {
+.ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ghost-btn.sm {
+  height: 32px;
+  padding: 0 12px;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.ghost-btn.danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+.primary-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: #fff;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.primary-btn.sm {
+  height: 32px;
+  padding: 0 12px;
+}
+
+.primary-btn:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.primary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tabs-card {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.tab-nav {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-4);
 }
 
-.check-tabs {
-  background: var(--el-bg-color);
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
-  padding: 8px 16px 16px;
+.tab-btn {
+  border: none;
+  background: none;
+  padding: 10px 14px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--color-text-2);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.tab-btn:hover {
+  color: var(--color-text);
+}
+
+.tab-btn.is-active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+  font-weight: 600;
+}
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px;
+  color: var(--color-text-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
 }
 
 .check-item {
@@ -413,12 +581,10 @@ onUnmounted(stopWatch);
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--app-border);
-}
-
-.check-item:last-child {
-  border-bottom: none;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
 }
 
 .body {
@@ -429,6 +595,10 @@ onUnmounted(stopWatch);
 .title {
   font-weight: 600;
   margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .row {
@@ -443,6 +613,7 @@ onUnmounted(stopWatch);
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  align-items: center;
 }
 
 .controls {
@@ -454,32 +625,79 @@ onUnmounted(stopWatch);
 }
 
 .label {
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
 }
 
-.log {
-  background: var(--el-fill-color-light);
-  border-radius: 8px;
-  padding: 12px;
-  max-height: 360px;
-  overflow: auto;
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin: 0;
+.field-input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+}
+
+.field-input.narrow {
+  width: 88px;
+}
+
+.check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+
+.check-label input {
+  accent-color: var(--color-accent);
+}
+
+.link-btn {
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0 4px;
+}
+
+.batch-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.progress-track {
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-3);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--color-accent);
+  border-radius: inherit;
+  transition: width 0.25s ease;
 }
 
 .mono {
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   word-break: break-all;
-}
-
-.muted {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
 }
 </style>

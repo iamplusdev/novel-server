@@ -28,6 +28,10 @@ class Book(Base):
     latest_chapter: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     source: Mapped[str] = mapped_column(String(20), default="", nullable=False)  # 起点 / 番茄 …
     source_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)  # 站外 bookId
+    # 阅读进度：0–100 百分比；配合章节序号用于阅读器续读
+    read_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    read_chapter_index: Mapped[int] = mapped_column(Integer, default=-1, nullable=False)
+    read_at: Mapped[str] = mapped_column(String(30), default="", nullable=False)
     created_at: Mapped[str] = mapped_column(String(30), default=lambda: datetime.now().isoformat(timespec="seconds"))
     updated_at: Mapped[str] = mapped_column(String(30), default=lambda: datetime.now().isoformat(timespec="seconds"))
 

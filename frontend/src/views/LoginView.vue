@@ -179,9 +179,9 @@ function enterApp() {
             @keyup.enter="doLogin"
           />
         </el-form-item>
-        <el-button type="primary" class="block-btn" :loading="loading" @click="doLogin">
-          登录
-        </el-button>
+        <button type="button" class="block-btn" :disabled="loading" @click="doLogin">
+          {{ loading ? "登录中…" : "登录" }}
+        </button>
         <div class="auth-links">
           <el-button link type="primary" @click="show('forgot')">忘记密码</el-button>
         </div>
@@ -209,9 +209,9 @@ function enterApp() {
             autocomplete="new-password"
           />
         </el-form-item>
-        <el-button type="primary" class="block-btn" :loading="loading" @click="doSetup">
-          创建账号并进入
-        </el-button>
+        <button type="button" class="block-btn" :disabled="loading" @click="doSetup">
+          {{ loading ? "创建中…" : "创建账号并进入" }}
+        </button>
       </el-form>
 
       <!-- 忘记密码 -->
@@ -238,9 +238,9 @@ function enterApp() {
             autocomplete="new-password"
           />
         </el-form-item>
-        <el-button type="primary" class="block-btn" :loading="loading" @click="doForgot">
-          重设并登录
-        </el-button>
+        <button type="button" class="block-btn" :disabled="loading" @click="doForgot">
+          {{ loading ? "重设中…" : "重设并登录" }}
+        </button>
         <div class="auth-links">
           <el-button link type="primary" @click="show('login')">返回登录</el-button>
         </div>
@@ -282,22 +282,18 @@ function enterApp() {
   min-height: 100%;
   display: flex;
   align-items: center;
-  /* 垂直居中 + 水平靠右 */
   justify-content: flex-end;
   padding: 24px 8vw 24px 24px;
   overflow: hidden;
 }
 
-/* 全屏背景图 */
 .login-bg {
   position: absolute;
   inset: 0;
-  background:
-    url("/bg_login.jpg") center / cover no-repeat;
+  background: url("/bg_login.jpg") center / cover no-repeat;
   transform: scale(1.02);
 }
 
-/* 整页不遮罩，仅表单卡片用 #5d6369 透明底 */
 .login-veil {
   display: none;
 }
@@ -307,9 +303,8 @@ function enterApp() {
   z-index: 1;
   width: 400px;
   max-width: 100%;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  /* #5d6369 略实，减少背景透出干扰 */
   background: rgba(93, 99, 105, 0.82);
   backdrop-filter: blur(18px) saturate(1.1);
   -webkit-backdrop-filter: blur(18px) saturate(1.1);
@@ -324,7 +319,6 @@ function enterApp() {
   padding: 22px 26px 20px;
 }
 
-/* 标题与表单标签统一浅色（强制覆盖 EP 默认灰） */
 .login-card .brand h1 {
   color: #f7f8fa;
 }
@@ -344,10 +338,10 @@ function enterApp() {
   color: rgba(242, 244, 246, 0.68);
 }
 
-/* 输入框 */
 .login-card :deep(.el-input__wrapper) {
   background: rgba(255, 255, 255, 0.1);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18) inset;
+  border-radius: var(--radius-sm);
 }
 
 .login-card :deep(.el-input__wrapper:hover) {
@@ -356,8 +350,8 @@ function enterApp() {
 
 .login-card :deep(.el-input__wrapper.is-focus) {
   box-shadow:
-    0 0 0 1px rgba(64, 158, 255, 0.9) inset,
-    0 0 0 3px rgba(64, 158, 255, 0.25);
+    0 0 0 1px rgba(107, 138, 253, 0.9) inset,
+    0 0 0 3px rgba(107, 138, 253, 0.28);
 }
 
 .login-card :deep(.el-input__inner) {
@@ -368,14 +362,13 @@ function enterApp() {
   color: rgba(255, 255, 255, 0.5);
 }
 
-/* 链接 */
 .login-card :deep(.el-button.is-link) {
-  color: #79bbff;
+  color: #a8bfff;
   font-weight: 500;
 }
 
 .login-card :deep(.el-button.is-link:hover) {
-  color: #a0cfff;
+  color: #d0dcff;
 }
 
 .brand {
@@ -390,57 +383,53 @@ function enterApp() {
   font-size: 22px;
   font-weight: 700;
   letter-spacing: 0.5px;
-  color: var(--el-text-color-primary);
 }
 
 .brand .subtitle {
   margin: 4px 0 0;
   font-size: 12px;
-  color: var(--el-text-color-secondary);
 }
 
 .brand-mark {
   width: 48px;
   height: 48px;
   border-radius: 12px;
-  background: linear-gradient(135deg, var(--el-color-primary), var(--el-color-primary-light-3));
+  background: var(--color-accent);
   color: #fff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
   font-size: 20px;
-  box-shadow: 0 6px 16px rgba(64, 158, 255, 0.35);
+  box-shadow: 0 6px 16px rgba(107, 138, 253, 0.35);
 }
 
 .login-card :deep(.el-form-item) {
   margin-bottom: 16px;
 }
 
-.login-card :deep(.el-form-item__label) {
-  font-weight: 500;
-  color: var(--el-text-color-regular);
-}
-
-.login-card :deep(.el-input__wrapper) {
-  border-radius: 8px;
-  box-shadow: 0 0 0 1px var(--el-border-color) inset;
-}
-
-.login-card :deep(.el-input__wrapper.is-focus) {
-  box-shadow:
-    0 0 0 1px var(--el-color-primary) inset,
-    0 0 0 3px rgba(64, 158, 255, 0.18);
-}
-
 .block-btn {
   width: 100%;
   height: 40px;
-  border-radius: 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: #fff;
   font-size: 15px;
   font-weight: 600;
+  font-family: inherit;
   margin-top: 4px;
-  box-shadow: 0 6px 16px rgba(64, 158, 255, 0.28);
+  cursor: pointer;
+  transition: background var(--duration) ease;
+}
+
+.block-btn:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.block-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .auth-links {
@@ -449,7 +438,6 @@ function enterApp() {
 }
 
 .hint {
-  color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.6;
   margin: 10px 0 0;
@@ -481,7 +469,7 @@ function enterApp() {
 }
 
 .login-card code {
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   background: rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.88);
   padding: 1px 6px;

@@ -14,6 +14,7 @@ import {
   scrapeSearch,
 } from "@/api/scrape";
 import type { BookDetail, ScrapeHit } from "@/api/types";
+import AppIcon from "@/components/AppIcon.vue";
 
 const props = defineProps<{
   visible: boolean;
@@ -158,41 +159,55 @@ async function applyHit(hit: ScrapeHit) {
     applying.value = false;
   }
 }
+
+function fmtWords(n?: number) {
+  if (n === undefined || n === null) return "—";
+  if (n >= 10000) return (n / 10000).toFixed(1) + " 万";
+  return String(n);
+}
 </script>
 
 <template>
   <el-dialog
     v-model="dialogVisible"
     title="刮削元数据"
-    width="640px"
+    width="680px"
+    class="scrape-dialog"
     :close-on-click-modal="false"
   >
     <div class="search-row">
-      <el-input
-        v-model="keyword"
-        placeholder="书名 / 书号 / 详情链接"
-        @keyup.enter="runSearch"
-      />
-      <el-select v-model="source" style="width: 110px">
-        <el-option
-          v-for="opt in SCRAPE_SOURCE_OPTS"
-          :key="opt.value"
-          :label="opt.label"
-          :value="opt.value"
+      <div class="search-box">
+        <AppIcon name="search" :size="16" />
+        <input
+          v-model="keyword"
+          class="search-input"
+          placeholder="书名 / 书号 / 详情链接"
+          @keyup.enter="runSearch"
         />
-      </el-select>
-      <el-button type="primary" :loading="loading" @click="runSearch">搜索</el-button>
+      </div>
+      <select v-model="source" class="source-select" aria-label="刮削源">
+        <option v-for="opt in SCRAPE_SOURCE_OPTS" :key="opt.value" :value="opt.value">
+          {{ opt.label }}
+        </option>
+      </select>
+      <button type="button" class="primary-btn" :disabled="loading" @click="runSearch">
+        {{ loading ? "搜索中…" : "搜索" }}
+      </button>
     </div>
 
-    <p class="muted tip">{{ tip }}</p>
+    <p class="tip muted">{{ tip }}</p>
 
-    <div class="local muted">
-      本地：<strong>{{ localName }}</strong>
+    <div class="local">
+      <span class="tag-soft is-accent">本地</span>
+      <strong>{{ localName }}</strong>
       <template v-if="localAuthor"> · {{ localAuthor }}</template>
     </div>
 
     <div v-loading="loading || applying" class="results">
-      <el-empty v-if="!items.length" description="暂无结果" :image-size="60" />
+      <div v-if="!items.length" class="empty">
+        <AppIcon name="search" :size="24" />
+        <span>暂无结果</span>
+      </div>
       <div v-for="(hit, i) in items" :key="hit.source_id || i" class="hit-card">
         <img
           v-if="hit.cover_url"
@@ -200,24 +215,28 @@ async function applyHit(hit: ScrapeHit) {
           alt=""
           class="hit-cover"
         />
+        <div v-else class="hit-cover placeholder-cover">{{ (hit.name || "?").slice(0, 1) }}</div>
         <div class="hit-body">
           <div class="hit-title">{{ hit.name || "（无书名）" }}</div>
-          <div class="muted">{{ hit.author || "佚名" }} · {{ hit.status || "—" }}</div>
-          <div class="muted">
-            {{ hit.category || "" }}
-            <template v-if="hit.word_count"> · {{ hit.word_count }} 字</template>
-            <template v-if="hit.latest_chapter"> · 最新 {{ hit.latest_chapter }}</template>
+          <div class="hit-sub">
+            <span>{{ hit.author || "佚名" }}</span>
+            <span class="tag-soft">{{ hit.status || "—" }}</span>
+            <span v-if="hit.category" class="tag-soft">{{ hit.category }}</span>
           </div>
-          <div class="muted mono">ID {{ hit.source_id }} · {{ hit.source }}</div>
+          <div class="hit-meta muted-xs">
+            <span v-if="hit.word_count">{{ fmtWords(hit.word_count) }}字</span>
+            <span v-if="hit.latest_chapter">最新 {{ hit.latest_chapter }}</span>
+            <span class="mono">ID {{ hit.source_id }} · {{ hit.source }}</span>
+          </div>
         </div>
-        <el-button type="primary" size="small" :loading="applying" @click="askAndApply(hit)">
+        <button type="button" class="primary-btn sm" :disabled="applying" @click="askAndApply(hit)">
           采用并写入
-        </el-button>
+        </button>
       </div>
     </div>
 
     <template #footer>
-      <el-button @click="close">关闭</el-button>
+      <button type="button" class="ghost-btn" @click="close">关闭</button>
     </template>
   </el-dialog>
 </template>
@@ -226,7 +245,89 @@ async function applyHit(hit: ScrapeHit) {
 .search-row {
   display: flex;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 180px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+}
+
+.search-box:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+}
+
+.search-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  min-width: 0;
+}
+
+.source-select {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+}
+
+.primary-btn {
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: #fff;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.primary-btn.sm {
+  height: 32px;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+
+.primary-btn:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.primary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ghost-btn {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
 }
 
 .tip {
@@ -234,7 +335,13 @@ async function applyHit(hit: ScrapeHit) {
 }
 
 .local {
-  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
 }
 
 .results {
@@ -246,36 +353,84 @@ async function applyHit(hit: ScrapeHit) {
   gap: 10px;
 }
 
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  color: var(--color-text-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+}
+
 .hit-card {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
-  border: 1px solid var(--el-border-color);
-  border-radius: 8px;
-  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  background: var(--color-surface);
+  transition:
+    border-color var(--duration) ease,
+    box-shadow var(--duration) ease;
+}
+
+.hit-card:hover {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-sm);
 }
 
 .hit-cover {
-  width: 52px;
-  height: 70px;
+  width: 56px;
+  height: 76px;
   object-fit: cover;
-  border-radius: 4px;
-  background: var(--el-fill-color-light);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
   flex-shrink: 0;
+}
+
+.placeholder-cover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-3);
+  font-weight: 600;
 }
 
 .hit-body {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .hit-title {
   font-weight: 600;
-  margin-bottom: 4px;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.hit-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+}
+
+.hit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .mono {
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
 }
 </style>

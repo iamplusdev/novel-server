@@ -65,6 +65,8 @@ def book_list_item(book: Book, base: str | None = None) -> dict:
         "detail_url": f"{root}/api/books/{book.id}",
         "toc_url": f"{root}/api/books/{book.id}/chapters",
         "updated_at": book.updated_at,
+        # 阅读进度百分比（0–100），列表卡片展示用
+        "read_percent": int(getattr(book, "read_percent", 0) or 0),
     }
 
 
@@ -73,6 +75,9 @@ def book_detail(book: Book, with_chapters: bool = False, base: str | None = None
     data["intro"] = book.intro or ""
     data["source_path"] = book.source_path
     data["created_at"] = book.created_at
+    # 阅读续读信息（章节序号 + 最近阅读时间）
+    data["read_chapter_index"] = int(getattr(book, "read_chapter_index", -1) if getattr(book, "read_chapter_index", -1) is not None else -1)
+    data["read_at"] = getattr(book, "read_at", "") or ""
     if with_chapters:
         data["chapters"] = [chapter_item(ch, base) for ch in book.chapters]
     return data

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
- * 书籍详情编辑：书名/作者/两级分类/状态/标签/简介、封面上传、删除。
+ * 书籍详情编辑：书名/作者/两级分类/状态/标签/简介、封面上传、删除、章节预览。
  */
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { deleteBook, fetchBook, fetchStats, updateBook, uploadCover } from "@/api/admin";
 import ScrapeDialog from "@/components/ScrapeDialog.vue";
+import AppIcon from "@/components/AppIcon.vue";
 import type { AdminStats, BookDetail } from "@/api/types";
 
 const route = useRoute();
@@ -32,6 +33,7 @@ const form = reactive({
 const coverPreview = ref("");
 const coverFile = ref<File | null>(null);
 const scrapeOpen = ref(false);
+const pathExpanded = ref(false);
 
 const bookId = computed(() => {
   const raw = Array.isArray(route.params.id) ? route.params.id[0] : route.params.id;
@@ -49,6 +51,15 @@ const categoryOptions = computed(() => {
   const node = tree.find((n) => n.key === form.category_source);
   return node ? node.categories : [];
 });
+
+const tagList = computed(() =>
+  form.tags
+    .split(/[,，]/)
+    .map((t) => t.trim())
+    .filter(Boolean),
+);
+
+const chaptersPreview = computed(() => book.value?.chapters_preview || []);
 
 function applyBook(b: BookDetail) {
   book.value = b;
@@ -105,6 +116,31 @@ function onCoverPick(e: Event) {
     coverPreview.value = String(reader.result || "");
   };
   reader.readAsDataURL(file);
+}
+
+function removeTag(tag: string) {
+  form.tags = tagList.value.filter((t) => t !== tag).join(", ");
+}
+
+function addTagFromEnter(e: KeyboardEvent) {
+  const input = e.target as HTMLInputElement;
+  const val = input.value.trim();
+  if (!val) return;
+  if (!tagList.value.includes(val)) {
+    form.tags = [...tagList.value, val].join(", ");
+  }
+  input.value = "";
+}
+
+async function copyPath() {
+  const p = book.value?.source_path;
+  if (!p) return;
+  try {
+    await navigator.clipboard.writeText(p);
+    ElMessage.success("路径已复制");
+  } catch {
+    ElMessage.warning("复制失败");
+  }
 }
 
 async function save() {
@@ -170,25 +206,42 @@ function fmtWords(n?: number) {
   return String(n);
 }
 
+function openReader() {
+  if (!bookId.value) return;
+  router.push({ name: "book-read", params: { id: String(bookId.value) } });
+}
+
 onMounted(load);
 watch(bookId, () => void load());
 </script>
 
 <template>
-  <div v-loading="loading" class="detail-page">
-    <header class="toolbar">
-      <div class="toolbar-left">
-        <el-button text @click="router.push({ name: 'library' })">← 返回书库</el-button>
-        <h2>{{ form.title || "书籍详情" }}</h2>
+  <div v-loading="loading" class="page detail-page">
+    <header class="page-header">
+      <div class="title-row">
+        <button type="button" class="back-btn" @click="router.push({ name: 'library' })">
+          <AppIcon name="back" :size="18" />
+          <span>书库</span>
+        </button>
+        <h1 class="page-title">{{ form.title || "书籍详情" }}</h1>
       </div>
-      <div class="toolbar-right">
-        <el-button type="danger" plain :loading="deleting" @click="remove">删除书籍</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+      <div class="page-actions">
+        <button type="button" class="ghost-btn" @click="openReader">
+          <AppIcon name="book" :size="16" />
+          阅读
+        </button>
+        <button type="button" class="ghost-btn danger" :disabled="deleting" @click="remove">
+          <AppIcon name="trash" :size="16" />
+          删除
+        </button>
+        <button type="button" class="primary-btn" :disabled="saving" @click="save">
+          {{ saving ? "保存中…" : "保存" }}
+        </button>
       </div>
     </header>
 
     <div class="layout">
-      <div class="cover-side page-card">
+      <aside class="cover-side page-card">
         <img
           v-if="coverPreview"
           :src="coverPreview"
@@ -196,64 +249,113 @@ watch(bookId, () => void load());
           class="cover-img"
         />
         <div v-else class="cover-placeholder">{{ form.title || "无封面" }}</div>
+
         <label class="upload-label">
+          <AppIcon name="plus" :size="14" />
           上传封面
           <input type="file" accept="image/*" hidden @change="onCoverPick" />
         </label>
-        <p class="muted">支持 jpg / png / webp / gif</p>
-        <el-button type="primary" size="small" @click="scrapeOpen = true">刮削…</el-button>
-        <div class="muted" v-if="book?.source">
-          来源：{{ book.source }}<template v-if="book.source_id"> · {{ book.source_id }}</template>
-        </div>
-        <div class="meta muted">
-          <div>字数：{{ fmtWords(book?.word_count) }}</div>
-          <div>章节：{{ book?.chapter_count ?? "—" }}</div>
-          <div v-if="book?.source_path" class="mono path" :title="book.source_path">
-            {{ book.source_path }}
-          </div>
-        </div>
-      </div>
+        <p class="muted-xs">支持 jpg / png / webp / gif</p>
 
-      <div class="form-side page-card">
-        <el-form label-position="top">
-          <el-form-item label="书名" required>
-            <el-input v-model="form.title" maxlength="200" />
-          </el-form-item>
-          <el-form-item label="作者">
-            <el-input v-model="form.author" maxlength="100" placeholder="佚名" />
-          </el-form-item>
-          <div class="two-col">
-            <el-form-item label="书源">
-              <el-select v-model="form.category_source" @change="onSourceChange">
-                <el-option
-                  v-for="opt in sourceOptions"
-                  :key="opt.value"
-                  :label="opt.label"
-                  :value="opt.value"
-                />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="分类">
-              <el-select v-model="form.category_name" filterable>
-                <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c" />
-              </el-select>
-            </el-form-item>
+        <button type="button" class="ghost-btn block" @click="scrapeOpen = true">
+          <AppIcon name="search" :size="14" />
+          刮削元数据
+        </button>
+
+        <div class="meta-block">
+          <div class="meta-row">
+            <span class="label">来源</span>
+            <span class="value">
+              {{ book?.source || "—" }}
+              <template v-if="book?.source_id"> · {{ book.source_id }}</template>
+            </span>
           </div>
-          <el-form-item label="状态">
-            <el-select v-model="form.status">
-              <el-option label="连载" value="连载" />
-              <el-option label="完结" value="完结" />
-              <el-option label="未知" value="未知" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="标签（逗号分隔）">
-            <el-input v-model="form.tags" placeholder="热血, 系统流" maxlength="300" />
-          </el-form-item>
-          <el-form-item label="简介">
-            <el-input v-model="form.intro" type="textarea" :rows="8" />
-          </el-form-item>
-        </el-form>
-      </div>
+          <div class="meta-row">
+            <span class="label">字数</span>
+            <span class="value">{{ fmtWords(book?.word_count) }}</span>
+          </div>
+          <div class="meta-row">
+            <span class="label">章节</span>
+            <span class="value">{{ book?.chapter_count ?? "—" }}</span>
+          </div>
+          <div v-if="book?.source_path" class="path-block">
+            <div class="path-head">
+              <span class="label">文件路径</span>
+              <button type="button" class="link-btn" @click="copyPath">复制</button>
+              <button type="button" class="link-btn" @click="pathExpanded = !pathExpanded">
+                {{ pathExpanded ? "收起" : "展开" }}
+              </button>
+            </div>
+            <div class="path mono" :class="{ 'is-open': pathExpanded }" :title="book.source_path">
+              {{ book.source_path }}
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="form-side page-card">
+        <h2 class="section-title">基础信息</h2>
+        <div class="field">
+          <label class="field-label">书名 <span class="req">*</span></label>
+          <input v-model="form.title" class="field-input" maxlength="200" />
+        </div>
+        <div class="field">
+          <label class="field-label">作者</label>
+          <input v-model="form.author" class="field-input" maxlength="100" placeholder="佚名" />
+        </div>
+
+        <h2 class="section-title">分类与状态</h2>
+        <div class="two-col">
+          <div class="field">
+            <label class="field-label">书源</label>
+            <select v-model="form.category_source" class="field-input" @change="onSourceChange">
+              <option v-for="opt in sourceOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">分类</label>
+            <select v-model="form.category_name" class="field-input">
+              <option v-for="c in categoryOptions" :key="c" :value="c">{{ c }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">状态</label>
+          <select v-model="form.status" class="field-input">
+            <option value="连载">连载</option>
+            <option value="完结">完结</option>
+            <option value="未知">未知</option>
+          </select>
+        </div>
+
+        <h2 class="section-title">标签</h2>
+        <div class="tags-editor">
+          <span v-for="t in tagList" :key="t" class="tag-soft is-accent tag-item">
+            {{ t }}
+            <button type="button" class="tag-x" aria-label="移除" @click="removeTag(t)">×</button>
+          </span>
+          <input
+            class="tag-input"
+            placeholder="输入后回车添加"
+            @keyup.enter="addTagFromEnter"
+          />
+        </div>
+        <p class="muted-xs">保存时仍以逗号分隔写入，兼容原有字段。</p>
+
+        <h2 class="section-title">简介</h2>
+        <textarea v-model="form.intro" class="field-textarea" rows="8" />
+
+        <h2 class="section-title">章节预览</h2>
+        <div v-if="chaptersPreview.length" class="chapter-list">
+          <div v-for="ch in chaptersPreview" :key="ch.id" class="chapter-row">
+            <span class="idx muted-xs">{{ ch.index }}</span>
+            <span class="ch-title">{{ ch.title }}</span>
+          </div>
+        </div>
+        <p v-else class="muted">暂无章节预览。</p>
+      </section>
     </div>
 
     <ScrapeDialog
@@ -267,41 +369,120 @@ watch(bookId, () => void load());
 </template>
 
 <style scoped>
-.detail-page {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.toolbar-left {
+.title-row {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
-.toolbar-left h2 {
-  margin: 0;
-  font-size: 20px;
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.back-btn:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.page-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.primary-btn {
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: #fff;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.primary-btn:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.primary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.ghost-btn.danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+.ghost-btn.block {
+  width: 100%;
+  justify-content: center;
+}
+
+.ghost-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .layout {
   display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 16px;
+  grid-template-columns: 240px 1fr;
+  gap: var(--space-4);
   align-items: start;
 }
 
-@media (max-width: 800px) {
+/* 平板：封面栏收窄，保证表单可读宽度 */
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 200px 1fr;
+  }
+}
+
+@media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;
+  }
+
+  .cover-side {
+    position: static;
+    max-width: 280px;
   }
 }
 
@@ -309,25 +490,27 @@ watch(bookId, () => void load());
   display: flex;
   flex-direction: column;
   gap: 10px;
+  position: sticky;
+  top: 0;
 }
 
 .cover-img {
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
-  border-radius: 8px;
-  background: var(--el-fill-color-light);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
 }
 
 .cover-placeholder {
   width: 100%;
   aspect-ratio: 3 / 4;
-  border-radius: 8px;
-  background: var(--el-fill-color-light);
+  border-radius: var(--radius-md);
+  background: linear-gradient(160deg, var(--color-surface-2), var(--color-surface-3));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--el-text-color-secondary);
+  color: var(--color-text-3);
   text-align: center;
   padding: 12px;
   word-break: break-all;
@@ -337,30 +520,238 @@ watch(bookId, () => void load());
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--el-border-color);
-  border-radius: 6px;
-  padding: 6px 12px;
+  gap: 6px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
 }
 
 .upload-label:hover {
-  border-color: var(--el-color-primary);
-  color: var(--el-color-primary);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
-.meta {
-  line-height: 1.8;
+.meta-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+
+.meta-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--text-xs);
+}
+
+.meta-row .label {
+  color: var(--color-text-3);
+}
+
+.meta-row .value {
+  color: var(--color-text-2);
+  text-align: right;
+  word-break: break-all;
+}
+
+.path-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.path-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-xs);
+}
+
+.path-head .label {
+  color: var(--color-text-3);
+  flex: 1;
+}
+
+.link-btn {
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
 }
 
 .path {
-  word-break: break-all;
   font-size: 11px;
+  color: var(--color-text-3);
+  word-break: break-all;
+  max-height: 36px;
+  overflow: hidden;
+}
+
+.path.is-open {
+  max-height: none;
+}
+
+.section-title {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+
+.section-title:first-child {
+  margin-top: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: var(--space-3);
+}
+
+.field-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+  font-weight: 500;
+}
+
+.req {
+  color: var(--color-danger);
+}
+
+.field-input {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  outline: none;
+}
+
+.field-input:focus {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+  background: var(--color-surface);
+}
+
+.field-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  line-height: 1.65;
+  resize: vertical;
+  outline: none;
+}
+
+.field-textarea:focus {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+  background: var(--color-surface);
 }
 
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+@media (max-width: 576px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tags-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  min-height: 40px;
+}
+
+.tag-item {
+  gap: 4px;
+}
+
+.tag-x {
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.7;
+}
+
+.tag-x:hover {
+  opacity: 1;
+}
+
+.tag-input {
+  flex: 1;
+  min-width: 120px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  height: 24px;
+}
+
+.chapter-list {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  max-height: 240px;
+  overflow: auto;
+}
+
+.chapter-row {
+  display: flex;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text-sm);
+}
+
+.chapter-row:last-child {
+  border-bottom: none;
+}
+
+.chapter-row:hover {
+  background: var(--color-surface-2);
+}
+
+.idx {
+  width: 32px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ch-title {
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

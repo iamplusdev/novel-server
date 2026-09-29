@@ -41,6 +41,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _migrate_books()
+    _migrate_read_progress()
     _migrate_chapters_storage()
     _init_fts()
 
@@ -56,6 +57,20 @@ def _migrate_books() -> None:
             conn.execute(text("ALTER TABLE books ADD COLUMN source VARCHAR(20) NOT NULL DEFAULT ''"))
         if "source_id" not in cols:
             conn.execute(text("ALTER TABLE books ADD COLUMN source_id VARCHAR(64) NOT NULL DEFAULT ''"))
+        conn.commit()
+
+
+def _migrate_read_progress() -> None:
+    """给已有库补上阅读进度字段（百分比 0–100 + 章节序号）。"""
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(books)")).fetchall()
+        cols = {r[1] for r in rows}
+        if "read_percent" not in cols:
+            conn.execute(text("ALTER TABLE books ADD COLUMN read_percent INTEGER NOT NULL DEFAULT 0"))
+        if "read_chapter_index" not in cols:
+            conn.execute(text("ALTER TABLE books ADD COLUMN read_chapter_index INTEGER NOT NULL DEFAULT -1"))
+        if "read_at" not in cols:
+            conn.execute(text("ALTER TABLE books ADD COLUMN read_at VARCHAR(30) NOT NULL DEFAULT ''"))
         conn.commit()
 
 

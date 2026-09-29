@@ -281,6 +281,69 @@ def admin_delete_book(book_id: int, db: Session = Depends(get_db)) -> dict:
     return {"ok": True, "deleted": title, "id": book_id, "fts_repaired": repaired}
 
 
+class BookProgressIn(BaseModel):
+    """阅读进度：百分比 0–100，可选章节序号用于续读。"""
+
+    percent: int = Field(default=0, ge=0, le=100)
+    chapter_index: int | None = Field(default=None, ge=-1)
+
+
+class BatchDeleteIn(BaseModel):
+    """批量删除请求体。"""
+
+    ids: list[int] = Field(default_factory=list, min_length=1, max_length=500)
+
+
+@router.put("/books/{book_id}/progress")
+def admin_update_progress(
+    request: Request, book_id: int, payload: BookProgressIn, db: Session = Depends(get_db)
+) -> dict:
+    """写入阅读进度百分比（阅读器/列表共用）。"""
+    book = db.get(Book, book_id)
+    if not book:
+        raise HTTPException(404, "书籍不存在")
+    book.read_percent = int(payload.percent)
+    if payload.chapter_index is not None:
+        book.read_chapter_index = int(payload.chapter_index)
+    book.read_at = datetime.now().isoformat(timespec="seconds")
+    db.commit()
+    db.refresh(book)
+    return {
+        "ok": True,
+        "id": book.id,
+        "read_percent": book.read_percent,
+        "read_chapter_index": book.read_chapter_index,
+        "read_at": book.read_at,
+    }
+
+
+@router.post("/books/batch/delete")
+def admin_batch_delete(payload: BatchDeleteIn, db: Session = Depends(get_db)) -> dict:
+    """批量删除书籍（含封面与正文包），供书库多选操作。"""
+    ids = sorted({int(i) for i in payload.ids if i and int(i) > 0})
+    if not ids:
+        raise HTTPException(400, "未选择书籍")
+    titles: list[str] = []
+    for bid in ids:
+        book = db.get(Book, bid)
+        if not book:
+            continue
+        titles.append(book.title)
+        if book.cover_file:
+            safe_delete_cover(book.cover_file)
+    try:
+        repaired = delete_books_safe(db, ids)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"批量删除失败：{e}") from e
+    return {
+        "ok": True,
+        "deleted_count": len(titles),
+        "deleted": titles,
+        "ids": ids,
+        "fts_repaired": repaired,
+    }
+
+
 @router.post("/import")
 def admin_import(mode: str = Query(default="local", pattern="^local$")) -> dict:
     # WebDAV 导入已移除，仅支持本地 NOVELS_DIR

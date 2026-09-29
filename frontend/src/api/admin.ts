@@ -36,6 +36,28 @@ export function deleteBook(id: number | string) {
   return http.delete<{ ok?: boolean }>(`/api/admin/books/${id}`);
 }
 
+/** 批量删除（书库多选） */
+export function batchDeleteBooks(ids: number[]) {
+  return http.post<{ ok: boolean; deleted_count: number; deleted: string[]; ids: number[] }>(
+    "/api/admin/books/batch/delete",
+    { ids },
+  );
+}
+
+/** 写入阅读进度（百分比 0–100） */
+export function updateReadProgress(
+  id: number | string,
+  body: { percent: number; chapter_index?: number },
+) {
+  return http.put<{
+    ok: boolean;
+    id: number;
+    read_percent: number;
+    read_chapter_index: number;
+    read_at: string;
+  }>(`/api/admin/books/${id}/progress`, body);
+}
+
 export function uploadCover(id: number | string, file: File) {
   const fd = new FormData();
   fd.append("file", file);
