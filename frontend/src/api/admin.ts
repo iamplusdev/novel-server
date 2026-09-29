@@ -76,6 +76,38 @@ export function fetchBookChapters(bookId: number | string, page = 1, pageSize = 
   }>(`/api/books/${bookId}/chapters`, { page, page_size: pageSize });
 }
 
+export interface TocChapter {
+  id: number;
+  index: number;
+  title: string;
+}
+
+/** 拉取全部目录（按 total 翻页），返回列表 + 真实总章数 */
+export async function fetchAllBookChapters(bookId: number | string): Promise<{
+  items: TocChapter[];
+  total: number;
+}> {
+  const pageSize = 500;
+  const first = await fetchBookChapters(bookId, 1, pageSize);
+  const items: TocChapter[] = (first.items || []).map((c) => ({
+    id: c.id,
+    index: c.index,
+    title: c.title || c.name || "",
+  }));
+  const total = Number(first.total) || items.length;
+  let page = 2;
+  while (items.length < total) {
+    const next = await fetchBookChapters(bookId, page, pageSize);
+    const chunk = next.items || [];
+    if (!chunk.length) break;
+    for (const c of chunk) {
+      items.push({ id: c.id, index: c.index, title: c.title || c.name || "" });
+    }
+    page += 1;
+  }
+  return { items, total };
+}
+
 /** 阅读器：章节正文 */
 export function fetchChapterContent(bookId: number | string, chapterId: number | string) {
   return http.get<{

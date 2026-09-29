@@ -38,7 +38,7 @@ const navItems = [
 ];
 
 const activeName = computed(() => {
-  if (route.name === "book-detail" || route.name === "book-read") return "library";
+  if (route.name === "book-detail") return "library";
   return String(route.name || "library");
 });
 

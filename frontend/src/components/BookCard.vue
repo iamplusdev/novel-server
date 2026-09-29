@@ -288,6 +288,16 @@ function statusClass(status: string) {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* 元信息区高度固定，网格卡片对齐 */
+  min-height: 118px;
+}
+
+.meta .sub {
+  min-height: 22px;
+}
+
+.meta .stats {
+  margin-top: auto;
 }
 
 .name {
@@ -316,8 +326,21 @@ function statusClass(status: string) {
 
 .tags {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  /* 标签只占一行，避免卡片高度不一对不齐 */
+  height: 22px;
+  align-items: center;
+}
+
+.tags .tag-soft {
+  flex-shrink: 0;
+  max-width: 7.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .progress-slot {

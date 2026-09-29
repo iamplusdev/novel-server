@@ -5,7 +5,15 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { deleteBook, fetchBook, fetchStats, updateBook, uploadCover } from "@/api/admin";
+import {
+  deleteBook,
+  fetchAllBookChapters,
+  fetchBook,
+  fetchStats,
+  updateBook,
+  uploadCover,
+} from "@/api/admin";
+import type { TocChapter } from "@/api/admin";
 import ScrapeDialog from "@/components/ScrapeDialog.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import type { AdminStats, BookDetail } from "@/api/types";
@@ -59,7 +67,32 @@ const tagList = computed(() =>
     .filter(Boolean),
 );
 
-const chaptersPreview = computed(() => book.value?.chapters_preview || []);
+/** 完整目录（下方栏） */
+const tocItems = ref<TocChapter[]>([]);
+const tocTotal = ref(0);
+const tocLoading = ref(false);
+
+/** 目录分页：每 200 章一段；'all' 为全部滚动 */
+const TOC_PAGE_SIZE = 200;
+const tocPage = ref<number | "all">("all");
+
+const tocPageRanges = computed(() => {
+  const total = tocItems.value.length || tocTotal.value;
+  const pages: { key: number; label: string }[] = [];
+  if (total <= TOC_PAGE_SIZE) return pages;
+  for (let start = 1; start <= total; start += TOC_PAGE_SIZE) {
+    const end = Math.min(start + TOC_PAGE_SIZE - 1, total);
+    pages.push({ key: start, label: `${start}–${end}` });
+  }
+  return pages;
+});
+
+const visibleTocItems = computed(() => {
+  if (tocPage.value === "all") return tocItems.value;
+  const start = Number(tocPage.value);
+  const end = start + TOC_PAGE_SIZE - 1;
+  return tocItems.value.filter((c) => c.index >= start && c.index <= end);
+});
 
 function applyBook(b: BookDetail) {
   book.value = b;
@@ -82,6 +115,25 @@ function applyBook(b: BookDetail) {
   }
 }
 
+async function loadToc() {
+  if (!bookId.value) return;
+  tocLoading.value = true;
+  try {
+    const { items, total } = await fetchAllBookChapters(bookId.value);
+    tocItems.value = items;
+    tocTotal.value = total || items.length || book.value?.chapter_count || 0;
+  } catch {
+    tocItems.value = (book.value?.chapters_preview || []).map((c) => ({
+      id: c.id,
+      index: c.index,
+      title: c.title,
+    }));
+    tocTotal.value = book.value?.chapter_count || tocItems.value.length;
+  } finally {
+    tocLoading.value = false;
+  }
+}
+
 async function load() {
   if (!bookId.value) {
     ElMessage.error("无效的书籍 ID");
@@ -92,6 +144,7 @@ async function load() {
     const [detail, st] = await Promise.all([fetchBook(bookId.value), fetchStats()]);
     stats.value = st;
     applyBook(detail);
+    void loadToc();
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "加载失败");
   } finally {
@@ -211,6 +264,16 @@ function openReader() {
   router.push({ name: "book-read", params: { id: String(bookId.value) } });
 }
 
+/** 从目录进入阅读器并定位到该章 */
+function openReaderAt(ch: TocChapter) {
+  if (!bookId.value) return;
+  router.push({
+    name: "book-read",
+    params: { id: String(bookId.value) },
+    query: { chapter: String(ch.id) },
+  });
+}
+
 onMounted(load);
 watch(bookId, () => void load());
 </script>
@@ -241,121 +304,155 @@ watch(bookId, () => void load());
     </header>
 
     <div class="layout">
-      <aside class="cover-side page-card">
-        <img
-          v-if="coverPreview"
-          :src="coverPreview"
-          alt="封面"
-          class="cover-img"
-        />
-        <div v-else class="cover-placeholder">{{ form.title || "无封面" }}</div>
-
-        <label class="upload-label">
-          <AppIcon name="plus" :size="14" />
-          上传封面
-          <input type="file" accept="image/*" hidden @change="onCoverPick" />
-        </label>
-        <p class="muted-xs">支持 jpg / png / webp / gif</p>
-
-        <button type="button" class="ghost-btn block" @click="scrapeOpen = true">
-          <AppIcon name="search" :size="14" />
-          刮削元数据
-        </button>
-
-        <div class="meta-block">
-          <div class="meta-row">
-            <span class="label">来源</span>
-            <span class="value">
-              {{ book?.source || "—" }}
-              <template v-if="book?.source_id"> · {{ book.source_id }}</template>
-            </span>
-          </div>
-          <div class="meta-row">
-            <span class="label">字数</span>
-            <span class="value">{{ fmtWords(book?.word_count) }}</span>
-          </div>
-          <div class="meta-row">
-            <span class="label">章节</span>
-            <span class="value">{{ book?.chapter_count ?? "—" }}</span>
-          </div>
-          <div v-if="book?.source_path" class="path-block">
-            <div class="path-head">
-              <span class="label">文件路径</span>
-              <button type="button" class="link-btn" @click="copyPath">复制</button>
-              <button type="button" class="link-btn" @click="pathExpanded = !pathExpanded">
-                {{ pathExpanded ? "收起" : "展开" }}
-              </button>
-            </div>
-            <div class="path mono" :class="{ 'is-open': pathExpanded }" :title="book.source_path">
-              {{ book.source_path }}
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      <section class="form-side page-card">
-        <h2 class="section-title">基础信息</h2>
-        <div class="field">
-          <label class="field-label">书名 <span class="req">*</span></label>
-          <input v-model="form.title" class="field-input" maxlength="200" />
-        </div>
-        <div class="field">
-          <label class="field-label">作者</label>
-          <input v-model="form.author" class="field-input" maxlength="100" placeholder="佚名" />
-        </div>
-
-        <h2 class="section-title">分类与状态</h2>
-        <div class="two-col">
-          <div class="field">
-            <label class="field-label">书源</label>
-            <select v-model="form.category_source" class="field-input" @change="onSourceChange">
-              <option v-for="opt in sourceOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label">分类</label>
-            <select v-model="form.category_name" class="field-input">
-              <option v-for="c in categoryOptions" :key="c" :value="c">{{ c }}</option>
-            </select>
-          </div>
-        </div>
-        <div class="field">
-          <label class="field-label">状态</label>
-          <select v-model="form.status" class="field-input">
-            <option value="连载">连载</option>
-            <option value="完结">完结</option>
-            <option value="未知">未知</option>
-          </select>
-        </div>
-
-        <h2 class="section-title">标签</h2>
-        <div class="tags-editor">
-          <span v-for="t in tagList" :key="t" class="tag-soft is-accent tag-item">
-            {{ t }}
-            <button type="button" class="tag-x" aria-label="移除" @click="removeTag(t)">×</button>
-          </span>
-          <input
-            class="tag-input"
-            placeholder="输入后回车添加"
-            @keyup.enter="addTagFromEnter"
+      <!-- 上：封面 | 基础信息 -->
+      <div class="top-row">
+        <aside class="cover-side page-card">
+          <img
+            v-if="coverPreview"
+            :src="coverPreview"
+            alt="封面"
+            class="cover-img"
           />
+          <div v-else class="cover-placeholder">{{ form.title || "无封面" }}</div>
+
+          <label class="upload-label">
+            <AppIcon name="plus" :size="14" />
+            上传封面
+            <input type="file" accept="image/*" hidden @change="onCoverPick" />
+          </label>
+          <p class="muted-xs">支持 jpg / png / webp / gif</p>
+
+          <button type="button" class="ghost-btn block" @click="scrapeOpen = true">
+            <AppIcon name="search" :size="14" />
+            刮削元数据
+          </button>
+
+          <div class="meta-block">
+            <div class="meta-row">
+              <span class="label">来源</span>
+              <span class="value">
+                {{ book?.source || "—" }}
+                <template v-if="book?.source_id"> · {{ book.source_id }}</template>
+              </span>
+            </div>
+            <div class="meta-row">
+              <span class="label">字数</span>
+              <span class="value">{{ fmtWords(book?.word_count) }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="label">章节</span>
+              <span class="value">{{ book?.chapter_count ?? "—" }}</span>
+            </div>
+            <div v-if="book?.source_path" class="path-block">
+              <div class="path-head">
+                <span class="label">文件路径</span>
+                <button type="button" class="link-btn" @click="copyPath">复制</button>
+                <button type="button" class="link-btn" @click="pathExpanded = !pathExpanded">
+                  {{ pathExpanded ? "收起" : "展开" }}
+                </button>
+              </div>
+              <div class="path mono" :class="{ 'is-open': pathExpanded }" :title="book.source_path">
+                {{ book.source_path }}
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <section class="form-side page-card">
+          <h2 class="section-title">基础信息</h2>
+          <div class="two-col">
+            <div class="field">
+              <label class="field-label">书名 <span class="req">*</span></label>
+              <input v-model="form.title" class="field-input" maxlength="200" />
+            </div>
+            <div class="field">
+              <label class="field-label">作者</label>
+              <input v-model="form.author" class="field-input" maxlength="100" placeholder="佚名" />
+            </div>
+          </div>
+          <div class="three-col">
+            <div class="field">
+              <label class="field-label">书源</label>
+              <select v-model="form.category_source" class="field-input" @change="onSourceChange">
+                <option v-for="opt in sourceOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">分类</label>
+              <select v-model="form.category_name" class="field-input">
+                <option v-for="c in categoryOptions" :key="c" :value="c">{{ c }}</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">状态</label>
+              <select v-model="form.status" class="field-input">
+                <option value="连载">连载</option>
+                <option value="完结">完结</option>
+                <option value="未知">未知</option>
+              </select>
+            </div>
+          </div>
+
+          <h2 class="section-title">标签</h2>
+          <div class="tags-editor">
+            <span v-for="t in tagList" :key="t" class="tag-soft is-accent tag-item">
+              {{ t }}
+              <button type="button" class="tag-x" aria-label="移除" @click="removeTag(t)">×</button>
+            </span>
+            <input
+              class="tag-input"
+              placeholder="输入后回车添加"
+              @keyup.enter="addTagFromEnter"
+            />
+          </div>
+
+          <h2 class="section-title">简介</h2>
+          <textarea v-model="form.intro" class="field-textarea" rows="8" />
+        </section>
+      </div>
+
+      <!-- 下：目录（200 章分页 / 全部滚动） -->
+      <aside class="toc-side page-card">
+        <div class="toc-side-head">
+          <h2 class="section-title">目录</h2>
+          <div class="toc-pages">
+            <button
+              type="button"
+              class="page-chip"
+              :class="{ 'is-active': tocPage === 'all' }"
+              @click="tocPage = 'all'"
+            >
+              全部
+            </button>
+            <button
+              v-for="p in tocPageRanges"
+              :key="p.key"
+              type="button"
+              class="page-chip"
+              :class="{ 'is-active': tocPage === p.key }"
+              @click="tocPage = p.key"
+            >
+              {{ p.label }}
+            </button>
+          </div>
+          <span class="muted-xs toc-count">共 {{ tocTotal || book?.chapter_count || 0 }} 章</span>
         </div>
-        <p class="muted-xs">保存时仍以逗号分隔写入，兼容原有字段。</p>
-
-        <h2 class="section-title">简介</h2>
-        <textarea v-model="form.intro" class="field-textarea" rows="8" />
-
-        <h2 class="section-title">章节预览</h2>
-        <div v-if="chaptersPreview.length" class="chapter-list">
-          <div v-for="ch in chaptersPreview" :key="ch.id" class="chapter-row">
+        <div v-loading="tocLoading" class="toc-side-list">
+          <button
+            v-for="ch in visibleTocItems"
+            :key="ch.id"
+            type="button"
+            class="toc-side-item"
+            @click="openReaderAt(ch)"
+          >
             <span class="idx muted-xs">{{ ch.index }}</span>
             <span class="ch-title">{{ ch.title }}</span>
-          </div>
+          </button>
+          <p v-if="!visibleTocItems.length && !tocLoading" class="muted">暂无章节。</p>
         </div>
-        <p v-else class="muted">暂无章节预览。</p>
-      </section>
+      </aside>
     </div>
 
     <ScrapeDialog
@@ -461,37 +558,191 @@ watch(bookId, () => void load());
   cursor: not-allowed;
 }
 
-.layout {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: var(--space-4);
-  align-items: start;
+.detail-page {
+  /* 一屏装下：扣掉顶栏/内边距，页面本身不滚动 */
+  height: calc(100vh - 100px);
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  gap: var(--space-3);
 }
 
-/* 平板：封面栏收窄，保证表单可读宽度 */
-@media (max-width: 1100px) {
-  .layout {
-    grid-template-columns: 200px 1fr;
-  }
+.layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.top-row {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: stretch;
+  /* 上排固定约 1/3 屏，避免撑出页面滚动 */
+  height: clamp(240px, 36vh, 360px);
+  flex-shrink: 0;
+  min-height: 0;
 }
 
 @media (max-width: 900px) {
-  .layout {
+  .top-row {
     grid-template-columns: 1fr;
+    height: auto;
+    max-height: none;
   }
 
   .cover-side {
-    position: static;
     max-width: 280px;
+    overflow: visible;
+    height: auto;
   }
+
+  .form-side {
+    overflow: visible;
+    height: auto;
+  }
+}
+
+.toc-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* 目录吃满剩余高度，列表内滚动 */
+  flex: 1;
+  overflow: hidden;
+}
+
+.toc-side-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.toc-side-head .section-title {
+  margin: 0;
+}
+
+.toc-pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.page-chip {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: var(--text-xs);
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.page-chip:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.page-chip.is-active {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.toc-count {
+  flex-shrink: 0;
+}
+
+.toc-side-list {
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  flex: 1;
+  /* 细滚动条，长目录可滚 */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+  padding-right: 4px;
+}
+
+.toc-side-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.toc-side-list::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 3px;
+}
+
+.toc-side-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.toc-side-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  color: var(--color-text);
+}
+
+.toc-side-item:hover {
+  background: var(--color-surface-2);
+  color: var(--color-accent);
+}
+
+.toc-side-item .idx {
+  flex-shrink: 0;
+  min-width: 2.2em;
+  text-align: right;
+}
+
+.toc-side-item .ch-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
 }
 
 .cover-side {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  position: sticky;
-  top: 0;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.cover-side .meta-block {
+  margin-top: auto;
+}
+
+.form-side {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .cover-img {
@@ -600,7 +851,7 @@ watch(bookId, () => void load());
 }
 
 .section-title {
-  margin: var(--space-4) 0 var(--space-2);
+  margin: var(--space-3) 0 var(--space-2);
   font-size: var(--text-base);
   font-weight: 600;
 }
@@ -668,6 +919,18 @@ watch(bookId, () => void load());
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+.three-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .three-col {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 576px) {

@@ -50,13 +50,14 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/views/BookDetailView.vue"),
         meta: { title: "书籍详情" },
       },
-      {
-        path: "books/:id/read",
-        name: "book-read",
-        component: () => import("@/views/ReaderView.vue"),
-        meta: { title: "阅读" },
-      },
     ],
+  },
+  // 阅读页独立全屏：不嵌 AdminLayout，无管理侧栏
+  {
+    path: "/books/:id/read",
+    name: "book-read",
+    component: () => import("@/views/ReaderView.vue"),
+    meta: { title: "阅读" },
   },
   // SPA fallback：未知路径回书库
   { path: "/:pathMatch(.*)*", redirect: "/" },
