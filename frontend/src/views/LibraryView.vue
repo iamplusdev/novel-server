@@ -16,7 +16,9 @@ const router = useRouter();
 const lib = useLibraryStore();
 
 const searchInput = ref(lib.q);
-const coverWidth = ref(Number(localStorage.getItem("novel_grid_size") || 150));
+/** 移动端默认更小封面，PC 保持约 150 */
+const defaultCoverWidth = window.innerWidth < 768 ? 110 : 150;
+const coverWidth = ref(Number(localStorage.getItem("novel_grid_size") || defaultCoverWidth));
 const viewMode = ref<"grid" | "list">(
   (localStorage.getItem("novel_view_mode") as "grid" | "list") || "grid",
 );
@@ -309,7 +311,7 @@ function onResize() {
           :class="{ 'is-active': !lib.category }"
           @click="onCategoryClick('')"
         >
-          全部分类
+          全部
         </button>
         <button
           v-for="cat in lib.categoryNames"
@@ -383,6 +385,7 @@ function onResize() {
         :key="b.id"
         :book="b"
         :view="viewMode"
+        :cover-width="coverWidth"
         selectable
         :selected="selectedIds.has(b.id)"
         @open="openBook"
@@ -553,6 +556,12 @@ function onResize() {
   gap: 8px;
 }
 
+/* PC 书库铺满主区，不限制 1280 内容宽 */
+.library-page {
+  max-width: none;
+  width: 100%;
+}
+
 .grid-wrap {
   display: grid;
   gap: 14px;
@@ -677,6 +686,12 @@ function onResize() {
 
   .size-ctrl {
     display: none;
+  }
+
+  /* 移动端默认更密网格，封面不占满宽 */
+  .grid-wrap {
+    gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 100px), 1fr)) !important;
   }
 
   /* 工具条纵向堆叠，筛选可横向滚动 */
