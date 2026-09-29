@@ -46,11 +46,12 @@ export function fetchImportLogs(date?: string, limit = 50) {
   });
 }
 
-/** 批量刮削：source="all" 按起点→番茄→纵横顺序，命中即停 */
+/** 批量刮削：source="all" 按起点→番茄→纵横顺序，命中即停；book_ids 非空则只刮选中书 */
 export function startBatchScrape(payload: {
   source: string;
   only_missing: boolean;
   min_score: number;
+  book_ids?: number[];
 }) {
   return http.post<{ started: boolean; status: BatchStatus }>(
     "/api/admin/scrape/batch/start",

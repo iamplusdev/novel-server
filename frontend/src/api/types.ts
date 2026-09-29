@@ -33,6 +33,8 @@ export interface BookListItem {
   detail_url?: string;
   toc_url?: string;
   updated_at?: string;
+  /** 阅读进度百分比 0–100 */
+  read_percent?: number;
 }
 
 export interface BookListResponse {
@@ -72,6 +74,9 @@ export interface BookDetail extends BookListItem {
   category_source?: string;
   category_name?: string;
   chapters_preview?: { id: number; index: number; title: string }[];
+  /** 续读章节序号（-1 表示未读） */
+  read_chapter_index?: number;
+  read_at?: string;
 }
 
 /** 站外刮削命中项 */
