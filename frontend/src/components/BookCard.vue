@@ -3,6 +3,7 @@
  * 书卡：网格 / 列表两种密度。
  * 刮削状态由 source_id / detail_url 派生；阅读进度仅 UI 位（暂无数据）。
  */
+import { computed } from "vue";
 import type { BookListItem } from "@/api/types";
 
 const props = withDefaults(
@@ -11,13 +12,25 @@ const props = withDefaults(
     view?: "grid" | "list";
     selectable?: boolean;
     selected?: boolean;
+    /** 网格封面宽度（px），用于小卡降级展示 */
+    coverWidth?: number;
   }>(),
   {
     view: "grid",
     selectable: false,
     selected: false,
+    coverWidth: 150,
   },
 );
+
+/** 尺寸档位：大/中/小，控制元信息密度 */
+const sizeTier = computed(() => {
+  if (props.view === "list") return "lg";
+  const w = Number(props.coverWidth) || 150;
+  if (w >= 140) return "lg";
+  if (w >= 110) return "md";
+  return "sm";
+});
 
 const emit = defineEmits<{
   (e: "open", id: number): void;
@@ -75,7 +88,7 @@ function statusClass(status: string) {
 <template>
   <article
     class="book-card"
-    :class="[`is-${view}`, { 'is-selected': selected }]"
+    :class="[`is-${view}`, `size-${sizeTier}`, { 'is-selected': selected }]"
     tabindex="0"
     role="link"
     @click="onClick"
@@ -115,20 +128,20 @@ function statusClass(status: string) {
 
     <div class="meta">
       <div class="name" :title="book.name">{{ book.name }}</div>
-      <div class="sub">
-        <span class="author">{{ book.author || "佚名" }}</span>
+      <div v-if="sizeTier !== 'sm'" class="sub">
+        <span class="author" :title="book.author">{{ book.author || "佚名" }}</span>
         <span v-if="book.status" class="tag-soft" :class="statusClass(book.status)">
           {{ book.status }}
         </span>
       </div>
 
-      <div v-if="book.tags?.length" class="tags">
+      <div v-if="sizeTier === 'lg' && book.tags?.length" class="tags">
         <span v-for="t in book.tags.slice(0, 3)" :key="t" class="tag-soft">{{ t }}</span>
         <span v-if="book.tags.length > 3" class="tag-soft">+{{ book.tags.length - 3 }}</span>
       </div>
 
-      <!-- 阅读进度：0–100 百分比 -->
-      <div class="progress-slot" :title="progressLabel(book)">
+      <!-- 阅读进度：大/中卡显示 -->
+      <div v-if="sizeTier !== 'sm'" class="progress-slot" :title="progressLabel(book)">
         <div class="progress-track">
           <div
             class="progress-bar"
@@ -139,7 +152,7 @@ function statusClass(status: string) {
         <span class="progress-text muted-xs">{{ progressLabel(book) }}</span>
       </div>
 
-      <div class="stats muted-xs">
+      <div v-if="sizeTier === 'lg'" class="stats muted-xs">
         <span>{{ fmtWords(book.word_count) }}字</span>
         <span>{{ book.chapter_count ?? "—" }}章</span>
       </div>
@@ -292,6 +305,42 @@ function statusClass(status: string) {
   min-height: 118px;
 }
 
+/* 中卡：隐藏标签/统计，书名可两行 */
+.book-card.size-md .meta {
+  min-height: 78px;
+  padding: 8px 10px 10px;
+  gap: 4px;
+}
+
+.book-card.size-md .name {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+/* 小卡：仅书名一行省略 */
+.book-card.size-sm .meta {
+  min-height: 42px;
+  padding: 6px 8px 8px;
+  gap: 0;
+}
+
+.book-card.size-sm .name {
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.book-card.size-md .progress-text {
+  display: none;
+}
+
 .meta .sub {
   min-height: 22px;
 }
@@ -375,5 +424,29 @@ function statusClass(status: string) {
 .stats {
   display: flex;
   gap: 8px;
+}
+
+/* 窄屏强制紧凑（与书库移动端 100px 网格一致） */
+@media (max-width: 768px) {
+  .book-card.is-grid .meta {
+    min-height: 48px;
+    padding: 6px 8px 8px;
+    gap: 4px;
+  }
+
+  .book-card.is-grid .name {
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .book-card.is-grid .tags,
+  .book-card.is-grid .stats,
+  .book-card.is-grid .progress-text {
+    display: none;
+  }
+
+  .book-card.is-grid .sub {
+    min-height: 0;
+  }
 }
 </style>
