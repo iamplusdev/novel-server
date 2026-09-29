@@ -2,7 +2,7 @@
 /**
  * 书库封面墙：书源/分类筛选、搜索、排序、分页。
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { SOURCE_OPTS, useLibraryStore } from "@/stores/library";
 
@@ -29,8 +29,39 @@ const sortOptions = [
 ];
 
 const gridStyle = computed(() => ({
-  gridTemplateColumns: `repeat(auto-fill, minmax(${coverWidth.value}px, 1fr))`,
+  gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${coverWidth.value}px), 1fr))`,
 }));
+
+/** 按封面宽度估算列数×可见行数，动态每页数量（保证正整数） */
+function computePageSize(): number {
+  const wrap = gridWrapRef.value;
+  const gap = 14;
+  const width = wrap?.clientWidth || 960;
+  const coverW = Math.floor(Number(coverWidth.value) || 150);
+  const cols = Math.max(2, Math.floor((width + gap) / (coverW + gap)));
+  const coverH = (coverW * 4) / 3 + 72;
+  const viewH = window.innerHeight - 220;
+  const rows = Math.max(1, Math.floor((viewH + gap) / (coverH + gap)));
+  const n = cols * rows;
+  if (!Number.isFinite(n)) return 24;
+  return Math.min(200, Math.max(Math.floor(n), 8));
+}
+
+const gridWrapRef = ref<HTMLElement | null>(null);
+
+function applyPageSize() {
+  const next = computePageSize();
+  if (next === lib.pageSize) return;
+  const firstIndex = (lib.page - 1) * lib.pageSize;
+  lib.pageSize = next;
+  lib.page = Math.floor(firstIndex / next) + 1;
+  void lib.loadBooks();
+}
+
+function onGridSize() {
+  localStorage.setItem("novel_grid_size", String(coverWidth.value));
+  applyPageSize();
+}
 
 function fmtWords(n?: number) {
   if (n === undefined || n === null) return "—";
@@ -58,6 +89,10 @@ function onSortChange(val: string) {
   void lib.applyFilter({ sort: val });
 }
 
+function onToggleUnscraped() {
+  void lib.applyFilter({ onlyUnscraped: !lib.onlyUnscraped });
+}
+
 function onCoverError(e: Event) {
   const img = e.target as HTMLImageElement;
   img.style.visibility = "hidden";
@@ -67,20 +102,21 @@ function openBook(id: number) {
   router.push({ name: "book-detail", params: { id: String(id) } });
 }
 
-function onGridSize() {
-  localStorage.setItem("novel_grid_size", String(coverWidth.value));
-}
-
 onMounted(async () => {
+  applyPageSize();
   await Promise.all([lib.loadStats(), lib.loadBooks()]);
+  window.addEventListener("resize", onResize);
 });
 
-watch(
-  () => lib.page,
-  () => {
-    /* 分页由分页器触发 loadBooks */
-  },
-);
+onUnmounted(() => {
+  window.removeEventListener("resize", onResize);
+});
+
+let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+function onResize() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(applyPageSize, 200);
+}
 </script>
 
 <template>
@@ -122,6 +158,14 @@ watch(
             @change="onGridSize"
           />
         </div>
+        <!-- 未刮削筛选 -->
+        <el-check-tag
+          :checked="lib.onlyUnscraped"
+          class="unscraped-chip"
+          @change="onToggleUnscraped"
+        >
+          未刮削
+        </el-check-tag>
       </div>
     </header>
 
@@ -156,7 +200,7 @@ watch(
       </el-check-tag>
     </div>
 
-    <div v-loading="lib.loading" class="grid-wrap" :style="gridStyle">
+    <div v-loading="lib.loading" ref="gridWrapRef" class="grid-wrap" :style="gridStyle">
       <el-empty
         v-if="!lib.loading && !lib.items.length"
         description="暂无书籍，请到「导入」页导入 TXT。"
@@ -250,6 +294,11 @@ watch(
   gap: 6px;
 }
 
+.unscraped-chip {
+  cursor: pointer;
+  user-select: none;
+}
+
 .chip-bar {
   display: flex;
   flex-wrap: wrap;
@@ -264,8 +313,13 @@ watch(
   display: grid;
   gap: 14px;
   min-height: 200px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
 }
 
+/* 卡片不超出列宽，避免撑破网格导致横向滚动 */
 .book-card {
   background: var(--el-bg-color);
   border: 1px solid var(--app-border);
@@ -273,6 +327,8 @@ watch(
   overflow: hidden;
   cursor: pointer;
   transition: border-color 0.15s ease;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .book-card:hover,

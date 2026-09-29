@@ -21,28 +21,83 @@ UA = (
 TIMEOUT = 20
 _SEARCH_API = "https://search.zongheng.com/search/book"
 
-# 纵横站内栏目（与官网一致）
+# 纵横站内栏目（与官网一级栏目一致）
 _ZH_CATEGORY_MAP = {
     "玄幻奇幻": "玄幻奇幻",
     "武侠仙侠": "武侠仙侠",
-    "历史": "历史",
     "都市": "都市",
-    "游戏": "游戏",
-    "竞技": "竞技",
+    "历史": "历史",
     "科幻": "科幻",
-    "灵异": "灵异",
-    "同人": "同人",
-    "女生": "女生",
-    "短篇": "短篇",
+    "奇闻异事": "奇闻异事",
+    "游戏": "游戏",
+    "N次元": "N次元",
+    "现实题材": "现实题材",
+    "体育": "体育",
+    "军事": "军事",
+    # 旧栏目名/别名/细分名 → 一级栏目
+    "玄幻": "玄幻奇幻",
+    "奇幻": "玄幻奇幻",
+    "玄幻小说": "玄幻奇幻",
+    "异世大陆": "玄幻奇幻",
+    "异界大陆": "玄幻奇幻",
+    "转世重生": "玄幻奇幻",
+    "东方玄幻": "玄幻奇幻",
+    "西方奇幻": "玄幻奇幻",
+    "武侠": "武侠仙侠",
+    "仙侠": "武侠仙侠",
+    "修真": "武侠仙侠",
+    "传统武侠": "武侠仙侠",
+    "都市高武": "都市",
+    "都市异能": "都市",
+    "都市生活": "都市",
+    "竞技": "体育",
+    "电子竞技": "游戏",
+    "灵异": "奇闻异事",
+    "悬疑": "奇闻异事",
+    "同人": "N次元",
+    "女生": "N次元",
+    "二次元": "N次元",
+    "轻小说": "N次元",
+    "短篇": "现实题材",
+    "现实": "现实题材",
+    "军史": "军事",
+    "战争": "军事",
+    "架空历史": "历史",
+    "穿越历史": "历史",
+}
+
+# 一级栏目集合（精确匹配用）
+_ZH_PARENT_CATS = {
+    "玄幻奇幻",
+    "武侠仙侠",
+    "都市",
+    "历史",
+    "科幻",
+    "奇闻异事",
+    "游戏",
+    "N次元",
+    "现实题材",
+    "体育",
+    "军事",
 }
 
 
 def map_category(raw: str) -> str:
-    """规范化纵横站内分类名。"""
+    """规范化纵横站内分类名 → 一级栏目。
+
+    只做精确/别名映射，**不做短词包含**（避免把标签「异界」误成分类）。
+    """
     s = (raw or "").strip()
     if not s:
         return ""
-    return _ZH_CATEGORY_MAP.get(s, s)
+    if s in _ZH_PARENT_CATS:
+        return s
+    if s in _ZH_CATEGORY_MAP:
+        return _ZH_CATEGORY_MAP[s]
+    # 「科幻小说」这类带后缀：仅当去掉「小说」后命中才映射
+    if s.endswith("小说") and s[:-2] in _ZH_CATEGORY_MAP:
+        return _ZH_CATEGORY_MAP[s[:-2]]
+    return ""
 
 
 def _http_get(url: str, headers: dict | None = None) -> str:
@@ -61,9 +116,45 @@ def _http_get(url: str, headers: dict | None = None) -> str:
 def _clean(s: str | None) -> str:
     if not s:
         return ""
-    s = re.sub(r"<[^>]+>", "", s)
+    s = re.sub(r"<[^>]+>", " ", s)
     s = html_lib.unescape(s)
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _is_seo_intro(text: str) -> bool:
+    """识别站点 SEO 文案，不当作真实简介。"""
+    s = (text or "")
+    if not s:
+        return True
+    bad = (
+        "纵横小说网提供",
+        "全文阅读服务",
+        "无弹窗广告",
+        "欢迎光临",
+        "纵横中文网为您",
+        "无广告、无弹窗",
+        "最新章节全文阅读",
+        "免费阅读",
+    )
+    return any(b in s for b in bad)
+
+
+def _is_junk_tag(t: str, book_name: str = "") -> bool:
+    """过滤分类名、状态、SEO 词、书名碎片。"""
+    s = (t or "").strip()
+    if not s or len(s) > 12:
+        return True
+    if s in ("开始阅读", "连载", "完结", "已完结", "完本", "未知"):
+        return True
+    # 纵横一级栏目名不当标签（「异界」等风格词保留）
+    if s in _ZH_PARENT_CATS:
+        return True
+    junk_sub = ("全集", "免费阅读", "最新章节", "小说", "在线阅读", "无弹窗", "TXT", "txt")
+    if any(j in s for j in junk_sub):
+        return True
+    if book_name and s in book_name:
+        return True
+    return False
 
 
 def _strip_font(name: str) -> str:
@@ -217,7 +308,12 @@ def fetch_detail(book_id: str) -> ScrapeHit:
         cover = "https:" + cover
     hit.cover_url = cover
 
+    # —— 分类：只认 og / 顶栏细分类（de-tags 是风格标签，绝不能当分类）——
     cat = meta("og:novel:category")
+    if not cat:
+        m = re.search(r'class="[^"]*de-header-line[^"]*"[\s\S]{0,300}?<span[^>]*>\s*([^<]{1,16})\s*</span>', page)
+        if m:
+            cat = _clean(m.group(1))
     if not cat:
         m = re.search(r'class="cateFineId"[^>]*>\s*([^<]+)', page)
         if m:
@@ -238,8 +334,31 @@ def fetch_detail(book_id: str) -> ScrapeHit:
             elif "连载" in s:
                 hit.status = "连载"
 
-    hit.intro = meta("og:novel:introduction", "og:description", "description")
-    hit.intro = re.sub(r"^content=", "", hit.intro)[:500]
+    # —— 简介：优先 JbookSummary（真实简介），SEO meta 仅作最后兜底 ——
+    intro = ""
+    m = re.search(
+        r'class="[^"]*JbookSummary[^"]*"\s*>\s*<textarea[^>]*>([\s\S]*?)</textarea>',
+        page,
+    )
+    if not m:
+        m = re.search(
+            r'class="[^"]*JbookSummary[^"]*"\s*>\s*<span[^>]*>([\s\S]*?)</span>',
+            page,
+        )
+    if m:
+        intro = _clean(m.group(1))
+    if not intro or _is_seo_intro(intro):
+        raw = meta("og:novel:introduction")
+        if raw and not _is_seo_intro(raw):
+            intro = _clean(raw)
+    if not intro or _is_seo_intro(intro):
+        raw = meta("og:description", "description")
+        if raw and not _is_seo_intro(raw):
+            intro = _clean(raw)
+        elif raw and not intro:
+            # 仍无简介时保留 SEO 文案，避免空简介
+            intro = _clean(raw)
+    hit.intro = intro[:500]
 
     latest = meta("og:novel:latest_chapter_name")
     if not latest:
@@ -248,30 +367,37 @@ def fetch_detail(book_id: str) -> ScrapeHit:
             latest = _clean(m.group(1))
     hit.latest_chapter = latest
 
-    # 标签：serialStatus 之后的 span（热血/轻松…）
+    # —— 标签：优先 de-tags；去掉栏目名/垃圾词，禁用 keywords SEO ——
     tags: list[str] = []
-    m = re.search(r'class="serialStatus"[^>]*>[\s\S]{0,800}?</div>', page)
+    m = re.search(r'class="[^"]*de-tags[^"]*"[\s\S]{0,600}', page)
     if m:
         for t in re.findall(r"<span[^>]*>\s*([^<]{1,16})\s*</span>", m.group(0)):
-            tok = clean_tag_token(t)
-            if tok and tok not in tags:
+            tok = clean_tag_token(_clean(t))
+            if tok and not _is_junk_tag(tok, hit.name) and tok not in tags:
                 tags.append(tok)
     if not tags:
-        # keyword meta 兜底
-        kw = meta("keywords")
-        for t in re.split(r"[,，、]", kw):
-            tok = clean_tag_token(t)
-            if tok and tok not in tags:
-                tags.append(tok)
+        m = re.search(r'class="serialStatus"[^>]*>[\s\S]{0,800}?</div>', page)
+        if m:
+            for t in re.findall(r"<span[^>]*>\s*([^<]{1,16})\s*</span>", m.group(0)):
+                tok = clean_tag_token(_clean(t))
+                if tok and not _is_junk_tag(tok, hit.name) and tok not in tags:
+                    tags.append(tok)
     hit.tags = tags[:8]
 
-    # 字数（可选）
-    m = re.search(r'([\d.]+)\s*万字数', page)
+    # 字数：「97.7万字」/「1234字」
+    m = re.search(r'([\d.]+)\s*万字(?:数)?', page)
     if m:
         try:
             hit.word_count = int(float(m.group(1)) * 10000)
         except ValueError:
             pass
+    else:
+        m = re.search(r'(\d{2,9})\s*字', page)
+        if m:
+            try:
+                hit.word_count = int(m.group(1))
+            except ValueError:
+                pass
 
     return hit
 

@@ -21,9 +21,13 @@ def _path(key: str, default: Path) -> Path:
 
 class Settings:
     def __init__(self) -> None:
-        self.public_base_url: str = _env("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+        # 对外地址：前端入口（浏览器/手机访问）
+        self.public_base_url: str = _env("PUBLIC_BASE_URL", "http://127.0.0.1:7311").rstrip("/")
         self.host: str = _env("HOST", "0.0.0.0")
-        self.port: int = int(_env("PORT", "8000"))
+        # 后端 API 端口（run.py 同时拉起前端静态服务）
+        self.port: int = int(_env("PORT", "7312"))
+        # 前端静态/反代端口（同源 Cookie 靠此端口转发 /api）
+        self.frontend_port: int = int(_env("FRONTEND_PORT", "7311"))
         self.novels_dir: Path = _path("NOVELS_DIR", BASE_DIR / "novels")
         self.database_path: Path = _path("DATABASE_PATH", BASE_DIR / "data" / "novels.db")
         self.covers_dir: Path = _path("COVERS_DIR", BASE_DIR / "covers")
@@ -120,15 +124,15 @@ FANQIE_CATEGORIES = [
 ZONGHENG_CATEGORIES = [
     "玄幻奇幻",
     "武侠仙侠",
-    "历史",
     "都市",
-    "游戏",
-    "竞技",
+    "历史",
     "科幻",
-    "灵异",
-    "同人",
-    "女生",
-    "短篇",
+    "奇闻异事",
+    "游戏",
+    "N次元",
+    "现实题材",
+    "体育",
+    "军事",
 ]
 
 SOURCE_CATEGORIES: dict[str, list[str]] = {
@@ -220,6 +224,42 @@ _FANQIE_CAT_ALIAS = {
     "女频衍生": "动漫衍生",
 }
 
+# 纵横站内/历史别名 → 新栏目
+_ZONGHENG_CAT_ALIAS = {
+    "玄幻": "玄幻奇幻",
+    "奇幻": "玄幻奇幻",
+    "玄幻小说": "玄幻奇幻",
+    "异世大陆": "玄幻奇幻",
+    "异界大陆": "玄幻奇幻",
+    "转世重生": "玄幻奇幻",
+    "东方玄幻": "玄幻奇幻",
+    "西方奇幻": "玄幻奇幻",
+    "武侠": "武侠仙侠",
+    "仙侠": "武侠仙侠",
+    "修真": "武侠仙侠",
+    "传统武侠": "武侠仙侠",
+    "都市高武": "都市",
+    "都市异能": "都市",
+    "都市生活": "都市",
+    "灵异": "奇闻异事",
+    "悬疑": "奇闻异事",
+    "奇闻": "奇闻异事",
+    "异事": "奇闻异事",
+    "竞技": "体育",
+    "电子竞技": "游戏",
+    "同人": "N次元",
+    "女生": "N次元",
+    "二次元": "N次元",
+    "轻小说": "N次元",
+    "短篇": "现实题材",
+    "现实": "现实题材",
+    "写实": "现实题材",
+    "军史": "军事",
+    "战争": "军事",
+    "架空历史": "历史",
+    "穿越历史": "历史",
+}
+
 
 def _match_in_list(raw: str, cats: list[str]) -> str:
     """精确优先，其次最长包含（避免「武侠仙侠」误成「武侠」）。"""
@@ -257,6 +297,10 @@ def map_site_category(source: str, raw: str) -> tuple[str, str]:
                 return src, alias
         if src == "番茄":
             alias = _FANQIE_CAT_ALIAS.get(cat)
+            if alias in cats:
+                return src, alias
+        if src == "纵横":
+            alias = _ZONGHENG_CAT_ALIAS.get(cat) or _ZONGHENG_CAT_ALIAS.get(cat.replace("小说", ""))
             if alias in cats:
                 return src, alias
         hit = _match_in_list(cat, cats)

@@ -8,7 +8,7 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+BASE = os.environ.get("BASE_URL", "http://127.0.0.1:7311")
 USERNAME = os.environ.get("ADMIN_USER", "admin")
 PASSWORD = os.environ.get("ADMIN_PASS", "admin123")
 

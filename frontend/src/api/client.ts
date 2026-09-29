@@ -28,6 +28,8 @@ function buildUrl(path: string, query?: RequestOptions["query"]): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) {
     if (v === undefined || v === null || v === "") continue;
+    // 丢弃 NaN/Infinity，避免后端整型字段收到 "NaN" 导致 422
+    if (typeof v === "number" && !Number.isFinite(v)) continue;
     sp.set(k, String(v));
   }
   const qs = sp.toString();

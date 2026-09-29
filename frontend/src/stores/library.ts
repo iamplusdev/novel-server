@@ -15,6 +15,8 @@ interface LibraryState {
   q: string;
   source: string;
   category: string;
+  /** true=仅未刮削 */
+  onlyUnscraped: boolean;
   loading: boolean;
   /** 请求序号：丢弃过期响应 */
   reqSeq: number;
@@ -31,6 +33,7 @@ export const useLibraryStore = defineStore("library", {
     q: "",
     source: "",
     category: "",
+    onlyUnscraped: false,
     loading: false,
     reqSeq: 0,
   }),
@@ -53,15 +56,21 @@ export const useLibraryStore = defineStore("library", {
       const seq = ++this.reqSeq;
       this.loading = true;
       try {
+        // 整型兜底：避免 NaN/小数进入 query 导致 422
+        const page = Math.max(1, Math.floor(Number(this.page) || 1));
+        const pageSize = Math.min(200, Math.max(1, Math.floor(Number(this.pageSize) || 24)));
         const data = await fetchBooks({
-          page: this.page,
-          page_size: this.pageSize,
+          page,
+          page_size: pageSize,
           sort: this.sort,
           q: this.q || undefined,
           source: this.source || undefined,
           category: this.category || undefined,
+          scraped: this.onlyUnscraped ? "unscraped" : undefined,
         });
         if (seq !== this.reqSeq) return;
+        this.page = page;
+        this.pageSize = pageSize;
         this.items = data.items || [];
         this.total = data.total || 0;
         const pages = Math.max(1, Math.ceil(this.total / this.pageSize));
@@ -71,7 +80,11 @@ export const useLibraryStore = defineStore("library", {
       }
     },
     /** 切换筛选后回到第一页并拉取 */
-    async applyFilter(patch: Partial<Pick<LibraryState, "q" | "source" | "category" | "sort">>) {
+    async applyFilter(
+      patch: Partial<
+        Pick<LibraryState, "q" | "source" | "category" | "sort" | "onlyUnscraped">
+      >,
+    ) {
       if (patch.source !== undefined && patch.source !== this.source) {
         this.source = patch.source;
         this.category = "";
@@ -79,6 +92,7 @@ export const useLibraryStore = defineStore("library", {
         this.category = patch.category;
       }
       if (patch.q !== undefined) this.q = patch.q;
+      if (patch.onlyUnscraped !== undefined) this.onlyUnscraped = patch.onlyUnscraped;
       if (patch.sort !== undefined) {
         this.sort = patch.sort;
         localStorage.setItem("novel_sort", patch.sort);
@@ -88,7 +102,8 @@ export const useLibraryStore = defineStore("library", {
     },
     async gotoPage(p: number) {
       const pages = this.totalPages;
-      const next = Math.min(pages, Math.max(1, Math.floor(p)));
+      const raw = Math.floor(Number(p) || 1);
+      const next = Math.min(pages, Math.max(1, raw));
       if (next === this.page) return;
       this.page = next;
       await this.loadBooks();

@@ -16,7 +16,7 @@ const navItems = [
   { path: "/", label: "书库", name: "library" },
   { path: "/import", label: "导入", name: "import" },
   { path: "/check", label: "体检", name: "check" },
-  { path: "/api-docs", label: "API / 书源", name: "api-docs" },
+  { path: "/api-docs", label: "API", name: "api-docs" },
   { path: "/settings", label: "设置", name: "settings" },
 ];
 
@@ -24,6 +24,12 @@ const activeName = computed(() => {
   if (route.name === "book-detail") return "library";
   return String(route.name || "library");
 });
+
+/** 用 named 路由跳转：避免 el-menu router 模式把 name 当 path，在详情页点不动 */
+function onMenuSelect(name: string) {
+  if (!name || name === String(route.name)) return;
+  void router.push({ name });
+}
 
 async function onLogout() {
   await auth.logout();
@@ -44,15 +50,23 @@ async function onLogout() {
       <el-menu
         :default-active="activeName"
         class="side-menu"
-        router
+        @select="onMenuSelect"
       >
         <el-menu-item v-for="item in navItems" :key="item.name" :index="item.name">
           {{ item.label }}
         </el-menu-item>
       </el-menu>
       <div class="side-foot">
-        <div class="muted">{{ auth.username || "—" }}</div>
-        <el-button size="small" text @click="onLogout">退出登录</el-button>
+        <div class="user-chip">
+          <span class="avatar">{{ (auth.username || "·").slice(0, 1) }}</span>
+          <div class="user-meta">
+            <div class="user-name">{{ auth.username || "未登录" }}</div>
+            <div class="user-sub">管理员</div>
+          </div>
+          <el-button class="logout-btn" size="small" text type="primary" @click="onLogout">
+            退出
+          </el-button>
+        </div>
       </div>
     </el-aside>
     <el-container>
@@ -101,12 +115,58 @@ async function onLogout() {
 }
 
 .side-foot {
-  padding: 12px 16px;
+  padding: 12px;
   border-top: 1px solid var(--app-border);
+}
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+}
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.user-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.user-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-sub {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.logout-btn {
+  padding: 4px 6px;
 }
 
 .main {
   padding: 16px;
   overflow: auto;
+  overflow-x: hidden;
+  min-width: 0;
 }
 </style>

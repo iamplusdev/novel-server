@@ -37,12 +37,14 @@ frontend/                     # Vite + Vue3 + TS
     main.ts
   dist/                       # 构建产物（Docker 运行时拷贝）
 
-app/main.py                   # 优先托管 frontend/dist，SPA fallback
+app/main.py                   # 仅 API（默认 :7312）
+app/frontend_server.py        # 前端静态 + /api 反代（默认 :7311）
+run.py                        # 同时拉起前后端双端口
 Dockerfile                    # 多阶段：node 构建 → python 运行
 ```
 
-**开发**：`cd frontend && npm run dev`（Vite proxy → `http://127.0.0.1:8000`）  
-**生产**：`npm run build` → FastAPI 托管 `frontend/dist`，非 `/api/*` GET 回退 `index.html`。
+**开发**：`cd frontend && npm run dev`（Vite proxy → `http://127.0.0.1:7312`）  
+**生产**：`npm run build` 后 `python run.py`；前端 `:7311` 托管 dist 并反代 `/api` → 后端 `:7312`。
 
 ## 4. 路由与页面清单
 

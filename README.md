@@ -57,7 +57,7 @@ novels/
 
 ```yaml
 environment:
-  PUBLIC_BASE_URL: "http://192.168.1.100:8000"   # 改成手机能访问到的地址
+  PUBLIC_BASE_URL: "http://192.168.1.100:7311"   # 改成手机能访问到的地址
 ```
 
 该地址会写入 Legado 书源的 `bookSourceUrl` 与封面/章节绝对链接。
@@ -81,7 +81,7 @@ docker save -o novel-server-latest.tar novel-server:latest
 ```bash
 docker compose up -d
 docker compose ps          # 等 healthcheck 变 healthy
-curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:7311/health
 ```
 
 数据卷（务必持久化，勿打进镜像）：
@@ -99,15 +99,15 @@ curl -s http://127.0.0.1:8000/health
 docker compose exec novel-server python import_novels.py
 
 # 管理后台创建账号（或打开网页首设）
-# 浏览器：http://<host>:8000/admin
+# 浏览器：http://<host>:7311/admin
 # 忘记密码时：docker compose exec novel-server python reset_auth.py admin 新密码
 ```
 
 ### 6. 手机 Legado 接入
 
-1. 手机与服务器同一局域网（或已穿透），能打开 `http://<host>:8000/health`
+1. 手机与服务器同一局域网（或已穿透），能打开 `http://<host>:7311/health`
 2. 获取书源 JSON（三选一）：
-   - 浏览器打开 `http://<host>:8000/legado_book_source.json`
+   - 浏览器打开 `http://<host>:7311/legado_book_source.json`
    - 管理后台 →「API / 书源」→「下载 / 复制书源 JSON」（已填好 `PUBLIC_BASE_URL`）
    - `GET /api/legado/book-source`
 3. Legado → **我的 → 书源管理 → 本地导入 / 网络导入**
@@ -138,9 +138,10 @@ services:
     container_name: novel-server
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "7311:7311"  # 前端
+      - "7312:7312"  # 后端 API
     environment:
-      PUBLIC_BASE_URL: "http://192.168.1.100:8000"  # 必改
+      PUBLIC_BASE_URL: "http://192.168.1.100:7311"  # 必改
       NOVELS_DIR: "/app/novels"
       DATABASE_PATH: "/app/data/novels.db"
       COVERS_DIR: "/app/covers"
@@ -149,7 +150,7 @@ services:
       - ./data:/app/data
       - ./covers:/app/covers
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7312/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -183,7 +184,7 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 
 | 场景 | 建议 |
 |------|------|
-| 纯局域网 | `PUBLIC_BASE_URL=http://<内网IP>:8000`，防火墙放行 8000 |
+| 纯局域网 | `PUBLIC_BASE_URL=http://<内网IP>:7311`，防火墙放行 7311（前端）、7312（API） |
 | 外网 / 穿透 | 用 HTTPS 域名；设 `COOKIE_SECURE=1`；反代加 Basic Auth 或只允许内网 |
 | Legado 外网 | 书源 `header` 可带反代账号；或走 Tailscale 等私有网 |
 
@@ -193,8 +194,8 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `PUBLIC_BASE_URL` | `http://127.0.0.1:8000` | **必改**，手机可访问的完整根地址（书源/封面绝对链） |
-| `HOST` / `PORT` | `0.0.0.0` / `8000` | 监听 |
+| `PUBLIC_BASE_URL` | `http://127.0.0.1:7311` | **必改**，手机可访问的完整根地址（书源/封面绝对链） |
+| `HOST` / `PORT` / `FRONTEND_PORT` | `0.0.0.0` / `7312` / `7311` | 后端 API / 前端入口 |
 | `NOVELS_DIR` | `./novels` | TXT 根目录 |
 | `DATABASE_PATH` | `./data/novels.db` | SQLite 路径 |
 | `COVERS_DIR` | `./covers` | 封面目录 |
@@ -229,13 +230,13 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-export PUBLIC_BASE_URL="http://192.168.1.100:8000"
+export PUBLIC_BASE_URL="http://192.168.1.100:7311"
 python import_novels.py
 python run.py
 ```
 
-- 管理后台：`http://<host>:8000/admin`
-- API 文档：`http://<host>:8000/docs`
+- 管理后台：`http://<host>:7311/admin`
+- API 文档：`http://<host>:7312/docs`（前端口亦可 `http://<host>:7311/docs`）
 - 测试：`python -m unittest tests.test_core`
 
 ---

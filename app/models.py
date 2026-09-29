@@ -1,6 +1,7 @@
-"""SQLite 数据模型：Book + Chapter，字段极少、够用即可。"""
+"""SQLite 数据模型：Book + Chapter + ImportLog，字段极少、够用即可。"""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from sqlalchemy import ForeignKey, Index, Integer, String, Text
@@ -86,3 +87,31 @@ class Chapter(Base):
 
 
 Index("ix_chapters_book_index", Chapter.book_id, Chapter.index)
+
+
+class ImportLog(Base):
+    """一次导入任务的结果日志（历史可按日期查询）。"""
+
+    __tablename__ = "import_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # ISO8601 秒级，如 2026-09-28T14:32:01
+    started_at: Mapped[str] = mapped_column(String(30), default="", nullable=False, index=True)
+    finished_at: Mapped[str] = mapped_column(String(30), default="", nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(20), default="local", nullable=False)
+    summary: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    added_n: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_n: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    skipped_n: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_n: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 明细 JSON：{added:[], updated:[], skipped:[], failed:[], recent:[]}
+    detail: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+
+    @property
+    def detail_dict(self) -> dict:
+        try:
+            data = json.loads(self.detail or "{}")
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}

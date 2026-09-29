@@ -15,6 +15,8 @@ export interface BookQuery {
   category?: string;
   tag?: string;
   status?: string;
+  /** unscraped=仅未刮削 */
+  scraped?: string;
 }
 
 export function fetchBooks(query: BookQuery) {

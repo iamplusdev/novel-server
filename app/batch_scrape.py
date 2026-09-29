@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
-from .importer import ensure_category_tag, relocate_local_txt
+from .importer import ensure_category_tag
 from .models import Book
 from .scrapers import ALL_SOURCES, REGISTRY, SOURCE_LABELS
 from .scrapers.qidian import ScrapeError, clean_tag_token, download_cover
@@ -150,7 +150,7 @@ def score_match(local_title: str, local_author: str, hit_title: str, hit_author:
     return round(title_score * 0.75 + author_score * 0.25, 4)
 
 
-def pick_best_hit(book: Book, hits: list, min_score: float = 0.55):
+def pick_best_hit(book: Book, hits: list, min_score: float = 0.8):
     scored = []
     for h in hits or []:
         sc = score_match(book.title, book.author, getattr(h, "name", "") or (h.get("name") if isinstance(h, dict) else ""), getattr(h, "author", "") or (h.get("author") if isinstance(h, dict) else ""))
@@ -213,8 +213,7 @@ def _apply_hit_to_book(db: Session, book: Book, hit_dict: dict) -> None:
     book.source = normalize_source(hit_dict.get("source") or "") or book.source or "起点"
     book.source_id = str(hit_dict.get("source_id") or "")
 
-    # 本地 TXT 归位到 novels/<书源>/<分类>/
-    relocate_local_txt(book)
+    # 不在此处移动 TXT；仅「体检 → 按分类归位」触发 relocate
 
     if hit_dict.get("cover_url"):
         try:
@@ -234,6 +233,26 @@ def _apply_hit_to_book(db: Session, book: Book, hit_dict: dict) -> None:
     book.updated_at = datetime.now().isoformat(timespec="seconds")
 
 
+def _resolve_source_list(source: str) -> list[tuple[str, object, str]]:
+    """把 source 参数解析为按顺序的 [(key, mod, label), ...]。
+
+    source="all"/"全部" 时按 起点 → 番茄 → 纵横 顺序；命中即停。
+    """
+    raw = (source or "all").strip().lower()
+    if raw in ("all", "*", "全部", ""):
+        keys: list[str] = list(ALL_SOURCES)
+    else:
+        keys = [source]
+    out: list[tuple[str, object, str]] = []
+    for k in keys:
+        mod = REGISTRY.get(k) or REGISTRY.get((k or "").strip().lower())
+        if not mod:
+            continue
+        label = SOURCE_LABELS.get(k, SOURCE_LABELS.get((k or "").strip().lower(), k))
+        out.append((k, mod, label))
+    return out
+
+
 def _scrape_one(
     db: Session,
     mod,
@@ -241,9 +260,8 @@ def _scrape_one(
     book: Book,
     *,
     min_score: float,
-    dry_run: bool,
 ) -> str:
-    """刮削单本并写入。返回 skip|preview|ok；失败抛异常。"""
+    """在指定书源上刮削单本并写入。返回 skip|ok|blocked_ok；失败抛异常。"""
     title, author = book.title, book.author
     search_kw = _search_keyword(title)
     match_author = _author_from_title_field(title, author) or author
@@ -252,14 +270,11 @@ def _scrape_one(
     fake_book = Book(title=search_kw or title, author=match_author)
     hit, score = pick_best_hit(fake_book, hits, min_score=min_score)
     if not hit:
-        _log(f"跳过《{title}》无足够匹配（最佳 {score:.2f}）")
+        _log(f"《{title}》[{label}] 无足够匹配（最佳 {score:.2f}）")
         return "skip"
     hd = _hit_to_dict(hit)
     src_id = str(hd.get("source_id") or "")
-    preview = f"《{title}》→《{hd.get('name')}》/{hd.get('author')} 分数{score:.2f} id={src_id}"
-    if dry_run:
-        _log(f"[预览] {preview}")
-        return "preview"
+    preview = f"《{title}》[{label}]→《{hd.get('name')}》/{hd.get('author')} 分数{score:.2f} id={src_id}"
     # 详情 + 写入（与单本一致）
     detail_blocked = False
     try:
@@ -282,19 +297,51 @@ def _scrape_one(
     return "blocked_ok" if detail_blocked else "ok"
 
 
+def _scrape_book_across(
+    db: Session,
+    book: Book,
+    source_pairs: list[tuple[str, object, str]],
+    *,
+    min_score: float,
+) -> str:
+    """按书源顺序刮削：任一源 score≥阈值 即写入并停止，不再尝试后续书源。"""
+    last_skip = "skip"
+    for _key, mod, label in source_pairs:
+        if _cancel.is_set():
+            return "skip"
+        try:
+            result = _scrape_one(db, mod, label, book, min_score=min_score)
+        except ScrapeError as e:
+            # 当前源失败（含风控）则试下一源
+            _log(f"《{book.title}》[{label}] 失败: {e}")
+            last_skip = "fail"
+            if bool(getattr(e, "blocked", False)):
+                raise
+            continue
+        if result == "skip":
+            last_skip = "skip"
+            continue
+        # 命中（ok / blocked_ok）立刻返回，不再用下一书源
+        return result
+    return last_skip
+
+
 def run_batch_scrape(
-    source: str = "qidian",
+    source: str = "all",
     only_missing: bool = True,
-    min_score: float = 0.55,
+    min_score: float = 0.8,
     limit: int | None = None,
-    dry_run: bool = False,
 ) -> dict:
     """同步执行一批刮削（供后台线程调用）。
 
+    source="all" 时按 起点→番茄→ 纵横 顺序匹配，命中即停；
     默认 HTTP；阶段1 失败项汇总后，若开启浏览器兜底则用 Playwright/CDP 重试。
     """
-    mod = REGISTRY.get(source) or REGISTRY.get("qidian")
-    label = SOURCE_LABELS.get(source, "起点")
+    source_pairs = _resolve_source_list(source)
+    if not source_pairs:
+        raise ValueError(f"暂不支持的刮削源: {source}")
+    src_names = "→".join(label for _, _, label in source_pairs)
+    _log(f"刮削源顺序：{src_names}（阈值 {min_score}，命中即停）")
     db = SessionLocal()
     try:
         stmt = select(Book).order_by(Book.id)
@@ -309,15 +356,17 @@ def run_batch_scrape(
         _status["matched"] = 0
         _status["skipped"] = 0
         _status["failed"] = 0
-        _status["dry_run"] = dry_run
+        _status["source"] = source
+        _status["min_score"] = min_score
         _status["browser_retried"] = 0
         _status["browser_recovered"] = 0
 
         # 风控退避状态：连续被拦计数 + 当前退避档位
         block_streak = 0
         backoff_idx = 0
-        # HTTP 阶段失败清单，留给浏览器兜底
+        # HTTP 阶段失败清单，留给浏览器兜底（取主书源做重试）
         failed_jobs: list[tuple[int, str]] = []
+        primary_mod, primary_label = source_pairs[0][1], source_pairs[0][2]
 
         for book in books:
             # 支持中途取消（A6）
@@ -327,14 +376,14 @@ def run_batch_scrape(
             _status["done"] += 1
             title = book.title
             try:
-                result = _scrape_one(db, mod, label, book, min_score=min_score, dry_run=dry_run)
+                result = _scrape_book_across(db, book, source_pairs, min_score=min_score)
                 if result == "skip":
                     _status["skipped"] += 1
                     block_streak = 0
-                elif result == "preview":
-                    _status["matched"] += 1
+                elif result == "fail":
+                    _status["failed"] += 1
+                    failed_jobs.append((book.id, title))
                     block_streak = 0
-                    backoff_idx = 0
                 elif result == "blocked_ok":
                     _status["matched"] += 1
                     block_streak += 1
@@ -384,14 +433,13 @@ def run_batch_scrape(
             time.sleep(delay)
 
         # 阶段2：汇总 HTTP 失败项，用浏览器（CDP）兜底重试
-        if failed_jobs and not dry_run and not _cancel.is_set():
-            _run_browser_fallback(db, mod, label, failed_jobs, min_score=min_score)
+        if failed_jobs and not _cancel.is_set():
+            _run_browser_fallback(db, primary_mod, primary_label, failed_jobs, min_score=min_score)
 
         summary = (
             f"共 {_status['total']} 本 · 写入 {_status['matched']} · "
             f"跳过 {_status['skipped']} · 失败 {_status['failed']}"
             + (f" · 浏览器兜底恢复 {_status['browser_recovered']}" if _status.get("browser_retried") else "")
-            + ("（预览）" if dry_run else "")
         )
         _log(summary)
         return dict(_status)

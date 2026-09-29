@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 书库体检：重复合并、异常修复、归位 + 一键刮削。
+ * 书库体检：重复 / 异常 / 刮削 三页签。
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
@@ -25,13 +25,15 @@ import { useLibraryStore } from "@/stores/library";
 const router = useRouter();
 const lib = useLibraryStore();
 
+const activeTab = ref("dup");
 const report = ref<LibraryReport | null>(null);
 const reportLoading = ref(false);
+
 const batch = ref<BatchStatus | null>(null);
-const source = ref("qidian");
+/** all=按起点→番茄→纵横顺序，命中即停 */
+const source = ref("all");
 const onlyMissing = ref(true);
-const minScore = ref(0.55);
-const dryRun = ref(false);
+const minScore = ref(0.8);
 const starting = ref(false);
 const acting = ref(false);
 let handle: SseHandle | null = null;
@@ -48,15 +50,15 @@ const batchLog = computed(() => {
   const lines: string[] = [];
   if (st.running) {
     lines.push(
-      `刮削中 ${st.done || 0} / ${st.total || "?"} · 匹配 ${st.matched || 0} · 跳过 ${
+      `刮削中 ${st.done || 0} / ${st.total || "?"} · 写入 ${st.matched || 0} · 跳过 ${
         st.skipped || 0
       } · 失败 ${st.failed || 0}${st.cancel_requested ? "（已请求停止…）" : ""}`,
     );
   } else {
     lines.push(
-      `已完成 ${st.done || 0} / ${st.total || 0}${st.dry_run ? "（预览）" : ""} · 匹配 ${
-        st.matched || 0
-      } · 跳过 ${st.skipped || 0} · 失败 ${st.failed || 0}`,
+      `已完成 ${st.done || 0} / ${st.total || 0} · 写入 ${st.matched || 0} · 跳过 ${
+        st.skipped || 0
+      } · 失败 ${st.failed || 0}`,
     );
     if (st.last_error) lines.push("最近错误: " + st.last_error);
   }
@@ -222,10 +224,9 @@ async function onStartBatch() {
       source: source.value,
       only_missing: onlyMissing.value,
       min_score: minScore.value,
-      dry_run: dryRun.value,
     });
     batch.value = res.status;
-    ElMessage.success(res.started ? (dryRun.value ? "预览匹配已开始" : "一键刮削已开始") : "批处理已在运行");
+    ElMessage.success(res.started ? "一键刮削已开始" : "批处理已在运行");
     watchBatch();
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "启动失败");
@@ -269,112 +270,103 @@ onUnmounted(stopWatch);
       <div class="toolbar-right">
         <el-button @click="loadReport">重新扫描</el-button>
         <el-button @click="onRepairAll">修复全部问题</el-button>
-        <el-button
-          title="按书籍分类把本地 TXT 移到对应分类文件夹"
-          @click="onRelocate"
-        >
+        <el-button title="按书籍分类把本地 TXT 移到对应分类文件夹" @click="onRelocate">
           按分类归位
         </el-button>
       </div>
     </header>
 
-    <div class="page-card">
-      <h3>重复书籍（同书名+作者）</h3>
-      <p class="muted">
-        合并规则：保留章节/字数最多的一本，删除其余重复项（章节与多余封面一并删，源 TXT 不动）。
-      </p>
-      <el-empty
-        v-if="!report?.duplicates?.length"
-        description="没有发现重复书。"
-        :image-size="60"
-      />
-      <div v-for="(g, gi) in report?.duplicates || []" :key="gi" class="check-item">
-        <div class="body">
-          <div class="title">
-            {{ g.title }}<template v-if="g.author"> · {{ g.author }}</template>
-          </div>
-          <div
-            v-for="b in g.books"
-            :key="b.id"
-            class="muted row"
-          >
-            <el-tag size="small" :type="b.id === g.keep_id ? 'success' : 'info'">
-              {{ b.id === g.keep_id ? "保留" : "待删" }}
-            </el-tag>
-            <span>
-              ID {{ b.id }} · {{ b.chapter_count ?? 0 }} 章 · {{ fmtWords(b.word_count) }}
-              · <span class="mono">{{ b.source_path || "" }}</span>
-            </span>
-          </div>
-        </div>
-        <el-button type="primary" size="small" @click="onMerge(g)">一键合并</el-button>
-      </div>
-    </div>
-
-    <div class="page-card">
-      <h3>异常书籍</h3>
-      <p class="muted">
-        修复：清理控制字符；若源 TXT 仍可读且未分章/乱码，则重新解析章节。
-      </p>
-      <el-empty
-        v-if="!report?.issues?.length"
-        description="没有发现异常，书库健康。"
-        :image-size="60"
-      />
-      <div v-for="it in report?.issues || []" :key="it.book_id + it.kind" class="check-item">
-        <div class="body">
-          <div class="title">
-            {{ it.title }}
-            <el-tag size="small">{{ kindLabel[it.kind] || it.kind }}</el-tag>
-          </div>
-          <div class="muted">{{ it.message }} · ID {{ it.book_id }}</div>
-        </div>
-        <div class="ops">
-          <el-button size="small" @click="onRepairOne(it.book_id)">修复</el-button>
-          <el-button
-            size="small"
-            text
-            type="primary"
-            @click="router.push({ name: 'book-detail', params: { id: String(it.book_id) } })"
-          >
-            编辑
-          </el-button>
-        </div>
-      </div>
-    </div>
-
-    <div class="page-card">
-      <h3>一键刮削（全库）</h3>
-      <p class="muted">
-        按所选刮削源对书库批量识别：以<strong>书名+作者</strong>相似度取最近匹配，再拉详情写入（含封面/标签/来源）。
-        默认只处理尚未刮削的书；建议先「预览匹配」再「开始写入」。每本间隔约 0.6s，降低风控。
-      </p>
-      <div class="controls">
-        <span class="label">刮削源</span>
-        <el-select v-model="source" style="width: 110px">
-          <el-option label="起点" value="qidian" />
-          <el-option label="番茄" value="fanqie" />
-          <el-option label="纵横" value="zongheng" />
-        </el-select>
-        <el-checkbox v-model="onlyMissing">仅未刮削</el-checkbox>
-        <el-checkbox v-model="dryRun">预览匹配（不写入）</el-checkbox>
-        <span class="label">匹配阈值</span>
-        <el-input-number
-          v-model="minScore"
-          :min="0.3"
-          :max="1"
-          :step="0.05"
-          controls-position="right"
-          style="width: 100px"
+    <el-tabs v-model="activeTab" class="check-tabs">
+      <!-- 重复书籍 -->
+      <el-tab-pane label="重复书籍" name="dup">
+        <p class="muted">
+          合并规则：保留章节/字数最多的一本，删除其余重复项（章节与多余封面一并删，源 TXT 不动）。
+        </p>
+        <el-empty
+          v-if="!report?.duplicates?.length"
+          description="没有发现重复书。"
+          :image-size="60"
         />
-        <el-button type="primary" :loading="starting" @click="onStartBatch">
-          {{ dryRun ? "预览匹配" : "开始一键刮削" }}
-        </el-button>
-        <el-button type="danger" plain @click="onCancelBatch">停止</el-button>
-        <el-button @click="onRefreshBatch">刷新进度</el-button>
-      </div>
-      <pre class="log">{{ batchLog }}</pre>
-    </div>
+        <div v-for="(g, gi) in report?.duplicates || []" :key="gi" class="check-item">
+          <div class="body">
+            <div class="title">
+              {{ g.title }}<template v-if="g.author"> · {{ g.author }}</template>
+            </div>
+            <div v-for="b in g.books" :key="b.id" class="muted row">
+              <el-tag size="small" :type="b.id === g.keep_id ? 'success' : 'info'">
+                {{ b.id === g.keep_id ? "保留" : "待删" }}
+              </el-tag>
+              <span>
+                ID {{ b.id }} · {{ b.chapter_count ?? 0 }} 章 · {{ fmtWords(b.word_count) }}
+                · <span class="mono">{{ b.source_path || "" }}</span>
+              </span>
+            </div>
+          </div>
+          <el-button type="primary" size="small" @click="onMerge(g)">一键合并</el-button>
+        </div>
+      </el-tab-pane>
+
+      <!-- 异常书籍 -->
+      <el-tab-pane label="异常书籍" name="issue">
+        <p class="muted">修复：清理控制字符；若源 TXT 仍可读且未分章/乱码，则重新解析章节。</p>
+        <el-empty
+          v-if="!report?.issues?.length"
+          description="没有发现异常，书库健康。"
+          :image-size="60"
+        />
+        <div v-for="it in report?.issues || []" :key="it.book_id + it.kind" class="check-item">
+          <div class="body">
+            <div class="title">
+              {{ it.title }}
+              <el-tag size="small">{{ kindLabel[it.kind] || it.kind }}</el-tag>
+            </div>
+            <div class="muted">{{ it.message }} · ID {{ it.book_id }}</div>
+          </div>
+          <div class="ops">
+            <el-button size="small" @click="onRepairOne(it.book_id)">修复</el-button>
+            <el-button
+              size="small"
+              text
+              type="primary"
+              @click="router.push({ name: 'book-detail', params: { id: String(it.book_id) } })"
+            >
+              编辑
+            </el-button>
+          </div>
+        </div>
+      </el-tab-pane>
+
+      <!-- 刮削书籍 -->
+      <el-tab-pane label="刮削书籍" name="scrape">
+        <p class="muted">
+          按所选刮削源对书库批量识别：以<strong>书名+作者</strong>相似度取最近匹配后写入。
+          选「全部」时按<strong>起点 → 番茄 → 纵横</strong>顺序，达到阈值即写入并停止，不再试后续书源。
+        </p>
+        <div class="controls">
+          <span class="label">刮削源</span>
+          <el-select v-model="source" style="width: 130px">
+            <el-option label="全部（顺序匹配）" value="all" />
+            <el-option label="起点" value="qidian" />
+            <el-option label="番茄" value="fanqie" />
+            <el-option label="纵横" value="zongheng" />
+          </el-select>
+          <el-checkbox v-model="onlyMissing">仅未刮削</el-checkbox>
+          <span class="label">匹配阈值</span>
+          <el-input-number
+            v-model="minScore"
+            :min="0.3"
+            :max="1"
+            :step="0.05"
+            controls-position="right"
+            style="width: 100px"
+          />
+          <el-button type="primary" :loading="starting" @click="onStartBatch">开始一键刮削</el-button>
+          <el-button type="danger" plain @click="onCancelBatch">停止</el-button>
+          <el-button @click="onRefreshBatch">刷新进度</el-button>
+        </div>
+        <pre class="log">{{ batchLog }}</pre>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
@@ -409,9 +401,11 @@ onUnmounted(stopWatch);
   flex-wrap: wrap;
 }
 
-h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
+.check-tabs {
+  background: var(--el-bg-color);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 8px 16px 16px;
 }
 
 .check-item {
@@ -482,5 +476,10 @@ h3 {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 11px;
   word-break: break-all;
+}
+
+.muted {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 </style>

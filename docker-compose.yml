@@ -10,9 +10,12 @@ services:
     environment:
       # 必改：对外访问地址（域名或局域网 IP）。
       # 管理端封面已用相对路径；此项仍影响 Legado 书源与绝对链接兜底。
-      PUBLIC_BASE_URL: "http://192.168.1.100:8000"
+      PUBLIC_BASE_URL: "http://192.168.1.100:7311"
       HOST: "0.0.0.0"
-      PORT: "8000"
+      # 后端 API
+      PORT: "7312"
+      # 前端入口（静态 + /api 反代）
+      FRONTEND_PORT: "7311"
       NOVELS_DIR: "/app/novels"
       DATABASE_PATH: "/app/data/novels.db"
       COVERS_DIR: "/app/covers"
@@ -30,7 +33,7 @@ services:
       - ./covers:/app/covers
     # 容器健康检查（D4）
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7312/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3

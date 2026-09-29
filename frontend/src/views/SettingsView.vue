@@ -1,20 +1,18 @@
 <script setup lang="ts">
 /**
- * 设置：主题、账号（改密/退出）、运行环境。
+ * 设置：主题、改密（页内表单）、运行环境。
+ * 退出登录仅在侧栏入口，不在本页展示。
  */
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import { useThemeStore, type ThemeMode } from "@/stores/theme";
 import { useLibraryStore } from "@/stores/library";
 
-const router = useRouter();
 const auth = useAuthStore();
 const theme = useThemeStore();
 const lib = useLibraryStore();
 
-const pwDialog = ref(false);
 const pwForm = ref({ old_password: "", new_password: "", new_password2: "" });
 const pwLoading = ref(false);
 
@@ -34,40 +32,30 @@ function onThemeChange(mode: ThemeMode) {
   ElMessage.success("主题已切换");
 }
 
-async function openPw() {
-  pwForm.value = { old_password: "", new_password: "", new_password2: "" };
-  pwDialog.value = true;
-}
-
 async function savePw() {
   const { old_password, new_password, new_password2 } = pwForm.value;
-  if (!old_password) return ElMessage.warning("请输入当前密码");
-  if (!new_password || new_password.length < 6) return ElMessage.warning("新密码至少 6 位");
-  if (new_password !== new_password2) return ElMessage.warning("两次新密码不一致");
+  if (!old_password) {
+    ElMessage.warning("请输入当前密码");
+    return;
+  }
+  if (!new_password || new_password.length < 6) {
+    ElMessage.warning("新密码至少 6 位");
+    return;
+  }
+  if (new_password !== new_password2) {
+    ElMessage.warning("两次新密码不一致");
+    return;
+  }
   pwLoading.value = true;
   try {
     await auth.changePassword(old_password, new_password);
-    pwDialog.value = false;
+    pwForm.value = { old_password: "", new_password: "", new_password2: "" };
     ElMessage.success("密码已修改");
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "修改失败");
   } finally {
     pwLoading.value = false;
   }
-}
-
-async function logout() {
-  try {
-    await ElMessageBox.confirm("确认退出登录？", "退出登录", {
-      type: "warning",
-      confirmButtonText: "退出",
-      cancelButtonText: "取消",
-    });
-  } catch {
-    return;
-  }
-  await auth.logout();
-  router.push({ name: "login" });
 }
 
 onMounted(async () => {
@@ -105,50 +93,45 @@ onMounted(async () => {
     <div class="page-card">
       <h3>账号</h3>
       <p class="muted">当前用户：{{ auth.username || "—" }}</p>
-      <div class="actions">
-        <el-button type="primary" @click="openPw">修改密码</el-button>
-        <el-button @click="logout">退出登录</el-button>
-      </div>
-    </div>
-
-    <div class="page-card">
-      <h3>运行环境</h3>
-      <pre class="env mono">{{ envText }}</pre>
-    </div>
-
-    <el-dialog v-model="pwDialog" title="修改密码" width="420px">
-      <el-form label-position="top" @submit.prevent="savePw">
+      <el-form label-width="96px" label-position="left" class="pw-form" @submit.prevent="savePw">
         <el-form-item label="当前密码">
           <el-input
             v-model="pwForm.old_password"
             type="password"
             show-password
             autocomplete="current-password"
+            class="pw-input"
           />
         </el-form-item>
-        <el-form-item label="新密码（至少 6 位）">
+        <el-form-item label="新密码">
           <el-input
             v-model="pwForm.new_password"
             type="password"
             show-password
             autocomplete="new-password"
+            class="pw-input"
           />
+          <span class="pw-hint">至少 6 位</span>
         </el-form-item>
-        <el-form-item label="确认新密码">
+        <el-form-item label="确认密码">
           <el-input
             v-model="pwForm.new_password2"
             type="password"
             show-password
             autocomplete="new-password"
+            class="pw-input"
           />
         </el-form-item>
-        <p class="muted">修改成功后会自动重新登录。</p>
+        <el-form-item>
+          <el-button type="primary" :loading="pwLoading" @click="savePw">保存新密码</el-button>
+        </el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="pwDialog = false">取消</el-button>
-        <el-button type="primary" :loading="pwLoading" @click="savePw">保存</el-button>
-      </template>
-    </el-dialog>
+    </div>
+
+    <div class="page-card">
+      <h3>运行环境</h3>
+      <pre class="env mono">{{ envText }}</pre>
+    </div>
   </div>
 </template>
 
@@ -168,9 +151,23 @@ h3 {
   font-size: 14px;
 }
 
-.actions {
-  display: flex;
-  gap: 8px;
+.pw-form {
+  margin-top: 8px;
+}
+
+.pw-form :deep(.el-form-item__label) {
+  white-space: nowrap;
+}
+
+.pw-input {
+  width: 280px;
+  max-width: 100%;
+}
+
+.pw-hint {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .env {
@@ -186,5 +183,9 @@ h3 {
 
 .mono {
   font-family: ui-monospace, Consolas, monospace;
+}
+
+.muted {
+  color: var(--el-text-color-secondary);
 }
 </style>

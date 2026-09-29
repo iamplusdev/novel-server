@@ -25,7 +25,7 @@ def build() -> list:
         {
             "bookSourceName": "爱小说",
             "bookSourceGroup": "本地NAS",
-            "bookSourceUrl": "http://127.0.0.1:8000",
+            "bookSourceUrl": "http://127.0.0.1:7311",
             "bookSourceType": 0,
             "bookUrlPattern": "",
             "customOrder": 0,

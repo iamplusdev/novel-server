@@ -33,7 +33,11 @@ const coverPreview = ref("");
 const coverFile = ref<File | null>(null);
 const scrapeOpen = ref(false);
 
-const bookId = computed(() => String(route.params.id || ""));
+const bookId = computed(() => {
+  const raw = Array.isArray(route.params.id) ? route.params.id[0] : route.params.id;
+  const n = Number.parseInt(String(raw ?? ""), 10);
+  return Number.isInteger(n) && n > 0 ? n : 0;
+});
 
 const sourceOptions = computed(() => {
   const tree = stats.value?.category_tree || [];
@@ -57,10 +61,21 @@ function applyBook(b: BookDetail) {
   form.intro = b.intro || "";
   coverPreview.value = b.cover_url || b.cover_path || "";
   coverFile.value = null;
+  // 分类不在下拉里时补入，避免刮削结果被显示成空
+  const tree = stats.value?.category_tree;
+  if (tree && form.category_name) {
+    const node = tree.find((n) => n.key === form.category_source);
+    if (node && !node.categories.includes(form.category_name)) {
+      node.categories = [...node.categories, form.category_name];
+    }
+  }
 }
 
 async function load() {
-  if (!bookId.value) return;
+  if (!bookId.value) {
+    ElMessage.error("无效的书籍 ID");
+    return;
+  }
   loading.value = true;
   try {
     const [detail, st] = await Promise.all([fetchBook(bookId.value), fetchStats()]);
@@ -244,8 +259,8 @@ watch(bookId, () => void load());
     <ScrapeDialog
       v-model:visible="scrapeOpen"
       :book-id="bookId"
-      :local-name="form.title"
-      :local-author="form.author"
+      :local-name="form.title || book?.name || ''"
+      :local-author="form.author || book?.author || ''"
       @applied="applyBook"
     />
   </div>

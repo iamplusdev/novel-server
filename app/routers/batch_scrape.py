@@ -15,11 +15,11 @@ router = APIRouter(
 
 
 class BatchIn(BaseModel):
-    source: str = Field(default="qidian", max_length=20)
+    # all=按起点→番茄→纵横顺序，命中即停；也可指定单一书源
+    source: str = Field(default="all", max_length=20)
     only_missing: bool = True
-    min_score: float = Field(default=0.55, ge=0.3, le=1.0)
+    min_score: float = Field(default=0.8, ge=0.3, le=1.0)
     limit: int | None = Field(default=None, ge=1, le=5000)
-    dry_run: bool = False
 
 
 class ScoreIn(BaseModel):
@@ -36,7 +36,6 @@ def batch_start(payload: BatchIn) -> dict:
         only_missing=payload.only_missing,
         min_score=payload.min_score,
         limit=payload.limit,
-        dry_run=payload.dry_run,
     )
     return {"started": started, "status": get_batch_status()}
 
