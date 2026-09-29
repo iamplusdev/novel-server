@@ -10,6 +10,7 @@ import { batchDeleteBooks } from "@/api/admin";
 import { startBatchScrape } from "@/api/progress";
 import BookCard from "@/components/BookCard.vue";
 import AppIcon from "@/components/AppIcon.vue";
+import BaseEmpty from "@/components/BaseEmpty.vue";
 
 const router = useRouter();
 const lib = useLibraryStore();
@@ -369,16 +370,13 @@ function onResize() {
       class="grid-wrap"
       :style="gridStyle"
     >
-      <div v-if="!lib.loading && !lib.items.length" class="empty-state">
-        <div class="empty-icon">
-          <AppIcon name="book" :size="28" />
-        </div>
-        <h3>书库还是空的</h3>
-        <p class="muted">到「导入」页扫描本地 TXT，即可开始管理你的小说。</p>
-        <button type="button" class="primary-btn" @click="router.push({ name: 'import' })">
-          去导入
-        </button>
-      </div>
+      <BaseEmpty
+        v-if="!lib.loading && !lib.items.length"
+        title="书库还是空的"
+        description="到「导入」页扫描本地 TXT，即可开始管理你的小说。"
+        action-text="去导入"
+        @action="router.push({ name: 'import' })"
+      />
 
       <BookCard
         v-for="b in lib.items"

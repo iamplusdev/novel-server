@@ -66,15 +66,22 @@ def scan_issues(db: Session) -> list[BookIssue]:
         for r in stats_rows
     }
 
-    # 控制字符 / 乱码：按书读正文包，内存峰值约等于单本
+    # 控制字符 / 乱码：按书读正文包；一次性取全部偏移元数据，避免 N+1
     ctrl_counts: dict[int, int] = {}
     repl_counts: dict[int, int] = {}
+    all_ch_rows = db.execute(
+        select(
+            Chapter.book_id,
+            Chapter.content_offset,
+            Chapter.content_length,
+            Chapter.content,
+        ).order_by(Chapter.book_id, Chapter.index, Chapter.id)
+    ).all()
+    chapters_by_book: dict[int, list] = {}
+    for r in all_ch_rows:
+        chapters_by_book.setdefault(r.book_id, []).append(r)
     for book in books:
-        ch_rows = db.execute(
-            select(Chapter.content_offset, Chapter.content_length, Chapter.content)
-            .where(Chapter.book_id == book.id)
-            .order_by(Chapter.index, Chapter.id)
-        ).all()
+        ch_rows = chapters_by_book.get(book.id) or []
         if not ch_rows:
             continue
         class _Ch:

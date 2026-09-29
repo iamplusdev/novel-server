@@ -18,12 +18,14 @@ from app.config import settings
 from app.database import init_db
 from app.frontend_server import start_in_thread as start_frontend
 from app.importer import ensure_category_dirs
+from app.logging_setup import setup_logging
 
 # 前端构建产物（与仓库结构绑定）
 DIST_DIR = Path(__file__).resolve().parent / "frontend" / "dist"
 
 
 def main() -> None:
+    setup_logging()
     settings.ensure_dirs()
     ensure_category_dirs()
     init_db()

@@ -52,6 +52,8 @@ export function startBatchScrape(payload: {
   only_missing: boolean;
   min_score: number;
   book_ids?: number[];
+  /** api | chrome | auto */
+  mode?: string;
 }) {
   return http.post<{ started: boolean; status: BatchStatus }>(
     "/api/admin/scrape/batch/start",

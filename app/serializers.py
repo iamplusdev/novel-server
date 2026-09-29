@@ -50,6 +50,8 @@ def book_list_item(book: Book, base: str | None = None) -> dict:
     return {
         "id": book.id,
         "name": book.title,
+        # title 与 name 同值：体检/重复报告用 title，列表用 name，契约统一
+        "title": book.title,
         "author": book.author,
         "category": book.category,
         "tags": book.tags_list,
@@ -90,6 +92,8 @@ def chapter_item(ch, base: str | None = None) -> dict:
         "id": ch.id,
         "index": ch.index,
         "name": ch.title,
+        # title 与 name 同值，与 chapters_preview 对齐
+        "title": ch.title,
         "content_url": f"{root}/api/books/{ch.book_id}/chapters/{ch.id}",
         "legado_content_url": f"{root}/api/legado/content/{ch.book_id}/{ch.id}",
     }

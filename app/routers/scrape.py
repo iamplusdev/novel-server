@@ -16,6 +16,15 @@ from ..database import get_db
 from ..importer import ensure_category_tag
 from ..models import Book
 from ..scrapers import REGISTRY, SOURCE_LABELS
+from ..scrapers.mode import (
+    MODE_API,
+    MODE_AUTO,
+    MODE_CHROME,
+    describe_modes,
+    get_scrape_mode,
+    normalize_mode,
+    set_scrape_mode,
+)
 from ..scrapers.qidian import ScrapeError, download_cover
 from ..serializers import admin_book_detail
 
@@ -33,6 +42,8 @@ class SearchIn(BaseModel):
     keyword: str = Field(..., min_length=1, max_length=80)
     source: str = Field(default="qidian", max_length=20)
     limit: int = Field(default=10, ge=1, le=20)
+    # 取数方式：api=HTTP / chrome=fnOS 浏览器 / auto=失败自动切换
+    mode: str = Field(default="auto", max_length=20)
 
 
 class ApplyIn(BaseModel):
@@ -40,6 +51,8 @@ class ApplyIn(BaseModel):
     source_book_id: str = Field(..., min_length=1, max_length=32)
     keyword: str | None = Field(default=None, max_length=80)
     with_cover: bool = True
+    # 取数方式：api / chrome / auto
+    mode: str = Field(default="auto", max_length=20)
     # 搜索列表里已有的字段，详情被风控时可作回退
     hint_name: str | None = Field(default=None, max_length=200)
     hint_author: str | None = Field(default=None, max_length=100)
@@ -70,13 +83,76 @@ def _mod(source: str):
     return mod
 
 
+def _with_mode(mode: str, fn):
+    """按刮削方式执行 fn()：api=HTTP，chrome=浏览器，auto=先 HTTP 再浏览器。"""
+    from ..scrapers import http_util
+
+    m = normalize_mode(mode)
+    if m == MODE_CHROME:
+        http_util.set_browser_mode(True)
+        try:
+            return fn()
+        except ScrapeError as e:
+            raise HTTPException(502, str(e)) from e
+        finally:
+            http_util.set_browser_mode(False)
+    if m == MODE_API:
+        http_util.set_browser_mode(False)
+        try:
+            return fn()
+        except ScrapeError as e:
+            raise HTTPException(502, str(e)) from e
+    # auto：优先 API，失败后切 Chrome 重试一次
+    http_util.set_browser_mode(False)
+    try:
+        return fn()
+    except ScrapeError as first_err:
+        try:
+            http_util.set_browser_mode(True)
+            return fn()
+        except ScrapeError as second_err:
+            raise HTTPException(
+                502,
+                f"刮削失败（API 与浏览器均不可用）：{first_err}；{second_err}",
+            ) from second_err
+        finally:
+            http_util.set_browser_mode(False)
+
+
+@router.get("/modes")
+def scrape_modes() -> dict:
+    """可选刮削方式 + 当前偏好。"""
+    return {
+        "current": get_scrape_mode(),
+        "items": describe_modes(),
+        "browser_ready": _browser_ready(),
+    }
+
+
+@router.post("/mode")
+def scrape_set_mode(payload: dict) -> dict:
+    """设置默认刮削方式（会话级）。"""
+    m = set_scrape_mode(str(payload.get("mode") or "auto"))
+    return {"ok": True, "current": m}
+
+
+def _browser_ready() -> bool:
+    try:
+        from ..scrapers.browser_fallback import probe_cdp
+
+        return probe_cdp(timeout=1.5)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @router.post("/search")
 def scrape_search(payload: SearchIn) -> dict:
     mod = _mod(payload.source)
-    try:
-        hits = mod.search(payload.keyword, limit=payload.limit)
-    except ScrapeError as e:
-        raise HTTPException(502, str(e)) from e
+
+    def _run():
+        return mod.search(payload.keyword, limit=payload.limit)
+
+    hits = _with_mode(payload.mode, _run)
     label = SOURCE_LABELS.get(payload.source.strip().lower(), payload.source)
     return {
         "source": label,
@@ -84,6 +160,7 @@ def scrape_search(payload: SearchIn) -> dict:
         "query": payload.keyword,
         "items": [h.to_dict() for h in hits],
         "count": len(hits),
+        "mode": normalize_mode(payload.mode),
     }
 
 
@@ -93,11 +170,14 @@ def scrape_detail(payload: ApplyIn) -> dict:
     raw = (payload.source_book_id or "").strip()
     extract = getattr(mod, "extract_book_id", None)
     bid = (extract(raw) if extract else raw) or raw
-    try:
-        hit = mod.fetch_detail(bid)
-    except ScrapeError as e:
-        raise HTTPException(502, str(e)) from e
-    return hit.to_dict()
+
+    def _run():
+        return mod.fetch_detail(bid)
+
+    hit = _with_mode(payload.mode, _run)
+    data = hit.to_dict()
+    data["mode"] = normalize_mode(payload.mode)
+    return data
 
 
 @router.post("/books/{book_id}/apply")
@@ -121,8 +201,8 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
     hit = None
     detail_err = ""
     try:
-        hit = mod.fetch_detail(payload.source_book_id)
-    except ScrapeError as e:
+        hit = _with_mode(payload.mode, lambda: mod.fetch_detail(payload.source_book_id))
+    except (ScrapeError, HTTPException) as e:
         detail_err = str(e)
         # 按当前刮削源构造回退骨架，避免番茄任务落到起点 URL
         from ..scrapers.qidian import ScrapeHit as BaseHit

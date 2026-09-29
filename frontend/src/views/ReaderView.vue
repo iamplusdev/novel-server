@@ -1,14 +1,24 @@
 <script setup lang="ts">
 /**
- * 阅读器 UI 壳：目录 / 字号 / 行距 / 背景 / 进度百分比 / 全屏。
- * 正文接口尚未接入，内容区为占位；目录优先用详情接口的 chapters_preview。
- * 阅读进度按章节序号换算百分比并写回后端。
+ * 网页阅读器：目录 / 正文 / 字号 / 行距 / 背景 / 进度 / 全屏。
+ * 正文与完整目录走公开 API；进度写回管理端。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { fetchBook, updateReadProgress } from "@/api/admin";
+import {
+  fetchBook,
+  fetchBookChapters,
+  fetchChapterContent,
+  updateReadProgress,
+} from "@/api/admin";
 import AppIcon from "@/components/AppIcon.vue";
 import type { BookDetail } from "@/api/types";
+
+interface TocItem {
+  id: number;
+  index: number;
+  title: string;
+}
 
 type ReaderTheme = "paper" | "warm" | "night";
 
@@ -17,6 +27,10 @@ const router = useRouter();
 
 const book = ref<BookDetail | null>(null);
 const loading = ref(false);
+const contentLoading = ref(false);
+const chapterText = ref("");
+const chapterError = ref("");
+const tocItems = ref<TocItem[]>([]);
 const tocOpen = ref(true);
 const settingsOpen = ref(false);
 const isFullscreen = ref(false);
@@ -34,10 +48,36 @@ const bookId = computed(() => {
   return Number.isInteger(n) && n > 0 ? n : 0;
 });
 
-const chapters = computed(() => book.value?.chapters_preview || []);
+const chapters = computed(() => {
+  if (tocItems.value.length) return tocItems.value;
+  return (book.value?.chapters_preview || []).map((c) => ({
+    id: c.id,
+    index: c.index,
+    title: c.title,
+  }));
+});
 const activeChapter = computed(
   () => chapters.value.find((c) => c.id === activeChapterId.value) || chapters.value[0] || null,
 );
+
+/** 拉取当前章节正文 */
+async function loadChapterContent(chapterId: number) {
+  if (!bookId.value || !chapterId) return;
+  contentLoading.value = true;
+  chapterError.value = "";
+  try {
+    const data = await fetchChapterContent(bookId.value, chapterId);
+    chapterText.value = data.content || "";
+    if (!chapterText.value) {
+      chapterError.value = "本章正文为空";
+    }
+  } catch (e) {
+    chapterText.value = "";
+    chapterError.value = e instanceof Error ? e.message : "正文加载失败";
+  } finally {
+    contentLoading.value = false;
+  }
+}
 
 /** 按当前章节序号换算阅读进度百分比 0–100 */
 const readPercent = computed(() => {
@@ -75,15 +115,31 @@ async function load() {
   loading.value = true;
   try {
     book.value = await fetchBook(bookId.value);
+    // 完整目录（公开 API 分页拉取，小说通常一页够用）
+    try {
+      const toc = await fetchBookChapters(bookId.value, 1, 500);
+      tocItems.value = (toc.items || []).map((c) => ({
+        id: c.id,
+        index: c.index,
+        title: c.title || c.name || "",
+      }));
+    } catch {
+      tocItems.value = (book.value?.chapters_preview || []).map((c) => ({
+        id: c.id,
+        index: c.index,
+        title: c.title,
+      }));
+    }
     const list = chapters.value;
     // 优先续读：有 read_chapter_index 则定位到对应章节
     const savedIdx = book.value?.read_chapter_index ?? -1;
     if (list.length) {
       const byIndex = savedIdx >= 0 ? list.find((c) => c.index === savedIdx) : null;
       activeChapterId.value = (byIndex || list[0]!).id;
+      await loadChapterContent(activeChapterId.value);
     }
   } catch {
-    /* UI 壳：加载失败不阻断界面 */
+    /* 加载失败不阻断界面 */
   } finally {
     loading.value = false;
   }
@@ -96,9 +152,10 @@ function persistPrefs() {
 }
 
 watch([fontSize, lineHeight, readerTheme], persistPrefs);
-// 切换章节后同步进度百分比
-watch(activeChapterId, () => {
+// 切换章节后同步进度百分比并加载正文
+watch(activeChapterId, (id) => {
   void persistProgress();
+  if (id) void loadChapterContent(id);
 });
 
 function goChapter(id: number) {
@@ -201,12 +258,13 @@ onUnmounted(() => {
       <main ref="contentEl" class="content" :style="readerStyle">
         <article class="article">
           <h1 class="chapter-title">{{ activeChapter?.title || "开始阅读" }}</h1>
-          <div class="placeholder-body">
-            <p>这里是阅读器界面骨架：排版、目录、字号、行距、背景与全屏已就绪。</p>
-            <p class="muted">章节正文接口尚未接入本页，接入后将在此渲染全文。</p>
-            <div class="demo-line">示例段落 · 用于预览当前字号（{{ fontSize }}px）与行距（{{ lineHeight }}）。</div>
-            <div class="demo-line">安静的版心宽度，适合长时间阅读；夜间模式会降低对比刺激。</div>
-            <div class="demo-line">你可以从左侧目录切换章节占位。</div>
+          <div v-if="contentLoading" class="placeholder-body muted">正文加载中…</div>
+          <div v-else-if="chapterError" class="placeholder-body muted">{{ chapterError }}</div>
+          <div v-else-if="chapterText" class="chapter-body">
+            <p v-for="(para, i) in chapterText.split(/\n+/)" :key="i" class="para">{{ para }}</p>
+          </div>
+          <div v-else class="placeholder-body muted">
+            <p>选择左侧目录开始阅读。</p>
           </div>
         </article>
       </main>
@@ -432,6 +490,12 @@ onUnmounted(() => {
 
 .placeholder-body p {
   margin: 0 0 1em;
+}
+
+.chapter-body .para {
+  margin: 0 0 1em;
+  text-indent: 2em;
+  line-height: inherit;
 }
 
 .demo-line {

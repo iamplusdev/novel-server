@@ -82,7 +82,7 @@ const themeLabel = computed(() => {
     <!-- 桌面侧栏 -->
     <el-aside v-if="!isNarrow" width="240px" class="side">
       <div class="brand">
-        <span class="brand-mark">爱</span>
+        <img src="/logo.png" alt="爱小说" class="brand-logo" />
         <div class="brand-text">
           <strong>爱小说</strong>
           <div class="muted-xs">管理后台</div>
@@ -128,7 +128,7 @@ const themeLabel = computed(() => {
           <AppIcon name="menu" :size="20" />
         </button>
         <div class="topbar-brand">
-          <span class="brand-mark sm">爱</span>
+          <img src="/logo.png" alt="爱小说" class="brand-logo sm" />
           <strong>爱小说</strong>
         </div>
         <button type="button" class="icon-btn" :title="`主题：${themeLabel}`" @click="cycleTheme">
@@ -151,7 +151,7 @@ const themeLabel = computed(() => {
     >
       <div class="drawer-inner">
         <div class="brand">
-          <span class="brand-mark">爱</span>
+          <img src="/logo.png" alt="爱小说" class="brand-logo" />
           <div class="brand-text">
             <strong>爱小说</strong>
             <div class="muted-xs">管理后台</div>
@@ -209,23 +209,19 @@ const themeLabel = computed(() => {
   padding: var(--space-2) var(--space-4) var(--space-4);
 }
 
-.brand-mark {
+/* 品牌 logo 图（public/logo.png） */
+.brand-logo {
   width: 36px;
   height: 36px;
   border-radius: var(--radius-md);
-  background: var(--color-accent);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
+  object-fit: contain;
   flex-shrink: 0;
+  background: transparent;
 }
 
-.brand-mark.sm {
+.brand-logo.sm {
   width: 28px;
   height: 28px;
-  font-size: 13px;
   border-radius: var(--radius-sm);
 }
 

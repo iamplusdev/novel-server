@@ -6,6 +6,7 @@
 import { computed, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
+  SCRAPE_MODE_OPTS,
   SCRAPE_SOURCE_OPTS,
   cleanHintTags,
   looksLikeBookId,
@@ -30,6 +31,8 @@ const emit = defineEmits<{
 
 const keyword = ref(props.localName || "");
 const source = ref("qidian");
+/** 刮削取数方式：auto / api / chrome（fnOS Chrome） */
+const scrapeMode = ref("auto");
 const loading = ref(false);
 const applying = ref(false);
 const tip = ref("将把结果写入当前编辑中的书籍。多条结果时请核对书名/作者后再点「采用」。");
@@ -68,11 +71,20 @@ async function runSearch() {
   try {
     if (looksLikeBookId(kw)) {
       tip.value = "按书号拉取详情…";
-      const hit = await scrapeDetail({ source: source.value, source_book_id: kw });
+      const hit = await scrapeDetail({
+        source: source.value,
+        source_book_id: kw,
+        mode: scrapeMode.value,
+      });
       items.value = [{ ...hit, source_id: hit.source_id || kw }];
     } else {
       tip.value = "正在搜索…";
-      const res = await scrapeSearch({ keyword: kw, source: source.value, limit: 10 });
+      const res = await scrapeSearch({
+        keyword: kw,
+        source: source.value,
+        limit: 10,
+        mode: scrapeMode.value,
+      });
       items.value = res.items || [];
       if (items.value.length) {
         tip.value = `找到 ${items.value.length} 条，请核对后点「采用并写入」`;
@@ -139,6 +151,7 @@ async function applyHit(hit: ScrapeHit) {
     const res = await scrapeApply(bookId, {
       source: source.value,
       source_book_id: srcId,
+      mode: scrapeMode.value,
       with_cover: true,
       hint_name: hit.name || null,
       hint_author: hit.author || null,
@@ -187,6 +200,11 @@ function fmtWords(n?: number) {
       </div>
       <select v-model="source" class="source-select" aria-label="刮削源">
         <option v-for="opt in SCRAPE_SOURCE_OPTS" :key="opt.value" :value="opt.value">
+          {{ opt.label }}
+        </option>
+      </select>
+      <select v-model="scrapeMode" class="source-select" aria-label="刮削方式" title="API 直连 / Chrome 浏览器 / 自动">
+        <option v-for="opt in SCRAPE_MODE_OPTS" :key="opt.value" :value="opt.value">
           {{ opt.label }}
         </option>
       </select>

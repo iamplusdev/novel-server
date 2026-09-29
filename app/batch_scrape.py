@@ -81,6 +81,9 @@ def request_batch_cancel() -> bool:
 
 
 def _log(msg: str) -> None:
+    import logging
+
+    logging.getLogger("batch_scrape").info("%s", msg)
     _status["log"].append({"time": datetime.now().isoformat(timespec="seconds"), "message": msg})
     del _status["log"][:-80]
 
@@ -332,13 +335,25 @@ def run_batch_scrape(
     min_score: float = 0.8,
     limit: int | None = None,
     book_ids: list[int] | None = None,
+    mode: str = "auto",
 ) -> dict:
     """同步执行一批刮削（供后台线程调用）。
 
     source="all" 时按 起点→番茄→ 纵横 顺序匹配，命中即停；
     book_ids 非空时只刮削指定书（书库多选批量刮削）；
-    默认 HTTP；阶段1 失败项汇总后，若开启浏览器兜底则用 Playwright/CDP 重试。
+    mode：api=仅 HTTP / chrome=fnOS 浏览器 / auto=HTTP 失败后浏览器兜底。
     """
+    from .scrapers import http_util
+    from .scrapers.mode import MODE_API, MODE_CHROME, normalize_mode
+
+    scrape_mode = normalize_mode(mode)
+    _status["mode"] = scrape_mode
+    # chrome：全程走浏览器；api：全程 HTTP；auto：阶段1 HTTP + 阶段2 兜底
+    if scrape_mode == MODE_CHROME:
+        http_util.set_browser_mode(True)
+    else:
+        http_util.set_browser_mode(False)
+
     source_pairs = _resolve_source_list(source)
     if not source_pairs:
         raise ValueError(f"暂不支持的刮削源: {source}")
@@ -438,8 +453,8 @@ def run_batch_scrape(
                 _log(f"节奏暂停 {pause:.1f}s（每 {_LONG_PAUSE_EVERY} 本）")
             time.sleep(delay)
 
-        # 阶段2：汇总 HTTP 失败项，用浏览器（CDP）兜底重试
-        if failed_jobs and not _cancel.is_set():
+        # 阶段2：汇总 HTTP 失败项，用浏览器（CDP）兜底重试（api 模式跳过）
+        if failed_jobs and not _cancel.is_set() and scrape_mode != MODE_API:
             _run_browser_fallback(db, primary_mod, primary_label, failed_jobs, min_score=min_score)
 
         summary = (
@@ -450,6 +465,10 @@ def run_batch_scrape(
         _log(summary)
         return dict(_status)
     finally:
+        if scrape_mode == MODE_CHROME:
+            from .scrapers import http_util as _hu
+
+            _hu.set_browser_mode(False)
         db.close()
 
 

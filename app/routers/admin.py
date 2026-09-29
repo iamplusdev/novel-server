@@ -116,14 +116,26 @@ def admin_duplicates(db: Session = Depends(get_db)) -> dict:
     items = []
     for title, author, n in rows:
         books = db.execute(
-            select(Book).where(Book.title == title, Book.author == author).order_by(Book.id)
+            select(Book)
+            .where(Book.title == title, Book.author == author)
+            .order_by(Book.chapter_count.desc(), Book.word_count.desc(), Book.id)
         ).scalars().all()
         items.append({
             "title": title,
             "author": author,
             "count": n,
+            # 与 library.report 一致：默认保留章节最多的那本
+            "keep_id": books[0].id if books else 0,
             "books": [
-                {"id": b.id, "source_path": b.source_path, "source": b.source, "source_id": b.source_id, "chapter_count": b.chapter_count}
+                {
+                    "id": b.id,
+                    "source_path": b.source_path,
+                    "source": b.source,
+                    "source_id": b.source_id,
+                    "chapter_count": b.chapter_count,
+                    "word_count": b.word_count,
+                    "cover_file": b.cover_file,
+                }
                 for b in books
             ],
         })

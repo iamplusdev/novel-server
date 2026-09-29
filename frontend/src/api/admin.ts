@@ -63,3 +63,26 @@ export function uploadCover(id: number | string, file: File) {
   fd.append("file", file);
   return http.upload<{ ok?: boolean; cover_url?: string }>(`/api/admin/books/${id}/cover`, fd);
 }
+
+/** 阅读器：完整目录（分页，page_size 默认 500） */
+export function fetchBookChapters(bookId: number | string, page = 1, pageSize = 500) {
+  return http.get<{
+    book_id: number;
+    book_name: string;
+    total: number;
+    page: number;
+    page_size: number;
+    items: { id: number; index: number; name: string; title: string }[];
+  }>(`/api/books/${bookId}/chapters`, { page, page_size: pageSize });
+}
+
+/** 阅读器：章节正文 */
+export function fetchChapterContent(bookId: number | string, chapterId: number | string) {
+  return http.get<{
+    id: number;
+    book_id: number;
+    index: number;
+    title: string;
+    content: string;
+  }>(`/api/books/${bookId}/chapters/${chapterId}`);
+}

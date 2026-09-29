@@ -26,12 +26,20 @@ _BROWSER_MODE = False
 
 
 def set_browser_mode(on: bool) -> None:
-    """开启/关闭浏览器取页模式（批量失败汇总重试用）。"""
+    """开启/关闭浏览器取页模式（批量失败汇总重试 / 用户指定 chrome 用）。"""
     global _BROWSER_MODE
     _BROWSER_MODE = bool(on)
 
 
 def browser_mode() -> bool:
+    # 用户明确选择 chrome 时强制走浏览器，不受全局开关影响
+    try:
+        from .mode import MODE_CHROME, get_scrape_mode
+
+        if get_scrape_mode() == MODE_CHROME:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
     return _BROWSER_MODE
 
 

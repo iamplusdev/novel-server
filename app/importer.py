@@ -345,6 +345,9 @@ def _progress_fields(result: ImportResult, total: int, done: int, current: str) 
 
 
 def import_all(db: Session | None = None) -> ImportResult:
+    import logging
+
+    log = logging.getLogger("importer")
     own = db is None
     if own:
         db = SessionLocal()
@@ -356,6 +359,7 @@ def import_all(db: Session | None = None) -> ImportResult:
     try:
         files = list(_iter_txt_files(root))
         total = len(files)
+        log.info("导入开始：%s 个 TXT", total)
         _set_import_status(**_progress_fields(result, total, 0, ""))
         for done, (category, path) in enumerate(files, start=1):
             # 支持中途取消（A6）
@@ -378,6 +382,7 @@ def import_all(db: Session | None = None) -> ImportResult:
                     pending = 0
             except Exception as exc:  # noqa: BLE001
                 err_label = f"{path.name}: {exc}"
+                log.warning("导入失败 %s: %s", path, exc)
                 result.failed.append(err_label)
                 result.recent_log.append(f"! {err_label}")
                 # 单本失败不影响整批，回滚脏对象后继续
@@ -385,6 +390,7 @@ def import_all(db: Session | None = None) -> ImportResult:
                 pending = 0
             _set_import_status(**_progress_fields(result, total, done, current_name))
         db.commit()
+        log.info("导入结束：%s", result.summary)
     finally:
         if own:
             db.close()

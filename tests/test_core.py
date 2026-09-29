@@ -255,6 +255,27 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(set(i["name"] for i in r2["items"]), {"甲", "丙"})
         db.close()
 
+    def test_scrape_mode_normalize(self) -> None:
+        """刮削方式归一：browser/fnos → chrome，未知 → auto。"""
+        from app.scrapers.mode import normalize_mode
+
+        self.assertEqual(normalize_mode("api"), "api")
+        self.assertEqual(normalize_mode("chrome"), "chrome")
+        self.assertEqual(normalize_mode("browser"), "chrome")
+        self.assertEqual(normalize_mode("fnos-chrome"), "chrome")
+        self.assertEqual(normalize_mode("nope"), "auto")
+        self.assertEqual(normalize_mode(None), "auto")
+
+    def test_book_list_item_title_alias(self) -> None:
+        """列表项 name 与 title 同值，契约统一。"""
+        from app.models import Book
+        from app.serializers import book_list_item
+
+        b = Book(id=1, title="测试书", author="作者", category="都市", tags="", intro="")
+        data = book_list_item(b)
+        self.assertEqual(data["name"], "测试书")
+        self.assertEqual(data["title"], "测试书")
+
 
 if __name__ == "__main__":
     unittest.main()
