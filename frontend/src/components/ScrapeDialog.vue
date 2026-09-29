@@ -3,7 +3,7 @@
  * 单本刮削弹窗：搜索 / 按书号拉详情 / 核对后写入。
  * emits: applied —— 写入成功后由父组件刷新表单
  */
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   SCRAPE_SOURCE_OPTS,
@@ -38,6 +38,19 @@ const dialogVisible = computed({
   get: () => props.visible,
   set: (v: boolean) => emit("update:visible", v),
 });
+
+// 打开弹窗时自动填入书名（含标题后加载的情况）
+watch(
+  () => props.visible,
+  (v) => {
+    if (!v) return;
+    const name = (props.localName || "").trim();
+    if (name) keyword.value = name;
+    items.value = [];
+    tip.value = "将把结果写入当前编辑中的书籍。多条结果时请核对书名/作者后再点「采用」。";
+  },
+  { immediate: true },
+);
 
 function close() {
   dialogVisible.value = false;
@@ -102,13 +115,29 @@ async function askAndApply(hit: ScrapeHit) {
   await applyHit(hit);
 }
 
+/** 安全取正整数，避免 "NaN"/"undefined" 进请求体 */
+function toPositiveInt(v: unknown): number {
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 async function applyHit(hit: ScrapeHit) {
+  const bookId = toPositiveInt(props.bookId);
+  const srcId = String(hit.source_id ?? "").trim();
+  if (!bookId) {
+    ElMessage.error("无效的书籍 ID");
+    return;
+  }
+  if (!srcId) {
+    ElMessage.error("缺少站外书籍 ID，无法写入");
+    return;
+  }
   applying.value = true;
   tip.value = "正在拉取详情并写入…";
   try {
-    const res = await scrapeApply(props.bookId, {
+    const res = await scrapeApply(bookId, {
       source: source.value,
-      source_book_id: String(hit.source_id),
+      source_book_id: srcId,
       with_cover: true,
       hint_name: hit.name || null,
       hint_author: hit.author || null,
@@ -116,7 +145,8 @@ async function applyHit(hit: ScrapeHit) {
       hint_status: hit.status || null,
       hint_cover_url: hit.cover_url || null,
       hint_tags: cleanHintTags(hit.tags),
-      hint_word_count: Number(hit.word_count) || 0,
+      hint_word_count: toPositiveInt(hit.word_count),
+      hint_category: hit.category || null,
     });
     ElMessage.success(`已写入（来源：${res.source || "—"}）`);
     emit("applied", res);

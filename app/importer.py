@@ -27,7 +27,7 @@ from .config import (
 )
 from .content_store import write_pack
 from .database import SessionLocal
-from .models import Book, Chapter
+from .models import Book, Chapter, ImportLog
 from .parsers import load_txt_book, load_txt_book_from_text
 
 # 兼容旧导入
@@ -402,11 +402,12 @@ def import_all_async(mode: str = "local") -> bool:
     _import_cancel.clear()
 
     def _run() -> None:
+        started_at = datetime.now().isoformat(timespec="seconds")
         _set_import_status(
             running=True,
             mode="local",
             last=None,
-            started_at=datetime.now().isoformat(timespec="seconds"),
+            started_at=started_at,
             total=0,
             done=0,
             current="",
@@ -432,6 +433,8 @@ def import_all_async(mode: str = "local") -> bool:
                 failed_n=len(result.failed),
                 recent=list(result.recent_log[-8:]),
             )
+            # 落库，供历史查询
+            save_import_log(result, started_at=started_at, mode="local")
         except Exception as exc:  # noqa: BLE001
             _set_import_status(
                 running=False,
@@ -451,6 +454,80 @@ def import_all_async(mode: str = "local") -> bool:
 
     threading.Thread(target=_run, daemon=True).start()
     return True
+
+
+def save_import_log(result: ImportResult, *, started_at: str, mode: str = "local") -> None:
+    """把导入结果写入 import_logs；仅记录「新增」，无新增则不落库。"""
+    import json as _json
+
+    if not result.added:
+        return
+    finished = datetime.now().isoformat(timespec="seconds")
+    detail = {
+        "added": result.added[:500],
+    }
+    db = SessionLocal()
+    try:
+        db.add(
+            ImportLog(
+                started_at=started_at or finished,
+                finished_at=finished,
+                mode=mode,
+                summary=result.summary[:200],
+                total=len(result.added) + len(result.updated) + len(result.skipped) + len(result.failed),
+                added_n=len(result.added),
+                updated_n=len(result.updated),
+                skipped_n=len(result.skipped),
+                failed_n=len(result.failed),
+                detail=_json.dumps(detail, ensure_ascii=False),
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def query_import_logs(date: str | None = None, limit: int = 50) -> list[dict]:
+    """按日期（YYYY-MM-DD）或最近若干条查询导入历史。"""
+    from sqlalchemy import select
+
+    db = SessionLocal()
+    try:
+        stmt = select(ImportLog).order_by(ImportLog.id.desc()).limit(max(1, min(limit, 200)))
+        rows = list(db.execute(stmt).scalars().all())
+        out = []
+        for r in rows:
+            if date and not (r.finished_at or "").startswith(date):
+                continue
+            d = r.detail_dict
+            out.append(
+                {
+                    "id": r.id,
+                    "started_at": r.started_at,
+                    "finished_at": r.finished_at,
+                    "mode": r.mode,
+                    "summary": r.summary,
+                    "total": r.total,
+                    "added_n": r.added_n,
+                    "updated_n": r.updated_n,
+                    "skipped_n": r.skipped_n,
+                    "failed_n": r.failed_n,
+                    "detail": {
+                        "added": d.get("added") or [],
+                        "updated": d.get("updated") or [],
+                        "skipped": d.get("skipped") or [],
+                        "failed": d.get("failed") or [],
+                        "recent": d.get("recent") or [],
+                    },
+                    # 历史只关心新增明细
+                    "added_list": d.get("added") or [],
+                }
+            )
+        return out
+    finally:
+        db.close()
 
 
 # 供 CLI / 测试使用：确保「书源/分类」文件夹存在

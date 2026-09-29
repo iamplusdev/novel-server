@@ -26,7 +26,7 @@ from ..config import (
     settings,
 )
 from ..database import delete_books_safe, get_db
-from ..importer import get_import_status, import_all_async, relocate_local_txt, request_import_cancel
+from ..importer import get_import_status, import_all_async, request_import_cancel
 from ..models import Book
 from ..serializers import admin_book_detail, book_list_item, resolve_base_url
 
@@ -138,6 +138,7 @@ def admin_list_books(
     source: str | None = Query(default=None),
     status: str | None = Query(default=None),
     tag: str | None = Query(default=None),
+    scraped: str | None = Query(default=None),  # unscraped=仅未刮削
     sort: str = Query(default="updated"),  # updated|title|author|words|chapters
     page: int = Query(default=1, ge=1),
     # 上限放宽到 200：宽屏多列时前端会请求 cols*rows，保证非末页行占满
@@ -154,6 +155,7 @@ def admin_list_books(
         status=status,
         tag=tag,
         source=source,
+        scraped=scraped,
         sort=sort,
         with_intro_search=False,
     )
@@ -217,9 +219,7 @@ def admin_update_book(
         data["source"] = normalize_source(data["source"].strip()) or data["source"].strip()
     for k, v in data.items():
         setattr(book, k, v)
-    # 分类变更后本地 TXT 归位到 novels/<书源>/<分类>/
-    if "category" in data:
-        relocate_local_txt(book)
+    # 不在保存时移动 TXT；仅「体检 → 按分类归位」触发 relocate
     # 元数据变更后刷新更新时间，保证「导入/更新」排序准确
     book.updated_at = datetime.now().isoformat(timespec="seconds")
     db.commit()
@@ -298,6 +298,15 @@ def admin_import_cancel() -> dict:
 @router.get("/import/status")
 def admin_import_status() -> dict:
     return get_import_status()
+
+
+@router.get("/import/logs")
+def admin_import_logs(date: str | None = Query(default=None), limit: int = Query(default=50, ge=1, le=200)) -> dict:
+    """历史导入记录；date=YYYY-MM-DD 按完成日过滤。"""
+    from ..importer import query_import_logs
+
+    items = query_import_logs(date=date, limit=limit)
+    return {"items": items, "total": len(items)}
 
 
 def _sse_pack(obj: dict) -> str:

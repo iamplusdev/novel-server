@@ -6,14 +6,14 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import require_admin_dep
 from ..config import UNCATEGORIZED, make_category_label, map_site_category, normalize_source, settings
 from ..database import get_db
-from ..importer import ensure_category_tag, relocate_local_txt
+from ..importer import ensure_category_tag
 from ..models import Book
 from ..scrapers import REGISTRY, SOURCE_LABELS
 from ..scrapers.qidian import ScrapeError, download_cover
@@ -47,7 +47,20 @@ class ApplyIn(BaseModel):
     hint_status: str | None = Field(default=None, max_length=20)
     hint_cover_url: str | None = Field(default=None, max_length=500)
     hint_tags: list[str] | None = None
+    hint_category: str | None = Field(default=None, max_length=50)
+    # 宽松整型：兼容 "120000"、浮点串，脏数据归 0
     hint_word_count: int = Field(default=0, ge=0)
+
+    @field_validator("hint_word_count", mode="before")
+    @classmethod
+    def _coerce_word_count(cls, v):
+        if v is None or v == "":
+            return 0
+        try:
+            n = int(float(str(v).strip()))
+        except (TypeError, ValueError):
+            return 0
+        return max(0, n)
 
 
 def _mod(source: str):
@@ -122,12 +135,14 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
             url=fallback_url,
         )
 
-    # 合并 hint
+    # 合并 hint（详情优先；详情为空或是 SEO 文案时用搜索结果）
+    from ..scrapers.zongheng import _is_seo_intro as _seo_intro
+
     if not hit.name and payload.hint_name:
         hit.name = payload.hint_name
     if not hit.author and payload.hint_author:
         hit.author = payload.hint_author
-    if not hit.intro and payload.hint_intro:
+    if (not hit.intro or _seo_intro(hit.intro)) and payload.hint_intro:
         hit.intro = payload.hint_intro
     if not hit.status and payload.hint_status:
         s = (payload.hint_status or "").strip()
@@ -136,6 +151,8 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         hit.cover_url = payload.hint_cover_url
     if not getattr(hit, "word_count", 0) and payload.hint_word_count:
         hit.word_count = int(payload.hint_word_count or 0)
+    if not getattr(hit, "category", "") and payload.hint_category:
+        hit.category = payload.hint_category
 
     if not hit.name and not hit.author:
         raise HTTPException(502, detail_err or "未能获取书籍信息")
@@ -159,9 +176,18 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         except (TypeError, ValueError):
             pass
     # 分类写成「书源-站内分类」；刮削成功后 TXT 归位到 novels/<书源>/<分类>/
-    if getattr(hit, "category", ""):
-        raw_cat = (hit.category or "").strip()[:50]
-        book.category = category_label_from_hit(label, raw_cat)
+    raw_cat = (getattr(hit, "category", "") or "").strip()
+    if not raw_cat and payload.hint_category:
+        raw_cat = (payload.hint_category or "").strip()
+    if raw_cat:
+        # 先按刮削源规范化，再拼「书源-栏目」，避免纵横旧栏目/细分名写歪
+        src_n, cat_n = map_site_category(label, raw_cat[:50])
+        # 纵横：映射不到一级栏目时回退搜索 catePName
+        if label == "纵横" and cat_n in ("", UNCATEGORIZED, raw_cat):
+            alt = payload.hint_category or ""
+            if alt and alt != raw_cat:
+                src_n, cat_n = map_site_category(label, alt[:50])
+        book.category = make_category_label(src_n or label, cat_n)
     elif not book.category:
         book.category = UNCATEGORIZED
 
@@ -181,8 +207,7 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
     book.source = label
     book.source_id = hit.source_id or payload.source_book_id
 
-    # 本地 TXT 移到 novels/<书源>/<分类>/（WebDAV 路径跳过）
-    relocate_local_txt(book)
+    # 不在此处移动 TXT；仅「体检 → 按分类归位」触发 relocate
 
     if payload.with_cover and hit.cover_url:
         try:

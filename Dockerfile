@@ -17,7 +17,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOST=0.0.0.0 \
-    PORT=8000 \
+    PORT=7312 \
+    FRONTEND_PORT=7311 \
     NOVELS_DIR=/app/novels \
     DATABASE_PATH=/app/data/novels.db \
     COVERS_DIR=/app/covers
@@ -34,6 +35,7 @@ COPY --from=frontend-builder /build/dist ./frontend/dist
 
 # 挂载点：/app/novels /app/data /app/covers
 VOLUME ["/app/novels", "/app/data", "/app/covers"]
-EXPOSE 8000
+# 7311 前端入口 · 7312 后端 API
+EXPOSE 7311 7312
 
 CMD ["python", "run.py"]

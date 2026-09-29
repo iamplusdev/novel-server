@@ -2,8 +2,8 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 
-// 开发态代理到 FastAPI；生产由后端直接托管 dist
-const API_TARGET = process.env.VITE_API_TARGET || "http://127.0.0.1:8000";
+// 开发态代理到后端 API（默认 7312）；生产经前端 :7311 反代
+const API_TARGET = process.env.VITE_API_TARGET || "http://127.0.0.1:7312";
 
 export default defineConfig({
   plugins: [vue()],

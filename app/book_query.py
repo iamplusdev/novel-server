@@ -117,14 +117,23 @@ def build_books_stmt(
     status: str | None = None,
     tag: str | None = None,
     source: str | None = None,
+    scraped: str | None = None,
     sort: str = "updated",
     with_intro_search: bool = True,
 ):
-    """组装筛选后的 select(Book)，不含分页。"""
+    """组装筛选后的 select(Book)，不含分页。
+
+    scraped=unscraped：仅未刮削（无 source 或无 source_id）
+    """
     stmt = select(Book)
     stmt = apply_source_category(stmt, source=source, category=category)
     if status:
         stmt = stmt.where(Book.status == status)
+    # 直接调用函数时默认值可能不是 str（FastAPI Query），做类型防护
+    if isinstance(scraped, str) and scraped.strip().lower() == "unscraped":
+        stmt = stmt.where(
+            (Book.source == "") | (Book.source.is_(None)) | (Book.source_id == "")
+        )
     stmt = apply_tag(stmt, tag)
     stmt = apply_search(stmt, db, q, with_intro=with_intro_search)
     return apply_sort(stmt, sort)
