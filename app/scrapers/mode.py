@@ -2,7 +2,7 @@
 
 - api    ：纯 HTTP（默认）
 - chrome ：强制走浏览器 CDP（fnOS tieron Chrome）
-- auto   ：先 API，失败后自动切浏览器重试
+- auto   ：自动检测 fnOS Chrome，可用则优先 Chrome，失败回退 API；不可用则纯 API
 """
 from __future__ import annotations
 
@@ -51,5 +51,5 @@ def describe_modes() -> list[dict]:
     return [
         {"value": MODE_API, "label": "API 直连", "hint": "轻量 HTTP 请求，速度快"},
         {"value": MODE_CHROME, "label": "Chrome 浏览器", "hint": "经 fnOS Chrome / CDP 渲染取页，抗风控更强"},
-        {"value": MODE_AUTO, "label": "自动", "hint": "优先 API，失败后自动切 Chrome"},
+        {"value": MODE_AUTO, "label": "自动", "hint": "检测到 fnOS Chrome 则优先 Chrome，否则走 API"},
     ]
