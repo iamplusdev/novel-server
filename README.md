@@ -12,9 +12,9 @@
 
 - 扫描 `novels/<书源>/<分类>/*.txt`，解析章节写入 SQLite（内容哈希未变则跳过）
 - 管理后台：账号登录、封面墙、书源/分类筛选、元数据编辑、刮削、体检、网页阅读
-- **两级分类**：书源（起点 / 番茄 / 纵横 / 本地）+ 站内分类，与 TXT 目录层级一致
+- **两级分类**：书源（起点 / 番茄 / 纵横 / 本地）+ 统一分类（以起点 15 类为准），与 TXT 目录层级一致
 - **刮削**：起点 / 番茄 / 纵横元数据（书名、作者、简介、状态、分类、标签、封面）
-- **刮削方式可选**：API 直连 / Chrome 浏览器（fnOS CDP）/ 自动（API 失败后切浏览器）
+- **刮削方式可选**：API 直连 / Chrome 浏览器（fnOS CDP）/ 自动（检测到 Chrome 优先，否则 API）
 - **网页阅读器** + **Legado 书源**
 - 封面本地 `covers/` 由服务直接提供；章节正文存 `data/contents/` 正文包
 
@@ -23,7 +23,7 @@
 | 组件 | 选型 |
 |------|------|
 | Web API | FastAPI + Uvicorn（默认 `:7312`） |
-| 前端入口 | 静态托管 + `/api` 反代（默认 `:7311`） |
+| 前端入口 | 同一 ASGI 应用：静态 + `/api` 同源（默认 `:7311`） |
 | 管理前端 | Vue 3 + Vite + TypeScript + Element Plus + Pinia |
 | 数据库 | SQLite + SQLAlchemy 2.x |
 | 阅读端 | 网页阅读器 + Legado（开源阅读）书源 |
@@ -49,7 +49,7 @@ novels/
 │   └── 都市/
 │       └── 书名.txt
 ├── 番茄/
-│   └── 西方奇幻/
+│   └── 奇幻/
 │       └── 书名.txt
 └── 玄幻/                 # 本地/未刮削也可按分类放
     └── 书名.txt
@@ -145,23 +145,27 @@ docker compose exec novel-server python import_novels.py
 |------|------|
 | **API 直连** | 轻量 HTTP 请求，速度快 |
 | **Chrome 浏览器** | 经 fnOS tieron Chrome（CDP）渲染取页，抗风控更强 |
-| **自动** | 优先 API，失败后自动切 Chrome（需开启浏览器兜底） |
+| **自动** | 检测到「CDP 可达 **且** Playwright 已装」则优先 Chrome、失败回退 API；否则纯 API |
 
 相关环境变量：
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `SCRAPER_BROWSER_FALLBACK` | 关 | `1` 时允许 auto 失败后走浏览器，也便于探测 CDP |
+| `SCRAPER_BROWSER_FALLBACK` | 关 | `1` 时允许浏览器兜底路径（手动 chrome / 批量重试） |
 | `CDP_URL` | `http://127.0.0.1:16002` | fnOS Chrome / CDP 网关 |
 | `CDP_READY_WAIT` | `20` | 唤醒/等待 Chrome ready 超时（秒） |
 
 启用 Chrome 方式：
 
-1. `pip install -r requirements-optional.txt`（Playwright；镜像内可选装）
+1. 安装 Playwright Python 包（`connect_over_cdp` 连宿主机 Chrome，无需 `playwright install` 内核）
+   - 本机/虚机：`pip install -r requirements-optional.txt`
+   - Docker：`docker compose build --build-arg INSTALL_BROWSER_DEPS=1 && docker compose up -d`
 2. `docker-compose.yml` 已用 `network_mode: host`，容器内 `127.0.0.1:16002` 即宿主机 CDP
-3. 建议设置：`SCRAPER_BROWSER_FALLBACK=1`、`CDP_URL=http://127.0.0.1:16002`
+3. 手动 Chrome / 兜底建议设置：`SCRAPER_BROWSER_FALLBACK=1`、`CDP_URL=http://127.0.0.1:16002`（auto 在 CDP+Playwright 齐备时即优先 Chrome，无需该变量）
 
-日志中会看到「唤醒浏览器并兜底重试 / [浏览器] 恢复」等字样。
+缺 Playwright 时：auto 自动改走 API，不会报「未安装 playwright」；只有手动选「Chrome 浏览器」才会提示缺依赖。
+
+日志中会看到「取数通道（auto 检测）… / [API] 恢复 / [浏览器] 恢复」等字样。
 
 ---
 
@@ -262,7 +266,17 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 | `SCRAPER_LONG_PAUSE_MIN` / `MAX` | `6` / `12` | 长休息随机秒数范围 |
 | `SCRAPER_BLOCK_BREAK_AT` | `3` | 连续被拦截多少次后熔断冷却 |
 | `SCRAPER_BLOCK_BREAK_SECONDS` | `180` | 熔断冷却时长（秒） |
-| `SCRAPER_BROWSER_FALLBACK` | 关 | `1` 开启浏览器兜底 / 可用 Chrome 方式 |
+| `SCRAPER_HOST_MIN_INTERVAL` | `1.2` | 同一域名两次请求最小间隔（秒）；`0` 关闭 |
+| `SCRAPER_HOST_JITTER_MAX` | `0.4` | 域名间隔随机抖动上限（秒） |
+| `SCRAPER_SEARCH_CACHE_TTL` | `1800` | 搜索结果缓存秒数；`0` 关闭 |
+| `SCRAPER_SKIP_DETAIL` | `1` | 高置信命中跳过详情请求（省 1～3 次/本） |
+| `SCRAPER_SKIP_DETAIL_SCORE` | `0.95` | 跳过详情的最低匹配分 |
+| `SCRAPER_COVER` | `missing` | 封面：`missing` 已有则跳过 / `replace` 总是替换 / `skip` 从不下载 |
+| `SCRAPER_SOURCE_BREAK_AT` | `2` | 单源连续被拦多少次后进入冷却 |
+| `SCRAPER_SOURCE_COOLDOWN_SECONDS` | `180` | 单源冷却时长（秒），期间 `all` 跳过该源 |
+| `SCRAPER_FANQIE_BING` | `1` | 批量番茄无书号时用必应反查书名 |
+| `SCRAPER_FANQIE_BING_MAX` | `0` | 整批最多必应反查次数；`0` 不限 |
+| `SCRAPER_BROWSER_FALLBACK` | 关 | `1` 开启浏览器兜底路径（手动 chrome / 批量重试） |
 | `CDP_URL` | `http://127.0.0.1:16002` | fnOS Chrome CDP 网关 |
 | `CDP_READY_WAIT` | `20` | 唤醒/等待 Chrome ready 超时（秒） |
 
@@ -277,6 +291,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 # 可选（Chrome 刮削）：pip install -r requirements-optional.txt
+# Docker 则构建时带上：docker compose build --build-arg INSTALL_BROWSER_DEPS=1
 
 export PUBLIC_BASE_URL="http://192.168.1.100:7311"   # Windows: $env:PUBLIC_BASE_URL="..."
 python import_novels.py

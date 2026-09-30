@@ -79,7 +79,7 @@ def safe_delete_cover(cover_file: str) -> bool:
 # 未分类（既是分类名，也是 tags 标记）
 UNCATEGORIZED = "未分类"
 
-# 书源 → 站内分类（与官网栏目一致）；本地/WebDAV 目录：novels/<书源>/<分类>/
+# 全站统一分类标准：以起点 15 类为准（书源前缀仍区分起点/番茄/纵横/本地）
 QIDIAN_CATEGORIES = [
     "玄幻",
     "奇幻",
@@ -98,51 +98,23 @@ QIDIAN_CATEGORIES = [
     "短篇",
 ]
 
-FANQIE_CATEGORIES = [
-    "西方奇幻",
-    "东方仙侠",
-    "科幻末世",
-    "都市日常",
-    "都市修真",
-    "都市高武",
-    "历史古代",
-    "战神赘婿",
-    "都市种田",
-    "传统玄幻",
-    "历史脑洞",
-    "悬疑脑洞",
-    "都市脑洞",
-    "玄幻脑洞",
-    "悬疑灵异",
-    "抗战谍战",
-    "游戏体育",
-    "动漫衍生",
-    "男频衍生",
-]
-
-# 纵横中文网站内栏目（与官网一致）
-ZONGHENG_CATEGORIES = [
-    "玄幻奇幻",
-    "武侠仙侠",
-    "都市",
-    "历史",
-    "科幻",
-    "奇闻异事",
-    "游戏",
-    "N次元",
-    "现实题材",
-    "体育",
-    "军事",
-]
-
+# 书源 → 分类选项（统一为起点 15 类）；本地/WebDAV 目录：novels/<书源>/<分类>/
 SOURCE_CATEGORIES: dict[str, list[str]] = {
     "起点": QIDIAN_CATEGORIES,
-    "番茄": FANQIE_CATEGORIES,
-    "纵横": ZONGHENG_CATEGORIES,
+    "番茄": QIDIAN_CATEGORIES,
+    "纵横": QIDIAN_CATEGORIES,
 }
 
 # 兼容旧代码/旧数据的扁平分类名（不含书源前缀）
 LEGACY_CATEGORIES = list(QIDIAN_CATEGORIES)
+
+# 风格标签：只进 tags，不作分类（第一人称/开局等）
+STYLE_ONLY_TAGS = {
+    "第一人称",
+    "开局",
+    "搞笑轻松",
+    "断层",
+}
 
 
 # 书源别名 → 标准名
@@ -161,7 +133,7 @@ def normalize_source(source: str) -> str:
 
 
 def make_category_label(source: str, site_cat: str) -> str:
-    """拼成展示/存储用分类：「起点-都市」「番茄-西方奇幻」；无书源则保留原名。"""
+    """拼成展示/存储用分类：「起点-都市」「番茄-都市」；无书源则保留原名。"""
     cat = (site_cat or "").strip()
     if not cat or cat == UNCATEGORIZED:
         return UNCATEGORIZED
@@ -175,7 +147,7 @@ def make_category_label(source: str, site_cat: str) -> str:
 
 
 def parse_category_label(label: str) -> tuple[str, str]:
-    """「番茄-西方奇幻」→ (番茄, 西方奇幻)；「都市」→ ("", 都市)。"""
+    """「番茄-都市」→ (番茄, 都市)；「都市」→ ("", 都市)。"""
     s = (label or "").strip()
     if not s:
         return "", UNCATEGORIZED
@@ -187,16 +159,20 @@ def parse_category_label(label: str) -> tuple[str, str]:
     return "", s
 
 
-# 站内/历史别名 → 起点标准栏目（刮削与手动挂类共用）
-_QIDIAN_CAT_ALIAS = {
+# 各站栏目/历史别名 → 起点标准分类（一对多统一落默认：玄幻奇幻→玄幻、武侠仙侠→仙侠、游戏体育→游戏）
+_SITE_CAT_TO_QIDIAN: dict[str, str] = {
+    # —— 起点旧别名 ——
     "玄幻奇幻": "玄幻",
     "奇幻玄幻": "玄幻",
     "东方玄幻": "玄幻",
     "异世大陆": "奇幻",
+    "异界大陆": "奇幻",
+    "转世重生": "奇幻",
     "武侠仙侠": "仙侠",
     "修真": "仙侠",
     "修仙": "仙侠",
     "仙侠修真": "仙侠",
+    "奇幻仙侠": "仙侠",
     "都市现实": "都市",
     "都市生活": "都市",
     "高武": "都市",
@@ -209,55 +185,69 @@ _QIDIAN_CAT_ALIAS = {
     "无限流": "诸天无限",
     "悬疑": "悬疑灵异",
     "灵异": "悬疑灵异",
-    "轻小说": "轻小说",
     "女频": "轻小说",
     "言情": "轻小说",
     "男频": "玄幻",
     "现代": "现实",
-    "短篇": "短篇",
-}
-
-# 番茄站内别名（与 scrapers/fanqie 对齐）
-_FANQIE_CAT_ALIAS = {
-    "衍生": "男频衍生",
-    "双男主": "男频衍生",
-    "女频衍生": "动漫衍生",
-}
-
-# 纵横站内/历史别名 → 新栏目
-_ZONGHENG_CAT_ALIAS = {
-    "玄幻": "玄幻奇幻",
-    "奇幻": "玄幻奇幻",
-    "玄幻小说": "玄幻奇幻",
-    "异世大陆": "玄幻奇幻",
-    "异界大陆": "玄幻奇幻",
-    "转世重生": "玄幻奇幻",
-    "东方玄幻": "玄幻奇幻",
-    "西方奇幻": "玄幻奇幻",
-    "武侠": "武侠仙侠",
-    "仙侠": "武侠仙侠",
-    "修真": "武侠仙侠",
-    "传统武侠": "武侠仙侠",
+    # —— 番茄站内栏目 ——
+    "西方奇幻": "奇幻",
+    "东方仙侠": "仙侠",
+    "科幻末世": "科幻",
+    "都市日常": "都市",
+    "都市修真": "仙侠",
     "都市高武": "都市",
+    "历史古代": "历史",
+    "战神赘婿": "都市",
+    "都市种田": "都市",
+    "传统玄幻": "玄幻",
+    "历史脑洞": "历史",
+    "悬疑脑洞": "悬疑灵异",
+    "都市脑洞": "都市",
+    "玄幻脑洞": "玄幻",
+    "抗战谍战": "军事",
+    "动漫衍生": "诸天无限",
+    "男频衍生": "诸天无限",
+    "衍生": "诸天无限",
+    "双男主": "诸天无限",
+    "女频衍生": "诸天无限",
+    # —— 番茄细分/频道 ——
+    "仕途": "都市",
+    "综影视": "诸天无限",
+    "综漫": "诸天无限",
+    "天灾": "科幻",
+    "赛博朋克": "科幻",
+    "第四天灾": "游戏",
+    "规则怪谈": "悬疑灵异",
+    "克苏鲁": "悬疑灵异",
     "都市异能": "都市",
-    "都市生活": "都市",
-    "灵异": "奇闻异事",
-    "悬疑": "奇闻异事",
-    "奇闻": "奇闻异事",
-    "异事": "奇闻异事",
-    "竞技": "体育",
-    "电子竞技": "游戏",
-    "同人": "N次元",
-    "女生": "N次元",
-    "二次元": "N次元",
-    "轻小说": "N次元",
-    "短篇": "现实题材",
-    "现实": "现实题材",
-    "写实": "现实题材",
-    "军史": "军事",
-    "战争": "军事",
+    "末日求生": "科幻",
+    "灵气复苏": "玄幻",
+    "高武世界": "都市",
+    "谍战": "军事",
+    "清朝": "历史",
+    "宋朝": "历史",
+    "武将": "军事",
+    "国运": "军事",
+    "架空": "历史",
     "架空历史": "历史",
     "穿越历史": "历史",
+    # —— 纵横站内栏目 ——
+    "奇闻异事": "悬疑灵异",
+    "N次元": "轻小说",
+    "现实题材": "现实",
+    "玄幻小说": "玄幻",
+    "奇幻小说": "奇幻",
+    "武侠小说": "武侠",
+    "仙侠小说": "仙侠",
+    "传统武侠": "武侠",
+    "竞技": "体育",
+    "电子竞技": "游戏",
+    "同人": "诸天无限",
+    "女生": "轻小说",
+    "二次元": "轻小说",
+    "写实": "现实",
+    "军史": "军事",
+    "战争": "军事",
 }
 
 
@@ -273,11 +263,31 @@ def _match_in_list(raw: str, cats: list[str]) -> str:
     return best
 
 
-def map_site_category(source: str, raw: str) -> tuple[str, str]:
-    """刮削/手动分类 → (书源标准名, 站内分类)。
+def to_qidian_category(raw: str) -> str:
+    """任意站内分类/别名 → 起点 15 类；风格标签/未知 → 空串。
 
-    - 有书源（起点/番茄）：归到该源栏目（别名/包含可匹配）
-    - 无书源（本地）：只归到扁平分类，**不**自动贴书源前缀
+    - 风格标签（第一人称/开局等）只进 tags，不作分类
+    - 一对多（玄幻奇幻/武侠仙侠/游戏体育）统一落默认起点分类
+    """
+    s = (raw or "").strip()
+    if not s or s == UNCATEGORIZED or s in STYLE_ONLY_TAGS:
+        return ""
+    if s in QIDIAN_CATEGORIES:
+        return s
+    mapped = _SITE_CAT_TO_QIDIAN.get(s) or _SITE_CAT_TO_QIDIAN.get(s.replace("小说", ""))
+    if mapped in QIDIAN_CATEGORIES:
+        return mapped
+    # 最长包含兜底（「都市日常」→「都市」）
+    return _match_in_list(s, QIDIAN_CATEGORIES)
+
+
+def map_site_category(source: str, raw: str) -> tuple[str, str]:
+    """刮削/手动分类 → (书源标准名, 起点标准分类)。
+
+    - 分类维度统一为起点 15 类（番茄/纵横原栏目自动映射）
+    - 有书源：保留书源前缀（起点-都市 / 番茄-都市）
+    - 无书源（本地）：扁平分类，不贴书源前缀
+    - 风格标签/未知 → 未分类（原词保留在 tags）
     """
     src = normalize_source(source)
     cat = (raw or "").strip()
@@ -288,44 +298,22 @@ def map_site_category(source: str, raw: str) -> tuple[str, str]:
     if not cat or cat == UNCATEGORIZED:
         return src, UNCATEGORIZED
 
-    # 指定书源：别名 → 精确/包含
-    if src in SOURCE_CATEGORIES:
-        cats = SOURCE_CATEGORIES[src]
-        if src == "起点":
-            alias = _QIDIAN_CAT_ALIAS.get(cat) or _QIDIAN_CAT_ALIAS.get(cat.replace("小说", ""))
-            if alias in cats:
-                return src, alias
-        if src == "番茄":
-            alias = _FANQIE_CAT_ALIAS.get(cat)
-            if alias in cats:
-                return src, alias
-        if src == "纵横":
-            alias = _ZONGHENG_CAT_ALIAS.get(cat) or _ZONGHENG_CAT_ALIAS.get(cat.replace("小说", ""))
-            if alias in cats:
-                return src, alias
-        hit = _match_in_list(cat, cats)
-        if hit:
-            return src, hit
-        return src, cat
-
-    # 本地/无书源：对齐扁平分类即可
-    legacy = list(LEGACY_CATEGORIES) + [UNCATEGORIZED]
-    hit = _match_in_list(cat, legacy)
-    return "", (hit or cat)
+    q = to_qidian_category(cat)
+    return src, (q or UNCATEGORIZED)
 
 
 def category_tree() -> list[dict]:
-    """编辑页两级分类数据：书源列表 + 各自栏目。"""
+    """编辑页两级分类数据：书源列表 + 统一的起点 15 类。"""
     return [
         {"key": "", "label": "本地", "categories": list(LEGACY_CATEGORIES) + [UNCATEGORIZED]},
         {"key": "起点", "label": "起点", "categories": list(QIDIAN_CATEGORIES)},
-        {"key": "番茄", "label": "番茄", "categories": list(FANQIE_CATEGORIES)},
-        {"key": "纵横", "label": "纵横", "categories": list(ZONGHENG_CATEGORIES)},
+        {"key": "番茄", "label": "番茄", "categories": list(QIDIAN_CATEGORIES)},
+        {"key": "纵横", "label": "纵横", "categories": list(QIDIAN_CATEGORIES)},
     ]
 
 
 def category_rel_parts(label: str) -> tuple[str, ...]:
-    """分类值 → novels 相对目录层级：番茄-西方奇幻 → (番茄, 西方奇幻)。"""
+    """分类值 → novels 相对目录层级：番茄-都市 → (番茄, 都市)。"""
     src, cat = parse_category_label(label)
     if src:
         return (src, cat or UNCATEGORIZED)

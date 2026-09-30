@@ -72,80 +72,124 @@
         "url": "/api/legado/explore/%E8%B5%B7%E7%82%B9-%E7%9F%AD%E7%AF%87?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-西方奇幻",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E8%A5%BF%E6%96%B9%E5%A5%87%E5%B9%BB?page={{page}}&page_size=20"
+        "title": "番茄-玄幻",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E7%8E%84%E5%B9%BB?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-东方仙侠",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E4%B8%9C%E6%96%B9%E4%BB%99%E4%BE%A0?page={{page}}&page_size=20"
+        "title": "番茄-奇幻",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E5%A5%87%E5%B9%BB?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-科幻末世",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E7%A7%91%E5%B9%BB%E6%9C%AB%E4%B8%96?page={{page}}&page_size=20"
+        "title": "番茄-武侠",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E6%AD%A6%E4%BE%A0?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-都市日常",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E9%83%BD%E5%B8%82%E6%97%A5%E5%B8%B8?page={{page}}&page_size=20"
+        "title": "番茄-仙侠",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E4%BB%99%E4%BE%A0?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-都市修真",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E9%83%BD%E5%B8%82%E4%BF%AE%E7%9C%9F?page={{page}}&page_size=20"
+        "title": "番茄-都市",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E9%83%BD%E5%B8%82?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-都市高武",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E9%83%BD%E5%B8%82%E9%AB%98%E6%AD%A6?page={{page}}&page_size=20"
+        "title": "番茄-现实",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E7%8E%B0%E5%AE%9E?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-历史古代",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E5%8E%86%E5%8F%B2%E5%8F%A4%E4%BB%A3?page={{page}}&page_size=20"
+        "title": "番茄-军事",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E5%86%9B%E4%BA%8B?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-战神赘婿",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E6%88%98%E7%A5%9E%E8%B5%98%E5%A9%BF?page={{page}}&page_size=20"
+        "title": "番茄-历史",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E5%8E%86%E5%8F%B2?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-都市种田",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E9%83%BD%E5%B8%82%E7%A7%8D%E7%94%B0?page={{page}}&page_size=20"
+        "title": "番茄-游戏",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E6%B8%B8%E6%88%8F?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-传统玄幻",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E4%BC%A0%E7%BB%9F%E7%8E%84%E5%B9%BB?page={{page}}&page_size=20"
+        "title": "番茄-体育",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E4%BD%93%E8%82%B2?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-历史脑洞",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E5%8E%86%E5%8F%B2%E8%84%91%E6%B4%9E?page={{page}}&page_size=20"
+        "title": "番茄-科幻",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E7%A7%91%E5%B9%BB?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-悬疑脑洞",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E6%82%AC%E7%96%91%E8%84%91%E6%B4%9E?page={{page}}&page_size=20"
-      },
-      {
-        "title": "番茄-都市脑洞",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E9%83%BD%E5%B8%82%E8%84%91%E6%B4%9E?page={{page}}&page_size=20"
-      },
-      {
-        "title": "番茄-玄幻脑洞",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E7%8E%84%E5%B9%BB%E8%84%91%E6%B4%9E?page={{page}}&page_size=20"
+        "title": "番茄-诸天无限",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E8%AF%B8%E5%A4%A9%E6%97%A0%E9%99%90?page={{page}}&page_size=20"
       },
       {
         "title": "番茄-悬疑灵异",
         "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E6%82%AC%E7%96%91%E7%81%B5%E5%BC%82?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-抗战谍战",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E6%8A%97%E6%88%98%E8%B0%8D%E6%88%98?page={{page}}&page_size=20"
+        "title": "番茄-轻小说",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E8%BD%BB%E5%B0%8F%E8%AF%B4?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-游戏体育",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E6%B8%B8%E6%88%8F%E4%BD%93%E8%82%B2?page={{page}}&page_size=20"
+        "title": "番茄-短篇",
+        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E7%9F%AD%E7%AF%87?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-动漫衍生",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E5%8A%A8%E6%BC%AB%E8%A1%8D%E7%94%9F?page={{page}}&page_size=20"
+        "title": "纵横-玄幻",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E7%8E%84%E5%B9%BB?page={{page}}&page_size=20"
       },
       {
-        "title": "番茄-男频衍生",
-        "url": "/api/legado/explore/%E7%95%AA%E8%8C%84-%E7%94%B7%E9%A2%91%E8%A1%8D%E7%94%9F?page={{page}}&page_size=20"
+        "title": "纵横-奇幻",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E5%A5%87%E5%B9%BB?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-武侠",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E6%AD%A6%E4%BE%A0?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-仙侠",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E4%BB%99%E4%BE%A0?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-都市",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E9%83%BD%E5%B8%82?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-现实",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E7%8E%B0%E5%AE%9E?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-军事",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E5%86%9B%E4%BA%8B?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-历史",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E5%8E%86%E5%8F%B2?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-游戏",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E6%B8%B8%E6%88%8F?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-体育",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E4%BD%93%E8%82%B2?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-科幻",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E7%A7%91%E5%B9%BB?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-诸天无限",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E8%AF%B8%E5%A4%A9%E6%97%A0%E9%99%90?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-悬疑灵异",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E6%82%AC%E7%96%91%E7%81%B5%E5%BC%82?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-轻小说",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E8%BD%BB%E5%B0%8F%E8%AF%B4?page={{page}}&page_size=20"
+      },
+      {
+        "title": "纵横-短篇",
+        "url": "/api/legado/explore/%E7%BA%B5%E6%A8%AA-%E7%9F%AD%E7%AF%87?page={{page}}&page_size=20"
       },
       {
         "title": "未分类",

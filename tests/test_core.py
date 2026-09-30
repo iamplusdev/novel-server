@@ -87,7 +87,7 @@ class CoreTests(unittest.TestCase):
         from app.importer import import_all
         from app.models import Book
 
-        novels = self._tmp / "novels" / "玄幻"
+        novels = self._tmp / "novels" / "起点" / "玄幻"
         novels.mkdir(parents=True)
         (novels / "甲书.txt").write_text("第一章 开始\n内容甲", encoding="utf-8")
         (novels / "乙书.txt").write_text("第一章 开始\n内容乙", encoding="utf-8")
@@ -113,7 +113,7 @@ class CoreTests(unittest.TestCase):
         from app.importer import import_all
         from app.models import Chapter
 
-        novels = self._tmp / "novels" / "玄幻"
+        novels = self._tmp / "novels" / "起点" / "玄幻"
         novels.mkdir(parents=True)
         body = "第一章 开始\n正文甲内容\n\n第二章 继续\n正文乙内容"
         (novels / "偏移书.txt").write_text(body, encoding="utf-8")
@@ -144,7 +144,7 @@ class CoreTests(unittest.TestCase):
         from app.models import Book
         from app.routers import public as public_mod
 
-        novels = self._tmp / "novels" / "玄幻"
+        novels = self._tmp / "novels" / "未分类"
         novels.mkdir(parents=True)
         (novels / "目录书.txt").write_text("第一章 A\n甲\n第二章 B\n乙", encoding="utf-8")
         import_all()
@@ -167,7 +167,7 @@ class CoreTests(unittest.TestCase):
         """导入完成后状态带进度字段，可供进度条/日志使用。"""
         from app.importer import get_import_status, import_all
 
-        novels = self._tmp / "novels" / "玄幻"
+        novels = self._tmp / "novels" / "未分类"
         novels.mkdir(parents=True)
         (novels / "进度书.txt").write_text("第一章 开始\n内容", encoding="utf-8")
         res = import_all()
@@ -188,6 +188,30 @@ class CoreTests(unittest.TestCase):
         self.assertIn("cancel_requested", st)
         self.assertFalse(request_import_cancel())
 
+    def test_import_only_source_and_uncategorized(self) -> None:
+        """只扫书源+未分类：根目录散落 txt、其他目录、旧一级分类均跳过。"""
+        from app.importer import import_all
+
+        root = self._tmp / "novels"
+        (root / "起点" / "都市").mkdir(parents=True)
+        (root / "未分类").mkdir(parents=True)
+        (root / "玄幻").mkdir(parents=True)  # 旧一级分类，应跳过
+        (root / "备份").mkdir(parents=True)  # 其他目录，应跳过
+        (root / "起点" / "都市" / "源书.txt").write_text("第一章 A\n甲", encoding="utf-8")
+        (root / "未分类" / "散书.txt").write_text("第一章 B\n乙", encoding="utf-8")
+        (root / "根目录书.txt").write_text("第一章 C\n丙", encoding="utf-8")
+        (root / "玄幻" / "旧书.txt").write_text("第一章 D\n丁", encoding="utf-8")
+        (root / "备份" / "备书.txt").write_text("第一章 E\n戊", encoding="utf-8")
+
+        res = import_all()
+        self.assertEqual(len(res.added), 2, res.summary)
+        labels = " ".join(res.added)
+        self.assertIn("源书", labels)
+        self.assertIn("散书", labels)
+        self.assertNotIn("根目录书", labels)
+        self.assertNotIn("旧书", labels)
+        self.assertNotIn("备书", labels)
+
     def test_ensure_category_tag_public(self) -> None:
         from app.importer import ensure_category_tag
 
@@ -195,15 +219,36 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("未分类", ensure_category_tag("未分类,热血", "玄幻"))
 
     def test_two_level_category_map(self) -> None:
-        from app.config import category_tree, make_category_label, map_site_category
+        from app.config import (
+            QIDIAN_CATEGORIES,
+            category_tree,
+            make_category_label,
+            map_site_category,
+            to_qidian_category,
+        )
 
+        # 本地/起点：别名归到起点 15 类
         self.assertEqual(map_site_category("", "玄幻"), ("", "玄幻"))
         self.assertEqual(map_site_category("起点", "玄幻奇幻"), ("起点", "玄幻"))
         self.assertEqual(map_site_category("qidian", "武侠仙侠"), ("起点", "仙侠"))
-        self.assertEqual(map_site_category("番茄", "西方奇幻"), ("番茄", "西方奇幻"))
-        self.assertEqual(map_site_category("fanqie", "衍生"), ("番茄", "男频衍生"))
+        # 番茄/纵横原栏目 → 起点标准分类（书源前缀保留）
+        self.assertEqual(map_site_category("番茄", "西方奇幻"), ("番茄", "奇幻"))
+        self.assertEqual(map_site_category("fanqie", "衍生"), ("番茄", "诸天无限"))
+        self.assertEqual(map_site_category("番茄", "都市高武"), ("番茄", "都市"))
+        self.assertEqual(map_site_category("纵横", "玄幻奇幻"), ("纵横", "玄幻"))
+        self.assertEqual(map_site_category("纵横", "武侠仙侠"), ("纵横", "仙侠"))
+        self.assertEqual(map_site_category("纵横", "奇闻异事"), ("纵横", "悬疑灵异"))
+        self.assertEqual(map_site_category("纵横", "N次元"), ("纵横", "轻小说"))
+        # 风格标签只进 tags，不作分类
+        self.assertEqual(map_site_category("番茄", "第一人称"), ("番茄", "未分类"))
+        self.assertEqual(map_site_category("番茄", "开局"), ("番茄", "未分类"))
+        self.assertEqual(to_qidian_category("搞笑轻松"), "")
         self.assertEqual(make_category_label(*map_site_category("起点", "历史")), "起点-历史")
         self.assertEqual([x["key"] for x in category_tree()], ["", "起点", "番茄", "纵横"])
+        # 三家分类选项统一为起点 15 类
+        for node in category_tree():
+            if node["key"]:
+                self.assertEqual(node["categories"], list(QIDIAN_CATEGORIES))
 
     def test_source_category_filter(self) -> None:
         """书源+分类筛选：起点-都市 应能被 source=起点 & category=都市 命中。"""
@@ -255,6 +300,50 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(set(i["name"] for i in r2["items"]), {"甲", "丙"})
         db.close()
 
+    def test_fanqie_detail_state_parse(self) -> None:
+        """番茄详情：creationStatus→连载状态，categoryV2→起点分类；忽略上架态 status。"""
+        from app.scrapers.fanqie import (
+            _category_from_names,
+            _extract_initial_state,
+            _names_from_category_v2,
+            _status_from_code,
+        )
+
+        page = (
+            '<script>window.__INITIAL_STATE__={"common":{"id":""},'
+            '"page":{"bookName":"测试书","status":1,"category":"",'
+            '"categoryV2":"[{\\"Name\\":\\"都市高武\\",\\"MainCategory\\":true},'
+            '{\\"Name\\":\\"都市\\",\\"MainCategory\\":false}]",'
+            '"creationStatus":0,"wordNumber":12345}}</script>'
+        )
+        st = _extract_initial_state(page)
+        self.assertIsNotNone(st)
+        page_st = (st or {}).get("page") or {}
+        self.assertEqual(page_st.get("bookName"), "测试书")
+        # creationStatus=0 → 完结；不可用 status=1（上架态）误成连载
+        self.assertEqual(_status_from_code(page_st.get("creationStatus")), "完结")
+        self.assertEqual(_status_from_code(page_st.get("status")), "连载")
+        names = _names_from_category_v2(page_st.get("categoryV2"))
+        self.assertEqual(names, ["都市高武", "都市"])
+        self.assertEqual(_category_from_names(names), "都市")
+        self.assertEqual(page_st.get("wordNumber"), 12345)
+
+    def test_fanqie_category_v2_styles(self) -> None:
+        """categoryV2 支持 JSON 字符串 / list / 转义 Name。"""
+        from app.scrapers.fanqie import _category_from_names, _names_from_category_v2
+
+        self.assertEqual(
+            _names_from_category_v2('[{"Name":"西方奇幻","MainCategory":true}]'),
+            ["西方奇幻"],
+        )
+        self.assertEqual(
+            _names_from_category_v2([{"Name": "奇闻异事"}, {"Name": "灵异"}]),
+            ["奇闻异事", "灵异"],
+        )
+        # 风格标签不进分类
+        self.assertEqual(_category_from_names(["第一人称", "开局"]), "")
+        self.assertEqual(_category_from_names(["传统玄幻"]), "玄幻")
+
     def test_scrape_mode_normalize(self) -> None:
         """刮削方式归一：browser/fnos → chrome，未知 → auto。"""
         from app.scrapers.mode import normalize_mode
@@ -265,6 +354,49 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(normalize_mode("fnos-chrome"), "chrome")
         self.assertEqual(normalize_mode("nope"), "auto")
         self.assertEqual(normalize_mode(None), "auto")
+
+    def test_chrome_available_cache(self) -> None:
+        """chrome_available：探测结果短时缓存，reset 后重新探测。"""
+        from unittest import mock
+
+        from app.scrapers import browser_fallback as bf
+
+        bf.reset_chrome_detect_cache()
+        with mock.patch.object(bf, "probe_cdp", return_value=True), mock.patch.object(
+            bf, "playwright_installed", return_value=True
+        ) as m:
+            self.assertTrue(bf.chrome_available())
+            self.assertTrue(bf.chrome_available())
+            # 缓存命中，只探一次
+            self.assertEqual(m.call_count, 1)
+        bf.reset_chrome_detect_cache()
+        with mock.patch.object(bf, "probe_cdp", return_value=False), mock.patch.object(
+            bf, "playwright_installed", return_value=True
+        ) as m2:
+            self.assertFalse(bf.chrome_available())
+            self.assertFalse(bf.chrome_available())
+            self.assertEqual(m2.call_count, 1)
+        bf.reset_chrome_detect_cache()
+
+    def test_chrome_available_requires_playwright(self) -> None:
+        """CDP 可达但缺 Playwright 时，chrome_available 应为 False（auto 走 API）。"""
+        from unittest import mock
+
+        from app.scrapers import browser_fallback as bf
+
+        bf.reset_chrome_detect_cache()
+        with mock.patch.object(bf, "probe_cdp", return_value=True), mock.patch.object(
+            bf, "playwright_installed", return_value=False
+        ):
+            self.assertFalse(bf.chrome_available())
+        bf.reset_chrome_detect_cache()
+
+    def test_describe_modes_auto_hint(self) -> None:
+        """auto 文案应体现「检测 Chrome 优先」。"""
+        from app.scrapers.mode import MODE_AUTO, describe_modes
+
+        auto = next(i for i in describe_modes() if i["value"] == MODE_AUTO)
+        self.assertIn("Chrome", auto["hint"])
 
     def test_book_list_item_title_alias(self) -> None:
         """列表项 name 与 title 同值，契约统一。"""
