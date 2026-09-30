@@ -1,5 +1,5 @@
 fastapi>=0.110,<1.0
-uvicorn[standard]>=0.27,<1.0
+# 不用 [standard]：省掉 uvloop/watchfiles/websockets 等常驻依赖，降内存
+uvicorn>=0.27,<1.0
 sqlalchemy>=2.0,<3.0
 python-multipart>=0.0.9,<1.0
-pytest>=8.0,<9.0

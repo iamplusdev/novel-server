@@ -3,7 +3,7 @@
 
 端口约定（生产/本地同一套）：
   - 后端 API  : PORT          默认 7312
-  - 前端入口  : FRONTEND_PORT 默认 7311（静态 dist + /api 反代）
+  - 前端入口  : FRONTEND_PORT 默认 7311（同一 ASGI 应用：静态 + /api）
 
 开发时前端也可用 Vite：cd frontend && npm run dev（默认 5173，代理到 7312）。
 """
@@ -31,12 +31,10 @@ def main() -> None:
     init_db()
 
     api_host = settings.host
-    # 前端反代目标：本机回环即可（同机部署）
-    api_proxy_host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host
 
     print("Novel Library")
-    print(f"  前端入口    http://{settings.host}:{settings.frontend_port}/  (管理后台)")
-    print(f"  后端 API    http://{settings.host}:{settings.port}/  (/api /covers /health)")
+    print(f"  前端入口    http://{api_host}:{settings.frontend_port}/  (管理后台)")
+    print(f"  后端 API    http://{api_host}:{settings.port}/  (/api /covers /health)")
     print(f"  Public base {settings.public_base_url}")
     print(f"  Novels dir  {settings.novels_dir}")
     print(f"  Database    {settings.database_path}")
@@ -46,17 +44,13 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    # 前端静态服务（daemon 线程）
-    start_frontend(
-        dist_dir=DIST_DIR,
-        host=api_host,
-        port=settings.frontend_port,
-        api_host=api_proxy_host,
-        api_port=settings.port,
-    )
+    # 前端入口端口：同一 FastAPI app（静态 + API 同源），守护线程监听
+    from app.main import app
 
-    # 后端 API（主线程阻塞）
-    uvicorn.run("app.main:app", host=api_host, port=settings.port, reload=False)
+    start_frontend(app=app, host=api_host, port=settings.frontend_port)
+
+    # 后端 API 端口（主线程阻塞）
+    uvicorn.run(app, host=api_host, port=settings.port, reload=False)
 
 
 if __name__ == "__main__":

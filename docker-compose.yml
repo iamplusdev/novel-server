@@ -1,6 +1,10 @@
 services:
   novel-server:
-    build: .
+    build:
+      context: .
+      # 需要 Chrome 刮削时置 1，镜像内安装 Playwright（CDP 连宿主机 Chrome）
+      args:
+        INSTALL_BROWSER_DEPS: "1"
     image: novel-server:latest
     container_name: novel-server
     restart: unless-stopped
@@ -26,6 +30,8 @@ services:
       SCRAPER_BROWSER_FALLBACK: "1"
       CDP_URL: "http://127.0.0.1:16002"
       CDP_READY_WAIT: "20"
+      # 限制 glibc 多线程 arena 数，降低常驻内存碎片
+      MALLOC_ARENA_MAX: "2"
     volumes:
       # 源 TXT、数据库、封面 持久化（宿主机目录，不进镜像）
       - ./novels:/app/novels
