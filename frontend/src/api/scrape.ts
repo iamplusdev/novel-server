@@ -62,7 +62,7 @@ export const SCRAPE_SOURCE_OPTS = [
 
 /** 默认刮削方式选项（后端 /modes 可覆盖） */
 export const SCRAPE_MODE_OPTS = [
-  { value: "auto", label: "自动", hint: "优先 API，失败后切 Chrome" },
+  { value: "auto", label: "自动", hint: "检测到 fnOS Chrome 则优先 Chrome，否则走 API" },
   { value: "api", label: "API 直连", hint: "轻量 HTTP，速度快" },
   { value: "chrome", label: "Chrome 浏览器", hint: "fnOS Chrome / CDP 渲染取页" },
 ] as const;

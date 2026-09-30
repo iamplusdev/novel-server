@@ -82,6 +82,39 @@ export interface TocChapter {
   title: string;
 }
 
+/** 目录展示序号：库内 index 为 0 基，界面统一用 1 基 */
+export function tocNo(index: number): number {
+  return (Number(index) || 0) + 1;
+}
+
+/** 目录标题：空标题或与书名重复时返回空（由序号列展示），避免出现「0 书名」伪条目 */
+export function tocTitle(
+  title: string | undefined | null,
+  bookName?: string | null,
+): string {
+  const t = (title || "").trim();
+  const name = (bookName || "").trim();
+  if (!t || (name && t === name)) return "";
+  return t;
+}
+
+/** 目录伪占位条目（空标题/书名重复）：列表中直接过滤，不展示 */
+export function isTocPlaceholder(
+  title: string | undefined | null,
+  bookName?: string | null,
+): boolean {
+  return tocTitle(title, bookName) === "";
+}
+
+/** 阅读页章名：无有效标题时回退「第 N 章」 */
+export function chapterHeading(
+  title: string | undefined | null,
+  index: number,
+  bookName?: string | null,
+): string {
+  return tocTitle(title, bookName) || `第 ${tocNo(index)} 章`;
+}
+
 /** 拉取全部目录（按 total 翻页），返回列表 + 真实总章数 */
 export async function fetchAllBookChapters(bookId: number | string): Promise<{
   items: TocChapter[];

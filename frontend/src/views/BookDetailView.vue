@@ -2,7 +2,7 @@
 /**
  * 书籍详情编辑：书名/作者/两级分类/状态/标签/简介、封面上传、删除、章节预览。
  */
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -10,6 +10,7 @@ import {
   fetchAllBookChapters,
   fetchBook,
   fetchStats,
+  isTocPlaceholder,
   updateBook,
   uploadCover,
 } from "@/api/admin";
@@ -76,8 +77,17 @@ const tocLoading = ref(false);
 const TOC_PAGE_SIZE = 200;
 const tocPage = ref<number | "all">("all");
 
+/** 目录展示项：过滤伪占位行后附带 1 基顺序序号 */
+type TocDisplayItem = TocChapter & { no: number };
+
+const displayTocItems = computed<TocDisplayItem[]>(() => {
+  const bookName = form.title || book.value?.name;
+  const named = tocItems.value.filter((c) => !isTocPlaceholder(c.title, bookName));
+  return named.map((c, i) => ({ ...c, no: i + 1 }));
+});
+
 const tocPageRanges = computed(() => {
-  const total = tocItems.value.length || tocTotal.value;
+  const total = displayTocItems.value.length || tocTotal.value;
   const pages: { key: number; label: string }[] = [];
   if (total <= TOC_PAGE_SIZE) return pages;
   for (let start = 1; start <= total; start += TOC_PAGE_SIZE) {
@@ -87,11 +97,71 @@ const tocPageRanges = computed(() => {
   return pages;
 });
 
+/** 页签条横向滚动（章节极多时避免铺满换行） */
+const tocPagesTrack = ref<HTMLElement | null>(null);
+const tocScrollLeft = ref(false);
+const tocScrollRight = ref(false);
+
+/** 页签较多时才显示左右按钮 */
+const showTocNav = computed(() => tocPageRanges.value.length > 3);
+
+function updateTocScrollState() {
+  const el = tocPagesTrack.value;
+  if (!el) {
+    tocScrollLeft.value = false;
+    tocScrollRight.value = false;
+    return;
+  }
+  const max = el.scrollWidth - el.clientWidth;
+  tocScrollLeft.value = el.scrollLeft > 1;
+  tocScrollRight.value = el.scrollLeft < max - 1;
+}
+
+function scrollTocPages(dir: -1 | 1) {
+  const el = tocPagesTrack.value;
+  if (!el) return;
+  el.scrollBy({ left: dir * Math.max(el.clientWidth * 0.6, 120), behavior: "smooth" });
+}
+
+function scrollTocIntoView() {
+  const el = tocPagesTrack.value;
+  if (!el) return;
+  const active = el.querySelector<HTMLElement>(".page-chip.is-active");
+  if (active) {
+    const left = active.offsetLeft - el.clientWidth / 2 + active.offsetWidth / 2;
+    el.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
+  }
+  // 滚动动画结束后刷新按钮态
+  window.setTimeout(updateTocScrollState, 280);
+}
+
+watch(
+  tocPage,
+  () => {
+    nextTick(() => {
+      scrollTocIntoView();
+    });
+  },
+  { flush: "post" },
+);
+
+onMounted(() => {
+  nextTick(() => {
+    updateTocScrollState();
+  });
+  window.addEventListener("resize", updateTocScrollState);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", updateTocScrollState);
+});
+
 const visibleTocItems = computed(() => {
-  if (tocPage.value === "all") return tocItems.value;
+  if (tocPage.value === "all") return displayTocItems.value;
   const start = Number(tocPage.value);
   const end = start + TOC_PAGE_SIZE - 1;
-  return tocItems.value.filter((c) => c.index >= start && c.index <= end);
+  // 页签按过滤后的 1 基展示序号分页
+  return displayTocItems.value.filter((c) => c.no >= start && c.no <= end);
 });
 
 function applyBook(b: BookDetail) {
@@ -129,6 +199,11 @@ async function loadToc() {
       title: c.title,
     }));
     tocTotal.value = book.value?.chapter_count || tocItems.value.length;
+    // 页签条出现后刷新左右按钮可用态
+    nextTick(() => {
+      updateTocScrollState();
+      scrollTocIntoView();
+    });
   } finally {
     tocLoading.value = false;
   }
@@ -320,7 +395,7 @@ watch(bookId, () => void load());
             上传封面
             <input type="file" accept="image/*" hidden @change="onCoverPick" />
           </label>
-          <p class="muted-xs">支持 jpg / png / webp / gif</p>
+          <p class="muted-xs cover-hint">jpg / png / webp / gif</p>
 
           <button type="button" class="ghost-btn block" @click="scrapeOpen = true">
             <AppIcon name="search" :size="14" />
@@ -409,7 +484,7 @@ watch(bookId, () => void load());
           </div>
 
           <h2 class="section-title">简介</h2>
-          <textarea v-model="form.intro" class="field-textarea" rows="8" />
+          <textarea v-model="form.intro" class="field-textarea" rows="4" />
         </section>
       </div>
 
@@ -427,14 +502,38 @@ watch(bookId, () => void load());
               全部
             </button>
             <button
-              v-for="p in tocPageRanges"
-              :key="p.key"
+              v-if="showTocNav"
               type="button"
-              class="page-chip"
-              :class="{ 'is-active': tocPage === p.key }"
-              @click="tocPage = p.key"
+              class="page-nav-btn"
+              :disabled="!tocScrollLeft"
+              title="向前翻页"
+              aria-label="向前翻页"
+              @click="scrollTocPages(-1)"
             >
-              {{ p.label }}
+              ‹
+            </button>
+            <div ref="tocPagesTrack" class="toc-pages-track" @scroll.passive="updateTocScrollState">
+              <button
+                v-for="p in tocPageRanges"
+                :key="p.key"
+                type="button"
+                class="page-chip"
+                :class="{ 'is-active': tocPage === p.key }"
+                @click="tocPage = p.key"
+              >
+                {{ p.label }}
+              </button>
+            </div>
+            <button
+              v-if="showTocNav"
+              type="button"
+              class="page-nav-btn"
+              :disabled="!tocScrollRight"
+              title="向后翻页"
+              aria-label="向后翻页"
+              @click="scrollTocPages(1)"
+            >
+              ›
             </button>
           </div>
           <span class="muted-xs toc-count">共 {{ tocTotal || book?.chapter_count || 0 }} 章</span>
@@ -447,7 +546,7 @@ watch(bookId, () => void load());
             class="toc-side-item"
             @click="openReaderAt(ch)"
           >
-            <span class="idx muted-xs">{{ ch.index }}</span>
+            <span class="idx muted-xs">{{ ch.no }}</span>
             <span class="ch-title">{{ ch.title }}</span>
           </button>
           <p v-if="!visibleTocItems.length && !tocLoading" class="muted">暂无章节。</p>
@@ -501,7 +600,7 @@ watch(bookId, () => void load());
 }
 
 .primary-btn {
-  height: 36px;
+  height: 32px;
   padding: 0 16px;
   border: none;
   border-radius: var(--radius-sm);
@@ -526,7 +625,7 @@ watch(bookId, () => void load());
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 36px;
+  height: 32px;
   padding: 0 12px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -559,36 +658,40 @@ watch(bookId, () => void load());
 }
 
 .detail-page {
-  /* 一屏装下：扣掉顶栏/内边距，页面本身不滚动 */
+  /* 一屏装下：扣掉顶栏/内边距；页面自身不滚动，仅目录列表滚动 */
   height: calc(100vh - 100px);
   min-height: 520px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .layout {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   flex: 1;
   min-height: 0;
-  overflow: hidden;
 }
 
 .top-row {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: var(--space-4);
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: var(--space-3);
   align-items: stretch;
-  /* 上排固定约 1/3 屏，避免撑出页面滚动 */
-  height: clamp(240px, 36vh, 360px);
+  /* 上排完整展示且不撑出一屏；高度随内容，尽量压缩 */
   flex-shrink: 0;
-  min-height: 0;
+  max-height: 52%;
 }
 
 @media (max-width: 900px) {
+  .detail-page {
+    height: auto;
+    min-height: calc(100vh - 100px);
+    overflow: visible;
+  }
+
   .top-row {
     grid-template-columns: 1fr;
     height: auto;
@@ -605,13 +708,18 @@ watch(bookId, () => void load());
     overflow: visible;
     height: auto;
   }
+
+  .toc-side {
+    min-height: 240px;
+    overflow: hidden;
+  }
 }
 
 .toc-side {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  /* 目录吃满剩余高度，列表内滚动 */
+  /* 目录吃满剩余高度，仅列表内滚动（页面无滚动条） */
   flex: 1;
   overflow: hidden;
 }
@@ -630,10 +738,28 @@ watch(bookId, () => void load());
 
 .toc-pages {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   flex: 1;
   min-width: 0;
+}
+
+.toc-pages-track {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  flex: 1;
+  padding: 2px 0;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+}
+
+.toc-pages-track::-webkit-scrollbar {
+  display: none;
 }
 
 .page-chip {
@@ -645,6 +771,36 @@ watch(bookId, () => void load());
   border-radius: var(--radius-full);
   cursor: pointer;
   font-family: inherit;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.page-nav-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  padding: 0;
+}
+
+.page-nav-btn:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.page-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .page-chip:hover {
@@ -726,11 +882,10 @@ watch(bookId, () => void load());
 .cover-side {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  height: 100%;
+  gap: 6px;
   min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  /* 封面区完整展示，不出现滚动条 */
+  overflow: hidden;
 }
 
 .cover-side .meta-block {
@@ -738,24 +893,26 @@ watch(bookId, () => void load());
 }
 
 .form-side {
-  height: 100%;
-  min-height: 0;
   min-width: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  min-height: 0;
+  /* 基础信息完整展示，不出现滚动条 */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .cover-img {
   width: 100%;
-  aspect-ratio: 3 / 4;
+  height: 168px;
   object-fit: cover;
   border-radius: var(--radius-md);
   background: var(--color-surface-2);
+  flex-shrink: 0;
 }
 
 .cover-placeholder {
   width: 100%;
-  aspect-ratio: 3 / 4;
+  height: 168px;
   border-radius: var(--radius-md);
   background: linear-gradient(160deg, var(--color-surface-2), var(--color-surface-3));
   display: flex;
@@ -765,6 +922,7 @@ watch(bookId, () => void load());
   text-align: center;
   padding: 12px;
   word-break: break-all;
+  flex-shrink: 0;
 }
 
 .upload-label {
@@ -774,10 +932,11 @@ watch(bookId, () => void load());
   gap: 6px;
   border: 1px dashed var(--color-border-strong);
   border-radius: var(--radius-sm);
-  padding: 8px 12px;
+  padding: 5px 10px;
   cursor: pointer;
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--color-text-2);
+  flex-shrink: 0;
 }
 
 .upload-label:hover {
@@ -785,11 +944,16 @@ watch(bookId, () => void load());
   color: var(--color-accent);
 }
 
+.cover-hint {
+  margin: 0;
+  flex-shrink: 0;
+}
+
 .meta-block {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-top: 8px;
+  gap: 4px;
+  padding-top: 6px;
   border-top: 1px solid var(--color-border);
 }
 
@@ -813,7 +977,7 @@ watch(bookId, () => void load());
 .path-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .path-head {
@@ -842,18 +1006,20 @@ watch(bookId, () => void load());
   font-size: 11px;
   color: var(--color-text-3);
   word-break: break-all;
-  max-height: 36px;
+  max-height: 28px;
   overflow: hidden;
 }
 
 .path.is-open {
-  max-height: none;
+  max-height: 36px;
+  overflow: auto;
 }
 
 .section-title {
-  margin: var(--space-3) 0 var(--space-2);
-  font-size: var(--text-base);
+  margin: 10px 0 6px;
+  font-size: var(--text-sm);
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .section-title:first-child {
@@ -863,8 +1029,9 @@ watch(bookId, () => void load());
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-bottom: var(--space-3);
+  gap: 4px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .field-label {
@@ -878,8 +1045,8 @@ watch(bookId, () => void load());
 }
 
 .field-input {
-  height: 36px;
-  padding: 0 12px;
+  height: 32px;
+  padding: 0 10px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface-2);
@@ -897,16 +1064,19 @@ watch(bookId, () => void load());
 
 .field-textarea {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface-2);
   color: var(--color-text);
   font-size: var(--text-sm);
   font-family: inherit;
-  line-height: 1.65;
-  resize: vertical;
+  line-height: 1.5;
+  resize: none;
   outline: none;
+  flex: 1;
+  min-height: 64px;
+  max-height: 120px;
 }
 
 .field-textarea:focus {
@@ -918,13 +1088,13 @@ watch(bookId, () => void load());
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 8px;
 }
 
 .three-col {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: 12px;
+  gap: 8px;
 }
 
 @media (max-width: 720px) {
@@ -944,11 +1114,14 @@ watch(bookId, () => void load());
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
-  padding: 8px;
+  padding: 6px 8px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface-2);
-  min-height: 40px;
+  min-height: 34px;
+  flex-shrink: 0;
+  max-height: 64px;
+  overflow: hidden;
 }
 
 .tag-item {
