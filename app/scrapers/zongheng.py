@@ -10,6 +10,7 @@ import json
 import re
 import urllib.parse
 
+from ..config import to_qidian_category
 from .http_util import HttpError, http_get as _http_get_raw, http_get_bytes
 from .qidian import ScrapeError, ScrapeHit, clean_tag_token
 
@@ -21,83 +22,10 @@ UA = (
 TIMEOUT = 20
 _SEARCH_API = "https://search.zongheng.com/search/book"
 
-# 纵横站内栏目（与官网一级栏目一致）
-_ZH_CATEGORY_MAP = {
-    "玄幻奇幻": "玄幻奇幻",
-    "武侠仙侠": "武侠仙侠",
-    "都市": "都市",
-    "历史": "历史",
-    "科幻": "科幻",
-    "奇闻异事": "奇闻异事",
-    "游戏": "游戏",
-    "N次元": "N次元",
-    "现实题材": "现实题材",
-    "体育": "体育",
-    "军事": "军事",
-    # 旧栏目名/别名/细分名 → 一级栏目
-    "玄幻": "玄幻奇幻",
-    "奇幻": "玄幻奇幻",
-    "玄幻小说": "玄幻奇幻",
-    "异世大陆": "玄幻奇幻",
-    "异界大陆": "玄幻奇幻",
-    "转世重生": "玄幻奇幻",
-    "东方玄幻": "玄幻奇幻",
-    "西方奇幻": "玄幻奇幻",
-    "武侠": "武侠仙侠",
-    "仙侠": "武侠仙侠",
-    "修真": "武侠仙侠",
-    "传统武侠": "武侠仙侠",
-    "都市高武": "都市",
-    "都市异能": "都市",
-    "都市生活": "都市",
-    "竞技": "体育",
-    "电子竞技": "游戏",
-    "灵异": "奇闻异事",
-    "悬疑": "奇闻异事",
-    "同人": "N次元",
-    "女生": "N次元",
-    "二次元": "N次元",
-    "轻小说": "N次元",
-    "短篇": "现实题材",
-    "现实": "现实题材",
-    "军史": "军事",
-    "战争": "军事",
-    "架空历史": "历史",
-    "穿越历史": "历史",
-}
-
-# 一级栏目集合（精确匹配用）
-_ZH_PARENT_CATS = {
-    "玄幻奇幻",
-    "武侠仙侠",
-    "都市",
-    "历史",
-    "科幻",
-    "奇闻异事",
-    "游戏",
-    "N次元",
-    "现实题材",
-    "体育",
-    "军事",
-}
-
 
 def map_category(raw: str) -> str:
-    """规范化纵横站内分类名 → 一级栏目。
-
-    只做精确/别名映射，**不做短词包含**（避免把标签「异界」误成分类）。
-    """
-    s = (raw or "").strip()
-    if not s:
-        return ""
-    if s in _ZH_PARENT_CATS:
-        return s
-    if s in _ZH_CATEGORY_MAP:
-        return _ZH_CATEGORY_MAP[s]
-    # 「科幻小说」这类带后缀：仅当去掉「小说」后命中才映射
-    if s.endswith("小说") and s[:-2] in _ZH_CATEGORY_MAP:
-        return _ZH_CATEGORY_MAP[s[:-2]]
-    return ""
+    """纵横原栏目/别名 → 起点 15 类；未知返回空串（由写库侧落未分类）。"""
+    return to_qidian_category(raw)
 
 
 def _http_get(url: str, headers: dict | None = None) -> str:
