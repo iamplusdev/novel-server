@@ -23,12 +23,12 @@ const props = withDefaults(
   },
 );
 
-/** 尺寸档位：大/中/小，控制元信息密度 */
+/** 尺寸档位：大/中/小，控制元信息密度（滑杆 120–220） */
 const sizeTier = computed(() => {
   if (props.view === "list") return "lg";
   const w = Number(props.coverWidth) || 150;
-  if (w >= 140) return "lg";
-  if (w >= 110) return "md";
+  if (w >= 160) return "lg";
+  if (w >= 130) return "md";
   return "sm";
 });
 
@@ -157,6 +157,11 @@ function statusClass(status: string) {
         <span>{{ book.chapter_count ?? "—" }}章</span>
       </div>
     </div>
+
+    <!-- 列表模式：右侧简介，填补空白 -->
+    <div v-if="view === 'list'" class="intro-block" :title="book.intro || ''">
+      {{ book.intro || "暂无简介" }}
+    </div>
   </article>
 </template>
 
@@ -188,10 +193,10 @@ function statusClass(status: string) {
   box-shadow: 0 0 0 2px var(--color-accent-ring);
 }
 
-/* ---- 列表模式 ---- */
+/* ---- 列表模式：封面 | 基本信息 | 简介 ---- */
 .book-card.is-list {
   display: grid;
-  grid-template-columns: 72px 1fr;
+  grid-template-columns: 72px minmax(120px, 0.85fr) minmax(0, 1.5fr);
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-2);
@@ -213,10 +218,30 @@ function statusClass(status: string) {
 
 .book-card.is-list .meta {
   padding: 0;
+  min-height: 0;
+  gap: 4px;
 }
 
 .book-card.is-list .progress-slot {
   max-width: 220px;
+}
+
+/* 列表信息列较窄：隐藏标签行，高度更整齐 */
+.book-card.is-list .tags {
+  display: none;
+}
+
+/* 右侧简介：两行省略，填满剩余空白 */
+.intro-block {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+  line-height: 1.55;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .cover-wrap {
@@ -303,11 +328,12 @@ function statusClass(status: string) {
   gap: 6px;
   /* 元信息区高度固定，网格卡片对齐 */
   min-height: 118px;
+  min-width: 0;
 }
 
 /* 中卡：隐藏标签/统计，书名可两行 */
 .book-card.size-md .meta {
-  min-height: 78px;
+  min-height: 82px;
   padding: 8px 10px 10px;
   gap: 4px;
 }
@@ -324,7 +350,7 @@ function statusClass(status: string) {
 
 /* 小卡：仅书名一行省略 */
 .book-card.size-sm .meta {
-  min-height: 42px;
+  min-height: 44px;
   padding: 6px 8px 8px;
   gap: 0;
 }

@@ -46,8 +46,10 @@ const gridStyle = computed(() => {
   if (viewMode.value === "list") {
     return { gridTemplateColumns: "1fr" };
   }
+  // 固定列宽 + 左对齐：卡片等宽，不被 1fr 拉变形
   return {
-    gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${coverWidth.value}px), 1fr))`,
+    gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${coverWidth.value}px), ${coverWidth.value}px))`,
+    justifyContent: "start",
   };
 });
 
@@ -58,6 +60,15 @@ function computePageSize(): number {
   const wrap = gridWrapRef.value;
   const gap = 14;
   const width = wrap?.clientWidth || 960;
+
+  // 列表模式：按行高约 68px 估行数，避免套用封面高度导致每页过少
+  if (viewMode.value === "list") {
+    const rowH = 68;
+    const viewH = window.innerHeight - 260;
+    const rows = Math.max(6, Math.floor((viewH + gap) / (rowH + gap)));
+    return Math.min(100, Math.max(rows * 2, 12));
+  }
+
   const coverW = Math.floor(Number(coverWidth.value) || 150);
   const cols = Math.max(2, Math.floor((width + gap) / (coverW + gap)));
   const coverH = (coverW * 4) / 3 + 72;
@@ -87,6 +98,8 @@ function onGridSize() {
 function onViewModeChange(mode: "grid" | "list") {
   viewMode.value = mode;
   localStorage.setItem("novel_view_mode", mode);
+  // 切换视图后按新模式重算每页数量
+  applyPageSize();
 }
 
 function onSearchInput() {
@@ -270,8 +283,8 @@ function onResize() {
           <input
             v-model.number="coverWidth"
             type="range"
-            min="110"
-            max="240"
+            min="120"
+            max="220"
             step="10"
             class="size-slider"
             aria-label="封面大小"
@@ -554,6 +567,15 @@ function onResize() {
 .batch-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+/* 批量条内按钮统一高度，保证四按钮同行对齐 */
+.batch-actions .ghost-btn,
+.batch-actions .primary-btn {
+  height: 32px;
+  margin-top: 0;
+  padding: 0 12px;
 }
 
 /* PC 书库铺满主区，不限制 1280 内容宽 */
@@ -625,8 +647,7 @@ function onResize() {
 }
 
 .primary-btn {
-  margin-top: 8px;
-  height: 36px;
+  height: 32px;
   padding: 0 16px;
   border: none;
   border-radius: var(--radius-sm);
@@ -688,10 +709,9 @@ function onResize() {
     display: none;
   }
 
-  /* 移动端默认更密网格，封面不占满宽 */
+  /* 移动端走尺寸档位（120px 起），不强制过小列宽 */
   .grid-wrap {
     gap: 10px;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 100px), 1fr)) !important;
   }
 
   /* 工具条纵向堆叠，筛选可横向滚动 */

@@ -136,6 +136,8 @@ export interface BatchStatus {
   matched?: number;
   skipped?: number;
   failed?: number;
+  /** auto 解析后的实际取数通道：chrome | api */
+  resolved?: string;
   log?: { time: string; message: string }[];
   last_error?: string;
   cancel_requested?: boolean;
@@ -188,4 +190,6 @@ export interface LibraryReport {
   issues: LibraryIssue[];
   duplicate_groups: number;
   issue_count: number;
+  /** 是否为深度体检（含正文乱码/控制符检查） */
+  deep?: boolean;
 }

@@ -6,9 +6,11 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
+  chapterHeading,
   fetchAllBookChapters,
   fetchBook,
   fetchChapterContent,
+  isTocPlaceholder,
   updateReadProgress,
 } from "@/api/admin";
 import AppIcon from "@/components/AppIcon.vue";
@@ -53,6 +55,12 @@ const bookId = computed(() => {
 });
 
 const chapters = computed(() => tocItems.value);
+/** 目录展示项：过滤伪占位行（空标题/书名重复）后附带 1 基顺序序号 */
+const displayChapters = computed(() => {
+  const bookName = book.value?.name;
+  const named = tocItems.value.filter((c) => !isTocPlaceholder(c.title, bookName));
+  return named.map((c, i) => ({ ...c, no: i + 1 }));
+});
 const activeChapter = computed(
   () => chapters.value.find((c) => c.id === activeChapterId.value) || chapters.value[0] || null,
 );
@@ -277,7 +285,9 @@ onUnmounted(() => {
 
       <!-- 中：当前章节名（相对视口水平居中） -->
       <div class="top-center">
-        <div class="chapter-name">{{ activeChapter?.title || "选择章节" }}</div>
+        <div class="chapter-name">
+          {{ activeChapter ? chapterHeading(activeChapter.title, activeChapter.index, book?.name) : "选择章节" }}
+        </div>
       </div>
 
       <!-- 右：操作 -->
@@ -327,17 +337,17 @@ onUnmounted(() => {
         </div>
         <div class="toc-list">
           <button
-            v-for="ch in chapters"
+            v-for="ch in displayChapters"
             :key="ch.id"
             type="button"
             class="toc-item"
             :class="{ 'is-active': ch.id === activeChapter?.id }"
             @click="goChapter(ch.id)"
           >
-            <span class="idx">{{ ch.index }}</span>
+            <span class="idx">{{ ch.no }}</span>
             <span class="title">{{ ch.title }}</span>
           </button>
-          <p v-if="!chapters.length" class="muted toc-empty">暂无目录</p>
+          <p v-if="!displayChapters.length" class="muted toc-empty">暂无目录</p>
         </div>
       </aside>
       <!-- 窄屏点遮罩关目录 -->
@@ -350,7 +360,9 @@ onUnmounted(() => {
       <!-- 正文区 -->
       <main ref="contentEl" class="content" :style="readerStyle">
         <article class="article">
-          <h1 class="chapter-title">{{ activeChapter?.title || "开始阅读" }}</h1>
+          <h1 class="chapter-title">
+            {{ activeChapter ? chapterHeading(activeChapter.title, activeChapter.index, book?.name) : "开始阅读" }}
+          </h1>
           <div v-if="contentLoading" class="placeholder-body muted">正文加载中…</div>
           <div v-else-if="chapterError" class="placeholder-body muted">{{ chapterError }}</div>
           <div v-else-if="chapterText" class="chapter-body">

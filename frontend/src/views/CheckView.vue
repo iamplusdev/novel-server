@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
  * 书库体检：重复 / 异常 / 刮削 三页签。
+ * 进入页面不自动扫描；点「开始/重新扫描」才执行（快速/深度可选），结果缓存在会话内。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -38,6 +39,35 @@ watch(
 );
 const report = ref<LibraryReport | null>(null);
 const reportLoading = ref(false);
+/** 深度体检：读正文查乱码/控制符，大库较慢 */
+const deepScan = ref(false);
+/** 是否已扫描过（含会话缓存恢复） */
+const scanned = ref(false);
+
+/** 会话内缓存报告，切走再进不重扫 */
+const REPORT_CACHE_KEY = "novel-library-report";
+
+function restoreReportCache(): boolean {
+  try {
+    const raw = sessionStorage.getItem(REPORT_CACHE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw) as LibraryReport;
+    if (!data || typeof data !== "object") return false;
+    report.value = data;
+    scanned.value = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function saveReportCache(r: LibraryReport) {
+  try {
+    sessionStorage.setItem(REPORT_CACHE_KEY, JSON.stringify(r));
+  } catch {
+    /* 缓存失败不影响功能 */
+  }
+}
 
 const batch = ref<BatchStatus | null>(null);
 /** all=按起点→番茄→纵横顺序，命中即停 */
@@ -51,9 +81,10 @@ const acting = ref(false);
 let handle: SseHandle | null = null;
 
 const summary = computed(() => {
+  if (!scanned.value) return "未扫描";
   const r = report.value;
   if (!r) return "未检查";
-  return `重复 ${r.duplicate_groups || 0} 组 · 异常 ${r.issue_count || 0}`;
+  return `重复 ${r.duplicate_groups || 0} 组 · 异常 ${r.issue_count || 0}${r.deep ? " · 深度" : ""}`;
 });
 
 const batchPercent = computed(() => {
@@ -108,7 +139,10 @@ function fmtWords(n?: number) {
 async function loadReport() {
   reportLoading.value = true;
   try {
-    report.value = await fetchLibraryReport();
+    const r = await fetchLibraryReport(deepScan.value);
+    report.value = r;
+    scanned.value = true;
+    saveReportCache(r);
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "加载体检报告失败");
   } finally {
@@ -117,6 +151,7 @@ async function loadReport() {
 }
 
 async function refreshAll() {
+  // 修复/合并后按当前深度档位重扫一次
   await Promise.all([loadReport(), lib.loadBooks(), lib.loadStats()]);
 }
 
@@ -168,7 +203,10 @@ async function onRepairAll() {
   }
   acting.value = true;
   try {
-    const res = await repairAll("auto");
+    // 只修当前报告里已列出的问题书，避免隐式全库深扫
+    const ids = (report.value?.issues || []).map((i) => i.book_id);
+    const uniqueIds = [...new Set(ids)];
+    const res = await repairAll("auto", uniqueIds.length ? uniqueIds : undefined);
     ElMessage.success(`已修复 ${res.count || 0} 本`);
     await refreshAll();
   } catch (e) {
@@ -276,7 +314,9 @@ async function onRefreshBatch() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadReport(), onRefreshBatch()]);
+  // 只恢复会话缓存，不自动扫描；无缓存则展示「未扫描」空态
+  restoreReportCache();
+  await onRefreshBatch();
 });
 onUnmounted(stopWatch);
 </script>
@@ -289,9 +329,13 @@ onUnmounted(stopWatch);
         <span class="count-pill">{{ summary }}</span>
       </div>
       <div class="page-actions">
-        <button type="button" class="ghost-btn" @click="loadReport">
+        <label class="check-label" title="读正文检查乱码/控制字符，书多时较慢">
+          <input v-model="deepScan" type="checkbox" />
+          深度体检
+        </label>
+        <button type="button" class="ghost-btn" :disabled="reportLoading" @click="loadReport">
           <AppIcon name="refresh" :size="14" />
-          重新扫描
+          {{ scanned ? "重新扫描" : "开始扫描" }}
         </button>
         <button type="button" class="ghost-btn" @click="onRepairAll">修复全部问题</button>
         <button
@@ -338,7 +382,11 @@ onUnmounted(stopWatch);
         <p class="muted">
           合并规则：保留章节/字数最多的一本，删除其余重复项（章节与多余封面一并删，源 TXT 不动）。
         </p>
-        <div v-if="!report?.duplicates?.length" class="empty">
+        <div v-if="!scanned" class="empty">
+          <AppIcon name="check" :size="24" />
+          <span>尚未扫描，点右上角「开始扫描」检查重复书。</span>
+        </div>
+        <div v-else-if="!report?.duplicates?.length" class="empty">
           <AppIcon name="check" :size="24" />
           <span>没有发现重复书。</span>
         </div>
@@ -363,8 +411,15 @@ onUnmounted(stopWatch);
 
       <!-- 异常书籍 -->
       <div v-else-if="activeTab === 'issue'" class="tab-panel">
-        <p class="muted">修复：清理控制字符；若源 TXT 仍可读且未分章/乱码，则重新解析章节。</p>
-        <div v-if="!report?.issues?.length" class="empty">
+        <p class="muted">
+          修复：清理控制字符；若源 TXT 仍可读且未分章/乱码，则重新解析章节。
+          勾选「深度体检」可查乱码/控制符（需读正文，较慢）。
+        </p>
+        <div v-if="!scanned" class="empty">
+          <AppIcon name="check" :size="24" />
+          <span>尚未扫描，点右上角「开始扫描」检查异常书。</span>
+        </div>
+        <div v-else-if="!report?.issues?.length" class="empty">
           <AppIcon name="check" :size="24" />
           <span>没有发现异常，书库健康。</span>
         </div>
@@ -405,7 +460,7 @@ onUnmounted(stopWatch);
           </select>
           <span class="label">刮削方式</span>
           <select v-model="scrapeMode" class="field-input" title="API 直连 / Chrome 浏览器 / 自动">
-            <option value="auto">自动（API→Chrome）</option>
+            <option value="auto">自动（Chrome 优先，无则 API）</option>
             <option value="api">API 直连</option>
             <option value="chrome">Chrome 浏览器</option>
           </select>
