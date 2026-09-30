@@ -21,10 +21,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     FRONTEND_PORT=7311 \
     NOVELS_DIR=/app/novels \
     DATABASE_PATH=/app/data/novels.db \
-    COVERS_DIR=/app/covers
+    COVERS_DIR=/app/covers \
+    MALLOC_ARENA_MAX=2
 
-COPY requirements.txt .
+COPY requirements.txt requirements-optional.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# 可选：构建时带上 Playwright（fnOS Chrome / CDP 刮削用）
+#   docker compose build --build-arg INSTALL_BROWSER_DEPS=1
+ARG INSTALL_BROWSER_DEPS=1
+RUN if [ "$INSTALL_BROWSER_DEPS" = "1" ]; then \
+        pip install --no-cache-dir -r requirements-optional.txt ; \
+    fi
 
 # 只拷运行所需代码（.dockerignore 已排除 data/covers/novels/scripts）
 COPY app ./app
