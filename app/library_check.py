@@ -45,8 +45,12 @@ def _load_chapter_texts(db: Session, book_id: int, chapters) -> list[str]:
     return [t or (c.content or "") for t, c in zip(texts, chapters)]
 
 
-def scan_issues(db: Session) -> list[BookIssue]:
-    """体检扫描：统计走 SQL 聚合（字数/空章用偏移元数据），控制字符按书读正文包。"""
+def scan_issues(db: Session, deep: bool = False) -> list[BookIssue]:
+    """体检扫描。
+
+    deep=False（默认，快速）：仅 SQL 聚合 + 源文件存在性，不读正文。
+    deep=True（深度）：额外读正文包检查乱码/控制字符，大库较慢。
+    """
     issues: list[BookIssue] = []
     books = db.execute(select(Book)).scalars().all()
 
@@ -66,43 +70,44 @@ def scan_issues(db: Session) -> list[BookIssue]:
         for r in stats_rows
     }
 
-    # 控制字符 / 乱码：按书读正文包；一次性取全部偏移元数据，避免 N+1
+    # 控制字符 / 乱码：仅深度体检时按书读正文包；一次性取全部偏移元数据，避免 N+1
     ctrl_counts: dict[int, int] = {}
     repl_counts: dict[int, int] = {}
-    all_ch_rows = db.execute(
-        select(
-            Chapter.book_id,
-            Chapter.content_offset,
-            Chapter.content_length,
-            Chapter.content,
-        ).order_by(Chapter.book_id, Chapter.index, Chapter.id)
-    ).all()
-    chapters_by_book: dict[int, list] = {}
-    for r in all_ch_rows:
-        chapters_by_book.setdefault(r.book_id, []).append(r)
-    for book in books:
-        ch_rows = chapters_by_book.get(book.id) or []
-        if not ch_rows:
-            continue
-        class _Ch:
-            pass
-
-        stubs = []
-        for r in ch_rows:
-            s = _Ch()
-            s.content_offset = r.content_offset or 0
-            s.content_length = r.content_length or 0
-            s.content = r.content or ""
-            stubs.append(s)
-        for text in _load_chapter_texts(db, book.id, stubs):
-            if not text:
+    if deep:
+        all_ch_rows = db.execute(
+            select(
+                Chapter.book_id,
+                Chapter.content_offset,
+                Chapter.content_length,
+                Chapter.content,
+            ).order_by(Chapter.book_id, Chapter.index, Chapter.id)
+        ).all()
+        chapters_by_book: dict[int, list] = {}
+        for r in all_ch_rows:
+            chapters_by_book.setdefault(r.book_id, []).append(r)
+        for book in books:
+            ch_rows = chapters_by_book.get(book.id) or []
+            if not ch_rows:
                 continue
-            n_ctrl = len(_CTRL_RE.findall(text))
-            if n_ctrl:
-                ctrl_counts[book.id] = ctrl_counts.get(book.id, 0) + n_ctrl
-            n_repl = text.count("�")
-            if n_repl:
-                repl_counts[book.id] = repl_counts.get(book.id, 0) + n_repl
+            class _Ch:
+                pass
+
+            stubs = []
+            for r in ch_rows:
+                s = _Ch()
+                s.content_offset = r.content_offset or 0
+                s.content_length = r.content_length or 0
+                s.content = r.content or ""
+                stubs.append(s)
+            for text in _load_chapter_texts(db, book.id, stubs):
+                if not text:
+                    continue
+                n_ctrl = len(_CTRL_RE.findall(text))
+                if n_ctrl:
+                    ctrl_counts[book.id] = ctrl_counts.get(book.id, 0) + n_ctrl
+                n_repl = text.count("�")
+                if n_repl:
+                    repl_counts[book.id] = repl_counts.get(book.id, 0) + n_repl
 
     for book in books:
         st = stats.get(book.id)
@@ -380,7 +385,8 @@ def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
 
 def repair_books(db: Session, book_ids: list[int] | None = None, mode: str = "auto") -> list[dict]:
     if book_ids is None:
-        book_ids = [i.book_id for i in scan_issues(db)]
+        # 未指定书目时做深度扫描以覆盖乱码/控制符问题
+        book_ids = [i.book_id for i in scan_issues(db, deep=True)]
         book_ids = list(dict.fromkeys(book_ids))
     results = []
     for bid in book_ids:

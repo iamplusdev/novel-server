@@ -39,9 +39,10 @@ class RelocateIn(BaseModel):
 
 
 @router.get("/report")
-def library_report(db: Session = Depends(get_db)) -> dict:
+def library_report(deep: bool = False, db: Session = Depends(get_db)) -> dict:
+    """体检报告。deep=false 快速（SQL）；deep=true 深度（含正文乱码/控制符）。"""
     dups = find_duplicate_groups(db)
-    issues = scan_issues(db)
+    issues = scan_issues(db, deep=deep)
     return {
         "duplicates": dups,
         "issues": [
@@ -56,6 +57,7 @@ def library_report(db: Session = Depends(get_db)) -> dict:
         ],
         "duplicate_groups": len(dups),
         "issue_count": len(issues),
+        "deep": deep,
     }
 
 
