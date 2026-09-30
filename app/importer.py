@@ -1,9 +1,11 @@
-"""扫描 novels/<书源>/<分类>/*.txt（兼容旧 novels/<分类>/*.txt）并写入 SQLite。
+"""扫描 novels/<书源>/<分类>/*.txt 与 novels/未分类/*.txt 并写入 SQLite。
 
 目录格式（本地与 WebDAV 一致）：
   novels/起点/都市/书名.txt
   novels/番茄/西方奇幻/书名.txt
   novels/未分类/书名.txt
+
+只扫描「书源」目录与「未分类」目录；其他目录与根目录散落 txt 不导入。
 """
 from __future__ import annotations
 
@@ -124,7 +126,10 @@ _SKIP_NAMES = {
 def _iter_txt_files(root: Path):
     """yield (category_label, path)。
 
-    优先识别两级「书源/分类」，兼容旧一级「分类」；根目录散落文件归「未分类」。
+    只扫描「书源」目录（起点/番茄/纵横）与「未分类」目录：
+      novels/起点/都市/书名.txt
+      novels/未分类/书名.txt
+    其他目录（含旧一级分类、备份等）与根目录散落 txt 一律跳过。
     """
     if not root.exists():
         return
@@ -134,29 +139,33 @@ def _iter_txt_files(root: Path):
             if f.is_file() and f.name.lower() not in _SKIP_NAMES:
                 yield label, f
 
+    # 仅允许的顶层目录：书源目录 + 未分类；其余文件夹不扫描
+    allowed_top = set(SOURCE_CATEGORIES.keys()) | {UNCATEGORIZED}
+
     for child in sorted(root.iterdir()):
-        if child.is_file() and child.suffix.lower() == ".txt":
-            if child.name.lower() in _SKIP_NAMES:
-                continue
-            yield UNCATEGORIZED, child
-            continue
+        # 根目录散落 txt 不导入
         if not child.is_dir() or child.name.startswith("."):
             continue
         name = child.name.strip() or UNCATEGORIZED
+        if name not in allowed_top:
+            continue
+        # 未分类：递归扫其下 txt
+        if name == UNCATEGORIZED:
+            yield from _walk_dir(child, UNCATEGORIZED)
+            continue
         # 两级：novels/起点/都市/、novels/番茄/西方奇幻/
-        if name in SOURCE_CATEGORIES:
-            subs = [p for p in sorted(child.iterdir()) if p.is_dir() and not p.name.startswith(".")]
-            if subs:
-                for sub in subs:
-                    label = f"{name}-{sub.name.strip() or UNCATEGORIZED}"
-                    yield from _walk_dir(sub, label)
-                # 书源目录下散落 txt
-                for f in sorted(child.glob("*.txt")):
-                    if f.is_file() and f.name.lower() not in _SKIP_NAMES:
-                        yield f"{name}-{UNCATEGORIZED}", f
-                continue
-        # 兼容旧一级分类目录（含书源目录下无子分类时）
-        yield from _walk_dir(child, name)
+        subs = [p for p in sorted(child.iterdir()) if p.is_dir() and not p.name.startswith(".")]
+        if subs:
+            for sub in subs:
+                label = f"{name}-{sub.name.strip() or UNCATEGORIZED}"
+                yield from _walk_dir(sub, label)
+            # 书源目录下散落 txt 归该书源-未分类
+            for f in sorted(child.glob("*.txt")):
+                if f.is_file() and f.name.lower() not in _SKIP_NAMES:
+                    yield f"{name}-{UNCATEGORIZED}", f
+            continue
+        # 书源目录下无子分类时，直接扫书源目录内 txt
+        yield from _walk_dir(child, f"{name}-{UNCATEGORIZED}")
 
 
 def _find_book_by_source(db: Session, source_path: str) -> Book | None:

@@ -96,14 +96,15 @@ def _is_chapter_heading(line: str) -> tuple[bool, str]:
     return False, ""
 
 
-def parse_txt_text(text: str, default_title: str) -> list[ParsedChapter]:
+def parse_txt_text(text: str) -> list[ParsedChapter]:
     """按章节标题切分正文。无法识别时整本作为单章。"""
     # 统一换行，去掉 BOM / 空白行开头
     text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
     lines = text.split("\n")
 
     chapters: list[ParsedChapter] = []
-    current_title = default_title
+    # 伪章节标题留空（不用书名），避免目录出现「0 书名」条目
+    current_title = ""
     buf: list[str] = []
 
     def flush() -> None:
@@ -111,13 +112,13 @@ def parse_txt_text(text: str, default_title: str) -> list[ParsedChapter]:
         # 压缩过多空行
         content = re.sub(r"\n{3,}", "\n\n", content)
         if content or chapters:
-            chapters.append(ParsedChapter(title=current_title or default_title, content=content))
+            chapters.append(ParsedChapter(title=current_title, content=content))
         buf.clear()
 
     for line in lines:
         ok, title = _is_chapter_heading(line)
         if ok:
-            # 若缓冲区里已有大量正文，认为是新章；若还在文首，替换默认标题
+            # 若缓冲区里已有正文，认为是新章并先落盘；否则直接采用该章标题
             body = "".join(buf).strip()
             if body:
                 flush()
@@ -132,7 +133,8 @@ def parse_txt_text(text: str, default_title: str) -> list[ParsedChapter]:
     # 丢弃开头空章节（无内容且标题非章节名）
     cleaned = [c for c in chapters if c.content.strip()]
     if not cleaned:
-        cleaned = [ParsedChapter(title=default_title, content=text.strip())]
+        # 整本无法识别章节时：单章标题留空，前端回退「第 1 章」
+        cleaned = [ParsedChapter(title="", content=text.strip())]
     return cleaned
 
 
@@ -149,7 +151,7 @@ def load_txt_book(path: Path, category: str) -> ParsedBook:
         text = raw.decode("utf-8", errors="replace")
 
     title, author = parse_filename_meta(path.stem, category)
-    chapters = parse_txt_text(text, default_title=title)
+    chapters = parse_txt_text(text)
     word_count = sum(len(c.content) for c in chapters)
 
     intro = ""
@@ -171,7 +173,7 @@ def load_txt_book_from_text(text: str, stem: str, category: str) -> ParsedBook:
     """从内存文本构建书籍（WebDAV 导入用）。"""
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
     title, author = parse_filename_meta(stem, category)
-    chapters = parse_txt_text(text, default_title=title)
+    chapters = parse_txt_text(text)
     word_count = sum(len(c.content) for c in chapters)
     intro = ""
     if chapters:
