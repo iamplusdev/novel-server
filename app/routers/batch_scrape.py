@@ -16,6 +16,7 @@ router = APIRouter(
 
 class BatchIn(BaseModel):
     # all=按起点→番茄→纵横顺序，命中即停；也可指定单一书源
+    # 番茄不走书名搜索，仅有书号/链接时直连详情
     source: str = Field(default="all", max_length=20)
     only_missing: bool = True
     min_score: float = Field(default=0.8, ge=0.3, le=1.0)
@@ -24,6 +25,8 @@ class BatchIn(BaseModel):
     book_ids: list[int] | None = Field(default=None, max_length=500)
     # 取数方式：api / chrome / auto
     mode: str = Field(default="auto", max_length=20)
+    # 番茄书号或 fanqienovel.com/page/ 链接列表；非空则按 ID 直连批量刮削（不走书名搜索）
+    refs: list[str] | None = Field(default=None, max_length=500)
 
 
 class ScoreIn(BaseModel):
@@ -42,6 +45,7 @@ def batch_start(payload: BatchIn) -> dict:
         limit=payload.limit,
         book_ids=payload.book_ids or None,
         mode=payload.mode,
+        refs=payload.refs or None,
     )
     return {"started": started, "status": get_batch_status()}
 

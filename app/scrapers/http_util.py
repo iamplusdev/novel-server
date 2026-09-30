@@ -13,7 +13,9 @@ import http.cookiejar
 import os
 import random
 import threading
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -29,6 +31,11 @@ def set_browser_mode(on: bool) -> None:
     """开启/关闭浏览器取页模式（批量失败汇总重试 / 用户指定 chrome 用）。"""
     global _BROWSER_MODE
     _BROWSER_MODE = bool(on)
+
+
+def is_browser_mode_forced() -> bool:
+    """是否由 set_browser_mode 显式开启（不看全局 scrape mode）。"""
+    return _BROWSER_MODE
 
 
 def browser_mode() -> bool:
@@ -86,6 +93,57 @@ def reset_session() -> None:
     _COOKIE_JAR.clear()
 
 
+# ---------------------------------------------------------------------------
+# 按域名最小请求间隔：同域连续请求（search/详情/封面/多变体重试）自动拉开，
+# 避免同一本书内部连发触发站点风控。
+# ---------------------------------------------------------------------------
+_HOST_THROTTLE_LOCK = threading.Lock()
+_HOST_LAST_AT: dict[str, float] = {}
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = (os.environ.get(key) or "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
+# 同域两次请求的最小间隔（秒）；0 = 关闭节流
+_HOST_MIN_INTERVAL = max(0.0, _env_float("SCRAPER_HOST_MIN_INTERVAL", 1.2))
+# 间隔随机抖动上限（秒），避免固定节拍
+_HOST_JITTER_MAX = max(0.0, _env_float("SCRAPER_HOST_JITTER_MAX", 0.4))
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def throttle_host(url: str) -> float:
+    """按 host 等待到允许发请求的时刻；返回实际等待秒数。"""
+    if _HOST_MIN_INTERVAL <= 0:
+        return 0.0
+    host = _host_of(url)
+    if not host:
+        return 0.0
+    waited = 0.0
+    while True:
+        with _HOST_THROTTLE_LOCK:
+            now = time.monotonic()
+            last = _HOST_LAST_AT.get(host, 0.0)
+            gap = _HOST_MIN_INTERVAL + random.uniform(0.0, _HOST_JITTER_MAX)
+            due = last + gap
+            if now >= due:
+                _HOST_LAST_AT[host] = now
+                return waited
+            sleep_for = due - now
+        time.sleep(min(sleep_for, 1.0))
+        waited += min(sleep_for, 1.0)
+
+
 def _proxy_handler() -> urllib.request.ProxyHandler:
     proxy = (os.environ.get("SCRAPER_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
     if proxy:
@@ -136,9 +194,17 @@ def http_get(
         try:
             from .browser_fallback import fetch_text
 
-            return fetch_text(url)
+            # 透传内容协商头（Accept/Referer 等）；UA 由 Chrome 自身提供
+            return fetch_text(
+                url,
+                timeout_ms=max(1, int(timeout * 1000)),
+                headers=headers,
+                referer=referer or "",
+            )
         except Exception as e:  # noqa: BLE001
             raise HttpError(f"浏览器取页失败: {e}") from e
+    # 发请求前按域名限速，降低连发触发风控的概率
+    throttle_host(url)
     hdrs = {
         "User-Agent": session_user_agent(),
         "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
@@ -171,6 +237,8 @@ def http_get_bytes(
     referer: str = "",
 ) -> tuple[bytes, str]:
     """GET 原始字节（封面下载等），返回 (data, content_type)。"""
+    # 封面同样按域名限速
+    throttle_host(url)
     hdrs = {
         "User-Agent": session_user_agent(),
         "Accept": "*/*",

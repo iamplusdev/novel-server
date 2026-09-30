@@ -25,7 +25,6 @@ from ..scrapers.mode import (
     normalize_mode,
     set_scrape_mode,
 )
-from ..scrapers.qidian import ScrapeError, download_cover
 from ..serializers import admin_book_detail
 
 
@@ -42,7 +41,7 @@ class SearchIn(BaseModel):
     keyword: str = Field(..., min_length=1, max_length=80)
     source: str = Field(default="qidian", max_length=20)
     limit: int = Field(default=10, ge=1, le=20)
-    # 取数方式：api=HTTP / chrome=fnOS 浏览器 / auto=失败自动切换
+    # 取数方式：api=HTTP / chrome=fnOS 浏览器 / auto=检测 Chrome 优先，失败回退 API
     mode: str = Field(default="auto", max_length=20)
 
 
@@ -51,7 +50,7 @@ class ApplyIn(BaseModel):
     source_book_id: str = Field(..., min_length=1, max_length=32)
     keyword: str | None = Field(default=None, max_length=80)
     with_cover: bool = True
-    # 取数方式：api / chrome / auto
+    # 取数方式：api / chrome / auto（Chrome 优先，失败回退 API）
     mode: str = Field(default="auto", max_length=20)
     # 搜索列表里已有的字段，详情被风控时可作回退
     hint_name: str | None = Field(default=None, max_length=200)
@@ -84,8 +83,9 @@ def _mod(source: str):
 
 
 def _with_mode(mode: str, fn):
-    """按刮削方式执行 fn()：api=HTTP，chrome=浏览器，auto=先 HTTP 再浏览器。"""
+    """按刮削方式执行 fn()：api=HTTP，chrome=浏览器，auto=检测 Chrome 优先、失败回退 API。"""
     from ..scrapers import http_util
+    from ..scrapers.qidian import ScrapeError
 
     m = normalize_mode(mode)
     if m == MODE_CHROME:
@@ -102,21 +102,34 @@ def _with_mode(mode: str, fn):
             return fn()
         except ScrapeError as e:
             raise HTTPException(502, str(e)) from e
-    # auto：优先 API，失败后切 Chrome 重试一次
+    # auto：检测到 fnOS Chrome 则优先浏览器，失败回退 API；未检测到则纯 API
+    try:
+        from ..scrapers.browser_fallback import chrome_available
+    except Exception:  # noqa: BLE001
+        chrome_available = None  # type: ignore[assignment]
+    use_chrome = bool(chrome_available and chrome_available())
+    if use_chrome:
+        http_util.set_browser_mode(True)
+        try:
+            return fn()
+        except ScrapeError as first_err:
+            # Chrome 优先但失败：回退 API 一次
+            http_util.set_browser_mode(False)
+            try:
+                return fn()
+            except ScrapeError as second_err:
+                raise HTTPException(
+                    502,
+                    f"刮削失败（Chrome 与 API 均不可用）：{first_err}；{second_err}",
+                ) from second_err
+        finally:
+            http_util.set_browser_mode(False)
+    # 无 Chrome：纯 API
     http_util.set_browser_mode(False)
     try:
         return fn()
-    except ScrapeError as first_err:
-        try:
-            http_util.set_browser_mode(True)
-            return fn()
-        except ScrapeError as second_err:
-            raise HTTPException(
-                502,
-                f"刮削失败（API 与浏览器均不可用）：{first_err}；{second_err}",
-            ) from second_err
-        finally:
-            http_util.set_browser_mode(False)
+    except ScrapeError as e:
+        raise HTTPException(502, str(e)) from e
 
 
 @router.get("/modes")
@@ -182,6 +195,8 @@ def scrape_detail(payload: ApplyIn) -> dict:
 
 @router.post("/books/{book_id}/apply")
 def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) -> dict:
+    from ..scrapers.qidian import ScrapeError
+
     book = db.get(Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
@@ -272,7 +287,7 @@ def scrape_apply(book_id: int, payload: ApplyIn, db: Session = Depends(get_db)) 
         book.category = UNCATEGORIZED
 
     # 标签：以详情 all-label 为准整体替换，避免残留旧的错误标签
-    from ..scrapers.qidian import clean_tag_token
+    from ..scrapers.qidian import clean_tag_token, download_cover
 
     # 标签：详情优先，否则用搜索 hint
     raw_tags = list(hit.tags or []) or list(payload.hint_tags or [])
