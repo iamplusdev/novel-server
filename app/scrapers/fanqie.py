@@ -13,7 +13,7 @@ import time
 import urllib.parse
 
 from ..config import STYLE_ONLY_TAGS, to_qidian_category
-from .http_util import HttpError, http_get as _http_get_raw, http_get_bytes
+from .http_util import HttpError, http_get as _http_get_raw, http_get_bytes, is_public_http_url
 from .qidian import ScrapeError, ScrapeHit, clean_tag_token
 
 SOURCE_NAME = "番茄"
@@ -583,6 +583,9 @@ def download_cover(url: str, dest) -> str:
         raise ScrapeError("没有封面地址")
     if url.startswith("//"):
         url = "https:" + url
+    # 防 SSRF：仅允许公网 http/https，拒绝内网/环回地址
+    if not is_public_http_url(url):
+        raise ScrapeError("封面地址不被允许（仅支持公网 http/https）")
     try:
         data, ctype = http_get_bytes(
             url, headers={"Referer": "https://fanqienovel.com/"}, timeout=TIMEOUT

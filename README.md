@@ -27,7 +27,7 @@
 | 管理前端 | Vue 3 + Vite + TypeScript + Element Plus + Pinia |
 | 数据库 | SQLite + SQLAlchemy 2.x |
 | 阅读端 | 网页阅读器 + Legado（开源阅读）书源 |
-| 依赖 | `fastapi` `uvicorn[standard]` `sqlalchemy` `python-multipart` |
+| 依赖 | `fastapi` `uvicorn` `sqlalchemy` `python-multipart` |
 
 ---
 
@@ -116,11 +116,14 @@ docker compose exec novel-server python import_novels.py
 
 1. 手机与服务器同一局域网（或已穿透），能打开 `http://<host>:7312/health`
 2. 获取书源 JSON（三选一）：
-   - 浏览器打开 `http://<host>:7311/legado_book_source.json`
-   - 管理后台 →「API / 书源」→「下载 / 复制书源 JSON」（已填好 `PUBLIC_BASE_URL`）
+   - 浏览器打开 `http://<host>:7311/legado_book_source.json`（需管理会话登录）
+   - 管理后台 →「API / 书源」→「下载 / 复制书源 JSON」（已填好 `PUBLIC_BASE_URL` 与 `X-Api-Key`）
    - `GET /api/legado/book-source`
 3. Legado → **我的 → 书源管理 → 本地导入 / 网络导入**
 4. 发现页浏览分类；搜索书名；点进详情 → 目录 → 正文
+
+> 公网部署：读接口（`/api/books*`、`/api/search`、`/api/legado/*`）需鉴权。请在 `.env` 设置 `READ_API_KEY`，
+> 书源 JSON 会自动把该 Key 注入 `header.X-Api-Key`；未配置时读接口只认管理会话，Legado 将无法访问。
 
 书源 JSON 根节点必须是数组 `[{...}]`，且规则含 `bookUrl`（换源需要）。
 
@@ -339,7 +342,7 @@ npm run typecheck
 | 正文 | `GET /api/legado/content/{book_id}/{chapter_id}` |
 | 书源文件 | `GET /api/legado/book-source` 或 `/legado_book_source.json` |
 
-### 公开 JSON（调试 / 其它客户端）
+### 公开 JSON（需读鉴权：会话 Cookie 或 `X-Api-Key`）
 
 | 方法 | 路径 |
 |------|------|
@@ -349,6 +352,9 @@ npm run typecheck
 | GET | `/api/books/{id}` |
 | GET | `/api/books/{id}/chapters` |
 | GET | `/api/books/{id}/chapters/{chapter_id}` |
+
+> 上述接口与 `/api/legado/*` 均需读鉴权：网页阅读器带会话 Cookie（同源自动），
+> 其它客户端带 `X-Api-Key: <READ_API_KEY>`；匿名访问返回 401。
 
 ---
 

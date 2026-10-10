@@ -27,7 +27,7 @@ from .config import (
     parse_category_label,
     settings,
 )
-from .content_store import write_pack
+from .content_store import commit_pack, discard_pack, write_pack_staged
 from .database import SessionLocal
 from .models import Book, Chapter, ImportLog
 from .parsers import load_txt_book, load_txt_book_from_text
@@ -262,9 +262,9 @@ def _upsert_parsed(
         db.flush()
         action = "added"
 
-    # 正文写入独立正文包，库内只存字节偏移/长度（千章级批量插入）
+    # 正文写入独立正文包（先写临时包），库内只存字节偏移/长度（千章级批量插入）
     chapter_payloads = parsed.chapters
-    spans = write_pack(book.id, [c.content for c in chapter_payloads])
+    spans = write_pack_staged(book.id, [c.content for c in chapter_payloads])
     rows = []
     for i, (ch, (off, blen, clen)) in enumerate(zip(chapter_payloads, spans)):
         rows.append(
@@ -279,11 +279,18 @@ def _upsert_parsed(
                 "content_chars": clen,
             }
         )
-    if rows:
-        db.execute(insert(Chapter), rows)
-
     book.chapter_count = len(parsed.chapters)
     book.latest_chapter = parsed.chapters[-1].title[:200] if parsed.chapters else ""
+    # 每本独立提交：DB 提交成功后才切换正文包，失败则丢弃临时包保持旧包
+    try:
+        if rows:
+            db.execute(insert(Chapter), rows)
+        db.commit()
+    except Exception:
+        db.rollback()
+        discard_pack(book.id)
+        raise
+    commit_pack(book.id)
     return action, f"{category}/{book.title}"
 
 

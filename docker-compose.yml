@@ -15,6 +15,12 @@ services:
       # 必改：对外访问地址（域名或局域网 IP）。
       # 管理端封面已用相对路径；此项仍影响 Legado 书源与绝对链接兜底。
       PUBLIC_BASE_URL: "http://192.168.1.100:7311"
+      # 公网必备：读接口密钥（Legado 以 X-Api-Key 头携带，随书源 JSON 自动注入）
+      READ_API_KEY: "please-change-me"
+      # 反代可信 Host 白名单（逗号分隔）；留空则基址固定用 PUBLIC_BASE_URL
+      TRUSTED_HOSTS: "192.168.1.100"
+      # HTTPS 反代部署请置 1，会话 Cookie 才带 Secure
+      COOKIE_SECURE: "0"
       HOST: "0.0.0.0"
       # 后端 API
       PORT: "7312"

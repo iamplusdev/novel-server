@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..auth import require_read_dep
 from ..book_query import build_books_stmt, count_books
 from ..config import all_category_labels
 from ..database import get_db
@@ -17,7 +18,12 @@ from ..serializers import (
     resolve_base_url,
 )
 
-router = APIRouter(prefix="/api", tags=["public"])
+router = APIRouter(
+    prefix="/api",
+    tags=["public"],
+    # 读接口双通道鉴权：会话 Cookie（网页阅读器）或 X-Api-Key（Legado）
+    dependencies=[Depends(require_read_dep)],
+)
 
 
 def _paginate(page: int, page_size: int) -> tuple[int, int]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from datetime import datetime
@@ -31,6 +32,8 @@ from ..models import Book
 from ..serializers import admin_book_detail, book_list_item, resolve_base_url
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_dep)])
+
+logger = logging.getLogger("admin")
 
 ALLOWED_COVER_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 # 封面上传上限：个人库封面不需要很大
@@ -289,7 +292,8 @@ def admin_delete_book(book_id: int, db: Session = Depends(get_db)) -> dict:
         # 批量删章节+书籍；FTS 触发器失败时自动重建索引，避免裸 500
         repaired = delete_books_safe(db, [book_id])
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(500, f"删除失败：{e}") from e
+        logger.exception("删除书籍失败 id=%s", book_id)
+        raise HTTPException(500, "删除失败，请查看服务端日志") from e
     return {"ok": True, "deleted": title, "id": book_id, "fts_repaired": repaired}
 
 
@@ -346,7 +350,8 @@ def admin_batch_delete(payload: BatchDeleteIn, db: Session = Depends(get_db)) ->
     try:
         repaired = delete_books_safe(db, ids)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(500, f"批量删除失败：{e}") from e
+        logger.exception("批量删除失败 ids=%s", ids)
+        raise HTTPException(500, "批量删除失败，请查看服务端日志") from e
     return {
         "ok": True,
         "deleted_count": len(titles),

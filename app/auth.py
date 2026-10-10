@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import threading
 import time
@@ -21,6 +22,8 @@ AUTH_FILE_NAME = "auth.json"
 SESSION_COOKIE = "ainovel_session"
 TOKEN_TTL_SEC = 7 * 24 * 3600
 _PBKDF2_ITER = 200_000
+# 用户名白名单：仅 ASCII，避免 hmac.compare_digest 非 ASCII 报错，也便于 token 拼接
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 # 登录/重置失败限流（进程内即可，个人服务场景够用）
 LOGIN_MAX_FAIL = 5
@@ -37,6 +40,21 @@ def auth_path() -> Path:
 def login_client_key(client_host: str | None, username: str = "") -> str:
     """限流键：优先 IP，叠加用户名，避免同机多账号互不影响。"""
     return f"{client_host or 'unknown'}|{(username or '').strip().lower()}"
+
+
+def client_ip(request) -> str:
+    """取客户端真实 IP：反代下优先 X-Forwarded-For 首跳，回退直连地址。
+
+    反代后 request.client 恒为代理地址，若仍按它限流，单个攻击者即可把整站
+    登录限流键打满、锁死管理员，故需用转发头区分真实客户端。
+    """
+    try:
+        xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    except Exception:  # noqa: BLE001
+        xff = ""
+    if xff:
+        return xff
+    return request.client.host if request.client else "unknown"
 
 
 def check_login_allowed(key: str) -> None:
@@ -132,8 +150,8 @@ def generate_recovery_code() -> str:
 def create_account(username: str, password: str) -> str:
     """首次设置账号，返回一次性恢复码。"""
     username = (username or "").strip()
-    if not username or len(username) > 64:
-        raise HTTPException(400, "用户名无效")
+    if not _USERNAME_RE.match(username):
+        raise HTTPException(400, "用户名仅支持字母、数字、下划线、点、连字符（1–64 位）")
     if not password or len(password) < 6:
         raise HTTPException(400, "密码至少 6 位")
     if load_auth() is not None:
@@ -172,6 +190,8 @@ def reset_with_recovery(recovery_code: str, new_username: str, new_password: str
     if not verify_recovery((recovery_code or "").strip(), data.get("recovery_hash")):
         raise HTTPException(401, "恢复码无效")
     username = (new_username or "").strip() or data["username"]
+    if not _USERNAME_RE.match(username):
+        raise HTTPException(400, "用户名仅支持字母、数字、下划线、点、连字符（1–64 位）")
     if not new_password or len(new_password) < 6:
         raise HTTPException(400, "新密码至少 6 位")
     data["username"] = username
@@ -188,7 +208,7 @@ def login(username: str, password: str) -> dict:
     data = load_auth()
     if not data:
         raise HTTPException(400, "尚未设置账号，请先完成初始化")
-    if not hmac.compare_digest(username or "", data["username"]) or not verify_password(
+    if (username or "") != data["username"] or not verify_password(
         password or "", data["password_hash"]
     ):
         raise HTTPException(401, "用户名或密码错误")
@@ -224,7 +244,7 @@ def verify_token(token: str | None) -> str:
         user_s, exp_s = payload.decode("utf-8").split(":", 1)
         if int(exp_s) < time.time():
             raise HTTPException(401, "登录已过期，请重新登录")
-        if not hmac.compare_digest(user_s, data["username"]):
+        if user_s != data["username"]:
             raise HTTPException(401, "登录已失效，请重新登录")
         return user_s
     except HTTPException:
@@ -258,6 +278,26 @@ def require_admin_dep(
     x_session_token: str | None = Header(default=None),
     ainovel_session: str | None = Cookie(default=None),
 ) -> str:
+    token = extract_token(authorization, x_session_token, ainovel_session)
+    return verify_token(token)
+
+
+def require_read_dep(
+    authorization: str | None = Header(default=None),
+    x_session_token: str | None = Header(default=None),
+    ainovel_session: str | None = Cookie(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> str:
+    """公开读接口双通道鉴权：X-Api-Key 命中 或 会话有效；未配密钥时只认会话。
+
+    用于 /api/books*、/api/search、/api/legado/*：网页阅读器走 Cookie，
+    Legado 走书源 header 注入的 X-Api-Key，匿名请求一律 401。
+    """
+    key = (settings.read_api_key or "").strip()
+    if key and x_api_key:
+        # 用 bytes 比较，避免非 ASCII 触发 compare_digest 的 TypeError
+        if hmac.compare_digest(x_api_key.strip().encode("utf-8"), key.encode("utf-8")):
+            return "api-key"
     token = extract_token(authorization, x_session_token, ainovel_session)
     return verify_token(token)
 

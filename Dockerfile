@@ -14,6 +14,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# 读接口密钥（READ_API_KEY，公网必备）：运行时经 docker-compose/.env 注入，未设则读接口只认会话
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOST=0.0.0.0 \
@@ -22,7 +23,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NOVELS_DIR=/app/novels \
     DATABASE_PATH=/app/data/novels.db \
     COVERS_DIR=/app/covers \
-    MALLOC_ARENA_MAX=2
+    MALLOC_ARENA_MAX=2 \
+    READ_API_KEY=
 
 COPY requirements.txt requirements-optional.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

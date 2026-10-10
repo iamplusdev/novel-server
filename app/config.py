@@ -36,6 +36,11 @@ class Settings:
         self.database_url: str = f"sqlite:///{self.database_path}"
         # HTTPS / 反代场景请设 COOKIE_SECURE=1，会话 Cookie 才带 Secure
         self.cookie_secure: bool = _env("COOKIE_SECURE", "0").lower() in ("1", "true", "yes", "on")
+        # 读接口密钥（公网必备）：Legado 以 X-Api-Key 头携带；未设置时读接口只认会话
+        self.read_api_key: str = _env("READ_API_KEY", "")
+        # 反代可信 Host 白名单（逗号分隔）；为空则对外基址固定用 PUBLIC_BASE_URL
+        raw_hosts = os.environ.get("TRUSTED_HOSTS", "")
+        self.trusted_hosts: list[str] = [h.strip() for h in raw_hosts.split(",") if h.strip()]
 
     def ensure_dirs(self) -> None:
         self.novels_dir.mkdir(parents=True, exist_ok=True)

@@ -93,7 +93,7 @@ def _migrate_chapters_storage() -> None:
 
 def _migrate_content_to_packs() -> None:
     """把仍在 chapters.content 的正文写入正文包，并按偏移回填后清空 content 列。"""
-    from .content_store import write_pack
+    from .content_store import commit_pack, discard_pack, write_pack_staged
     from .models import Book, Chapter
 
     with SessionLocal() as db:
@@ -112,7 +112,7 @@ def _migrate_content_to_packs() -> None:
                 .all()
             )
             texts = [c.content or "" for c in chapters]
-            spans = write_pack(bid, texts)
+            spans = write_pack_staged(bid, texts)
             for ch, (off, blen, clen) in zip(chapters, spans):
                 ch.content_offset = off
                 ch.content_length = blen
@@ -121,7 +121,14 @@ def _migrate_content_to_packs() -> None:
             book = db.get(Book, bid)
             if book is not None:
                 book.word_count = sum(clen for _o, _b, clen in spans)
-            db.commit()
+            # DB 提交成功后再切换正文包；失败丢弃临时包，保持旧库与新包不撕裂
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                discard_pack(bid)
+                raise
+            commit_pack(bid)
         # 有正文迁出时收缩库文件，回收原 content 列占用
         if book_ids:
             with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:

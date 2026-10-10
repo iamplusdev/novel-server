@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .auth import require_read_dep
 from .config import settings
 from .database import init_db
 from .logging_setup import setup_logging
@@ -27,16 +28,15 @@ app = FastAPI(
     title="Personal Novel Library",
     description="爱小说：分类浏览 / 搜索 / 阅读 / Legado 书源 / 管理 API",
     version="1.0.0",
+    # 公网部署：关闭交互式文档，避免暴露完整接口结构
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
-# 直连调试时放开 CORS；同源访问无需 CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 反代场景：仅当配置了可信 Host 白名单时才校验 Host，防 Host 头注入
+if settings.trusted_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
 
 app.include_router(auth.router)
 app.include_router(public.router)
@@ -55,8 +55,9 @@ app.mount("/covers", StaticFiles(directory=str(settings.covers_dir)), name="cove
 
 
 @app.get("/legado_book_source.json", include_in_schema=False)
-def legado_source_file() -> FileResponse:
-    return FileResponse(BASE_DIR / "legado_book_source.json", media_type="application/json")
+def legado_source_file(request: Request, _user: str = Depends(require_read_dep)) -> list:
+    """书源 JSON：注入当前基址与读接口 Key，供 Legado 直接导入。"""
+    return legado.build_book_source(request)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -70,12 +71,8 @@ def favicon() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict:
-    return {
-        "ok": True,
-        "public_base_url": settings.public_base_url,
-        "api_port": settings.port,
-        "frontend_port": settings.frontend_port,
-    }
+    # 公网部署：仅回健康状态，不泄露端口/基址等运行信息
+    return {"ok": True}
 
 
 # ---- 前端 SPA（history 路由回退；注册在 API 路由之后，不会抢 /api）----

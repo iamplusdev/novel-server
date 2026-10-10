@@ -127,7 +127,7 @@ onMounted(async () => {
       <div v-else class="tab-panel">
         <h2 class="section-title">书源 JSON</h2>
         <p class="muted">
-          下载后在开源阅读 Legado → 我的 → 书源管理 → 本地导入。若开启了全局鉴权，可在 header 中加入 Bearer Token。
+          下载后在开源阅读 Legado → 我的 → 书源管理 → 本地导入。接口密钥 X-Api-Key 会随书源自动注入 header，无需手改。
         </p>
         <div class="url-block">
           <code class="url mono">{{ sourceJsonUrl }}</code>

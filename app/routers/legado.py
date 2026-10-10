@@ -5,11 +5,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from ..auth import require_read_dep
 from ..database import get_db
 from ..models import Book, Chapter
 from ..serializers import resolve_base_url
 
-router = APIRouter(prefix="/api/legado", tags=["legado"])
+router = APIRouter(
+    prefix="/api/legado",
+    tags=["legado"],
+    # 读接口双通道鉴权：会话 Cookie 或 X-Api-Key（Legado 书源 header 注入）
+    dependencies=[Depends(require_read_dep)],
+)
 
 
 def _abs(path: str, base: str) -> str:
@@ -93,7 +99,7 @@ def legado_search(
     # 与公开搜索对齐：FTS 优先 + LIKE 转义兜底
     from ..book_query import apply_search
 
-    stmt = apply_search(select(Book), db, q, with_intro_search=False)
+    stmt = apply_search(select(Book), db, q, with_intro=False)
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     books = db.execute(
         stmt.order_by(Book.title).offset(offset).limit(page_size)
@@ -197,18 +203,39 @@ def legado_content(
 @router.get("/book-source")
 def legado_book_source(request: Request) -> list:
     """返回注入了当前访问基址的 Legado 书源配置（数组，可直接导入）。"""
+    return build_book_source(request)
+
+
+def build_book_source(request: Request) -> list:
+    """读取书源模板并注入当前基址与读接口 Key，返回可直接导入的数组。
+
+    - bookSourceUrl 注入 resolve_base_url（固定公网基址或可信 Host）
+    - 配置 READ_API_KEY 时注入 header.X-Api-Key，Legado 才能通过读接口鉴权
+    """
     import json
     from pathlib import Path
+
+    from ..config import settings
 
     path = Path(__file__).resolve().parents[2] / "legado_book_source.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     # Legado 导入要求根节点为数组；兼容历史单对象文件
     sources = data if isinstance(data, list) else [data]
     base = resolve_base_url(request)
+    key = (settings.read_api_key or "").strip()
     for item in sources:
         if not isinstance(item, dict):
             continue
         item["bookSourceUrl"] = base
         item["bookSourceName"] = item.get("bookSourceName") or "爱小说"
         item["bookSourceGroup"] = item.get("bookSourceGroup") or "本地NAS"
+        if key:
+            try:
+                hdr = json.loads(item.get("header") or "{}")
+                if not isinstance(hdr, dict):
+                    hdr = {}
+            except (TypeError, ValueError):
+                hdr = {}
+            hdr["X-Api-Key"] = key
+            item["header"] = json.dumps(hdr, ensure_ascii=False)
     return sources

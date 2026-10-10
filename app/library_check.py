@@ -10,7 +10,7 @@ from sqlalchemy import case, delete, func, select
 from sqlalchemy.orm import Session
 
 from .config import category_rel_parts, safe_delete_cover, settings
-from .content_store import read_book_texts, write_pack
+from .content_store import commit_pack, discard_pack, read_book_texts, write_pack_staged
 from .database import delete_books_safe
 from .importer import UNCATEGORIZED, decode_txt_bytes
 from .models import Book, Chapter
@@ -304,12 +304,14 @@ def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
     ).scalars().all()
     actions = []
     texts = _load_chapter_texts(db, book.id, chapters)
+    staged = False  # 是否已把新正文写入临时包（决定提交/回滚时切换或丢弃）
 
     # 1) 清理字符（读正文包 → 清理后整包重写并回填偏移）
     if mode in ("clean", "auto", "reparse"):
         cleaned_list = [_clean_text(t or "") for t in texts]
         if cleaned_list != texts:
-            spans = write_pack(book.id, cleaned_list)
+            spans = write_pack_staged(book.id, cleaned_list)
+            staged = True
             for ch, txt, (off, blen, clen) in zip(chapters, cleaned_list, spans):
                 ch.content = ""
                 ch.content_offset = off
@@ -336,7 +338,8 @@ def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
             else:
                 db.execute(delete(Chapter).where(Chapter.book_id == book.id))
                 cleaned = [_clean_text(ch.content) for ch in parsed.chapters]
-                spans = write_pack(book.id, cleaned)
+                spans = write_pack_staged(book.id, cleaned)
+                staged = True
                 rows = []
                 for i, (ch, txt, (off, blen, clen)) in enumerate(
                     zip(parsed.chapters, cleaned, spans)
@@ -372,7 +375,16 @@ def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
     if chapters:
         book.latest_chapter = chapters[-1].title[:200]
     book.updated_at = datetime.now().isoformat(timespec="seconds")
-    db.commit()
+    # DB 提交成功后再切换正文包；失败回滚并丢弃临时包，避免偏移与正文不一致
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        if staged:
+            discard_pack(book.id)
+        raise
+    if staged:
+        commit_pack(book.id)
 
     return {
         "id": book.id,

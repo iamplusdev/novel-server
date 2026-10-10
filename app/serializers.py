@@ -13,22 +13,27 @@ from .models import Book, Chapter
 
 
 def resolve_base_url(request=None) -> str:
-    """推导对外基址：反代头优先，否则回退 PUBLIC_BASE_URL。"""
-    if request is None:
-        return settings.public_base_url
+    """推导对外基址：默认固定 PUBLIC_BASE_URL，防 Host 头注入。
+
+    仅当请求 Host 命中 TRUSTED_HOSTS 白名单时才采用反代头；未配置白名单时
+    一律用 PUBLIC_BASE_URL，避免攻击者伪造 Host 污染返回链接与书源地址。
+    """
+    fixed = (settings.public_base_url or "").rstrip("/")
+    if request is None or not settings.trusted_hosts:
+        return fixed
     try:
         headers = request.headers
-        proto = (headers.get("x-forwarded-proto") or "").split(",")[0].strip()
         host = (headers.get("x-forwarded-host") or "").split(",")[0].strip()
         if not host:
             host = (headers.get("host") or "").strip()
-        if host:
+        if host and host.lower() in {h.lower() for h in settings.trusted_hosts}:
+            proto = (headers.get("x-forwarded-proto") or "").split(",")[0].strip()
             if not proto:
                 proto = getattr(getattr(request, "url", None), "scheme", None) or "http"
             return f"{proto}://{host}".rstrip("/")
     except Exception:  # noqa: BLE001
         pass
-    return settings.public_base_url
+    return fixed
 
 
 def cover_rel(book: Book) -> str:

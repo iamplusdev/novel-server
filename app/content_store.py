@@ -29,10 +29,15 @@ def content_pack_path(book_id: int) -> Path:
     return contents_dir() / f"{int(book_id)}.bin"
 
 
-def write_pack(book_id: int, texts: Sequence[str]) -> list[tuple[int, int, int]]:
-    """把各章正文顺序写入正文包，返回 [(byte_offset, byte_len, char_len), ...]。
+def pack_tmp_path(book_id: int) -> Path:
+    return contents_dir() / f"{int(book_id)}.bin.tmp"
 
-    原子落盘（先写 .tmp 再替换），避免半截包被读到。
+
+def write_pack_staged(book_id: int, texts: Sequence[str]) -> list[tuple[int, int, int]]:
+    """把各章正文写入临时包（不覆盖正式包），返回 [(byte_offset, byte_len, char_len)]。
+
+    调用方应在 DB 事务提交成功后再 commit_pack()，失败则 discard_pack()，
+    保证「正文包文件」与「库内偏移」要么同时生效、要么都不生效，避免正文错乱。
     """
     buf = bytearray()
     spans: list[tuple[int, int, int]] = []
@@ -41,12 +46,32 @@ def write_pack(book_id: int, texts: Sequence[str]) -> list[tuple[int, int, int]]
         spans.append((len(buf), len(raw), len(t or "")))
         buf.extend(raw)
 
-    path = content_pack_path(book_id)
-    tmp = path.with_suffix(".bin.tmp")
-    tmp.write_bytes(bytes(buf))
-    tmp.replace(path)
-    # 重写后旧缓存失效
-    _invalidate_book(book_id)
+    pack_tmp_path(book_id).write_bytes(bytes(buf))
+    return spans
+
+
+def commit_pack(book_id: int) -> None:
+    """DB 事务提交成功后，把临时包原子替换为正式包（旧缓存失效）。"""
+    tmp = pack_tmp_path(book_id)
+    if tmp.is_file():
+        tmp.replace(content_pack_path(book_id))
+        _invalidate_book(book_id)
+
+
+def discard_pack(book_id: int) -> None:
+    """事务回滚时丢弃临时包，正式包保持不变。"""
+    tmp = pack_tmp_path(book_id)
+    try:
+        if tmp.is_file():
+            tmp.unlink()
+    except OSError:
+        pass
+
+
+def write_pack(book_id: int, texts: Sequence[str]) -> list[tuple[int, int, int]]:
+    """立即写入并生效（staging + commit）；保留给无需事务配合的简单调用。"""
+    spans = write_pack_staged(book_id, texts)
+    commit_pack(book_id)
     return spans
 
 
@@ -98,6 +123,7 @@ def read_book_texts(book_id: int, spans: Sequence[tuple[int, int]]) -> list[str]
 def delete_pack(book_id: int) -> bool:
     """删除一本书的正文包（删书时调用）。"""
     _invalidate_book(book_id)
+    discard_pack(book_id)  # 一并清理可能残留的临时包
     path = content_pack_path(book_id)
     if not path.is_file():
         return False

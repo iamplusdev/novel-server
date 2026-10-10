@@ -56,10 +56,8 @@ def auth_setup(payload: SetupIn, response: Response) -> dict:
 
 @router.post("/login")
 def auth_login(payload: LoginIn, response: Response, request: Request) -> dict:
-    # 登录失败限流：按 IP+用户名 计数
-    key = auth_mod.login_client_key(
-        request.client.host if request.client else None, payload.username
-    )
+    # 登录失败限流：按真实客户端 IP（反代取 XFF 首跳）+ 用户名 计数
+    key = auth_mod.login_client_key(auth_mod.client_ip(request), payload.username)
     auth_mod.check_login_allowed(key)
     try:
         session = auth_mod.login(payload.username, payload.password)
@@ -100,10 +98,8 @@ def auth_change_password(
 
 @router.post("/forgot")
 def auth_forgot(payload: ForgotIn, response: Response, request: Request) -> dict:
-    # 恢复码重置同样限流，防止爆破
-    key = auth_mod.login_client_key(
-        request.client.host if request.client else None, payload.username or "forgot"
-    )
+    # 恢复码重置同样限流（按真实客户端 IP），防止爆破
+    key = auth_mod.login_client_key(auth_mod.client_ip(request), payload.username or "forgot")
     auth_mod.check_login_allowed(key)
     try:
         new_code = auth_mod.reset_with_recovery(

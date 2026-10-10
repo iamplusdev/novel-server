@@ -21,8 +21,9 @@ class Book(Base):
     status: Mapped[str] = mapped_column(String(20), default="完结", nullable=False)  # 连载/完结/未知
     tags: Mapped[str] = mapped_column(String(300), default="", nullable=False)  # 逗号分隔
     cover_file: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-    source_path: Mapped[str] = mapped_column(String(500), default="", nullable=False)
-    source_hash: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    # 去重/更新按 source_path、内容哈希查询，加索引避免大库导入时全表扫描（O(N²)）
+    source_path: Mapped[str] = mapped_column(String(500), default="", nullable=False, index=True)
+    source_hash: Mapped[str] = mapped_column(String(64), default="", nullable=False, index=True)
     word_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     chapter_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     latest_chapter: Mapped[str] = mapped_column(String(200), default="", nullable=False)

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import gzip
 import http.cookiejar
+import ipaddress
 import os
 import random
+import socket
 import threading
 import time
 import urllib.error
@@ -183,6 +185,42 @@ def _open(req: urllib.request.Request, timeout: int):
             raise HttpError(f"连接失败(直连/代理均不可用): {second}") from first
 
 
+def is_public_http_url(url: str) -> bool:
+    """仅放行 http/https 且解析地址均为公网的 URL，用于封堵刮削封面等 SSRF。
+
+    解析出的任一地址落在私网/环回/链路本地/保留段即拒绝（含 127.0.0.1、内网、
+    169.254.0.0/16 云元数据等），避免用户可控 URL 让服务端访问内网。
+    """
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return False
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(parts.hostname, port, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+    return True
+
+
 def http_get(
     url: str,
     headers: dict | None = None,
@@ -235,8 +273,12 @@ def http_get_bytes(
     headers: dict | None = None,
     timeout: int = 20,
     referer: str = "",
+    max_bytes: int = 8 * 1024 * 1024,
 ) -> tuple[bytes, str]:
-    """GET 原始字节（封面下载等），返回 (data, content_type)。"""
+    """GET 原始字节（封面下载等），返回 (data, content_type)。
+
+    max_bytes：响应体上限，超限即中断并抛错，避免超大响应打爆内存。
+    """
     # 封面同样按域名限速
     throttle_host(url)
     hdrs = {
@@ -250,8 +292,18 @@ def http_get_bytes(
     req = urllib.request.Request(url, headers=hdrs, method="GET")
     try:
         with _open(req, timeout=timeout) as resp:
-            data = resp.read()
+            # 分块读取并累计，超过上限立即报错，防止超大文件占满内存
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HttpError(f"响应过大（>{max_bytes // (1024 * 1024)}MB），已中止下载")
+                chunks.append(chunk)
             ctype = (resp.headers.get("Content-Type") or "").lower()
-            return data, ctype
+            return b"".join(chunks), ctype
     except urllib.error.HTTPError as e:
         raise HttpError(f"下载失败 HTTP {e.code}") from e

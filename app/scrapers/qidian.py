@@ -11,7 +11,7 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
-from .http_util import HttpError, http_get, http_get_bytes
+from .http_util import HttpError, http_get, http_get_bytes, is_public_http_url
 
 UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
@@ -557,6 +557,9 @@ def download_cover(url: str, dest) -> str:
         raise ScrapeError("没有封面地址")
     if url.startswith("//"):
         url = "https:" + url
+    # 防 SSRF：仅允许公网 http/https，拒绝内网/环回地址
+    if not is_public_http_url(url):
+        raise ScrapeError("封面地址不被允许（仅支持公网 http/https）")
     try:
         data, ctype = http_get_bytes(
             url, headers={"Referer": "https://m.qidian.com/"}, timeout=TIMEOUT
