@@ -1,5 +1,10 @@
 import { http } from "./client";
-import type { BatchStatus, ImportStatus } from "./types";
+import type { BatchStatus, ImportStatus, TasksStatus } from "./types";
+
+/** 导入/体检/刮削互斥任务状态（前端禁用按钮与提示用） */
+export function fetchTasksStatus() {
+  return http.get<TasksStatus>("/api/admin/tasks/status");
+}
 
 /** 本地导入 */
 export function startImport() {

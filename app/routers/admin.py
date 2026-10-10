@@ -109,39 +109,20 @@ def admin_stats(request: Request, db: Session = Depends(get_db)) -> dict:
     }
 
 
+@router.get("/tasks/status")
+def admin_tasks_status() -> dict:
+    """导入/体检/刮削的互斥任务状态，供前端禁用按钮与提示。"""
+    from ..task_guard import busy_status
+
+    return busy_status()
+
+
 @router.get("/duplicates")
 def admin_duplicates(db: Session = Depends(get_db)) -> dict:
-    rows = db.execute(
-        select(Book.title, Book.author, func.count(Book.id).label("n"))
-        .group_by(Book.title, Book.author)
-        .having(func.count(Book.id) > 1)
-    ).all()
-    items = []
-    for title, author, n in rows:
-        books = db.execute(
-            select(Book)
-            .where(Book.title == title, Book.author == author)
-            .order_by(Book.chapter_count.desc(), Book.word_count.desc(), Book.id)
-        ).scalars().all()
-        items.append({
-            "title": title,
-            "author": author,
-            "count": n,
-            # 与 library.report 一致：默认保留章节最多的那本
-            "keep_id": books[0].id if books else 0,
-            "books": [
-                {
-                    "id": b.id,
-                    "source_path": b.source_path,
-                    "source": b.source,
-                    "source_id": b.source_id,
-                    "chapter_count": b.chapter_count,
-                    "word_count": b.word_count,
-                    "cover_file": b.cover_file,
-                }
-                for b in books
-            ],
-        })
+    # 与体检共用同一套重复检测，避免两处逻辑漂移
+    from ..library_check import find_duplicate_groups
+
+    items = find_duplicate_groups(db)
     return {"items": items, "total": len(items)}
 
 
@@ -399,7 +380,8 @@ async def admin_import_stream(request: Request):
     import asyncio
 
     async def gen():
-        for _ in range(600):
+        # 持续推送直到任务结束或客户端断开（不设次数上限，长任务不丢进度）
+        while True:
             if await request.is_disconnected():
                 break
             st = get_import_status()
@@ -419,7 +401,8 @@ async def admin_batch_stream(request: Request):
     from ..batch_scrape import get_batch_status
 
     async def gen():
-        for _ in range(600):
+        # 持续推送直到任务结束或客户端断开（不设次数上限，长任务不丢进度）
+        while True:
             if await request.is_disconnected():
                 break
             st = get_batch_status()

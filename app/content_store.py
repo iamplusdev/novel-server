@@ -106,17 +106,21 @@ def read_chapter_text(
 
 
 def read_book_texts(book_id: int, spans: Sequence[tuple[int, int]]) -> list[str]:
-    """按 (offset, length) 列表读整本书章节（体检/修复用）。"""
+    """按 (offset, length) 列表读整本书章节（体检/修复用）。
+
+    打开一次、逐 span seek/read，避免把整个正文包读进内存。
+    """
     path = content_pack_path(book_id)
     out: list[str] = []
     if not path.is_file():
         return ["" for _ in spans]
-    data = path.read_bytes()
-    for off, ln in spans:
-        if ln and ln > 0:
-            out.append(data[off : off + ln].decode("utf-8", errors="replace"))
-        else:
-            out.append("")
+    with path.open("rb") as f:
+        for off, ln in spans:
+            if ln and ln > 0:
+                f.seek(int(off))
+                out.append(f.read(int(ln)).decode("utf-8", errors="replace"))
+            else:
+                out.append("")
     return out
 
 

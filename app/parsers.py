@@ -1,9 +1,12 @@
-"""TXT 章节解析：常见中文章节标题规则 + 文件名元数据。"""
+"""TXT 章节解析：常见中文章节标题规则 + 文件名元数据 + 编码识别（流式）。"""
 from __future__ import annotations
 
+import hashlib
+import io
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable, Iterator
 
 # 常见章节行：第X章/节/回/卷/篇、Chapter N、卷X、序章/楔子/番外 等
 CHAPTER_PATTERNS = [
@@ -38,7 +41,85 @@ class ParsedBook:
     intro: str = ""
 
 
+class ParseCancelled(Exception):
+    """导入中途被取消（超大文件解析过程中）。"""
+
+
 _AUTHOR_SUFFIX = re.compile(r"(著|作品|文)$")
+
+# 编码候选：用采样“择优”而非固定顺序，避免 gb18030 抢先污染 big5 等
+_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "gbk", "big5", "utf-16", "utf-16-le")
+_ENCODING_SAMPLE = 256 * 1024
+_REPLACEMENT = "\ufffd"
+# 明显“解码错误”的字符：替换符 + 私用区（gb18030 误读 Big5 常落这里）
+_BAD_RE = re.compile(r"[\ufffd\ue000-\uf8ff]")
+
+
+def _bad_count(sample: bytes, enc: str) -> int | None:
+    """采样解码后的“坏字符”个数（替换符 + 私用区）；无法解码返回 None。"""
+    try:
+        text = sample.decode(enc)
+    except (UnicodeError, LookupError):  # utf-16 无 BOM 等抛 UnicodeError
+        return None
+    return len(_BAD_RE.findall(text))
+
+
+def detect_encoding(sample: bytes) -> str:
+    """采样择优给出最可能的编码：BOM 优先，其次坏字符最少（同分按优先级）。"""
+    if sample.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    if sample.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    fallback = None
+    for enc in _ENCODINGS:
+        n = _bad_count(sample, enc)
+        if n == 0:
+            return enc
+        if n is not None and fallback is None:
+            fallback = enc
+    return fallback or "utf-8"
+
+
+def decode_bytes(raw: bytes) -> str:
+    """整段解码：先按采样择优，失败再依次尝试其它编码，最后兜底 replace。"""
+    if not raw:
+        return ""
+    enc = detect_encoding(raw[:_ENCODING_SAMPLE])
+    for candidate in (enc, *_ENCODINGS):
+        try:
+            return raw.decode(candidate)
+        except (UnicodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _sample_file(path: Path) -> bytes:
+    """取文件头 + 中段样本用于编码识别（避免纯 ASCII 头部导致误判）。"""
+    size = path.stat().st_size
+    with path.open("rb") as f:
+        head = f.read(_ENCODING_SAMPLE)
+        mid = b""
+        if size > 2 * _ENCODING_SAMPLE:
+            f.seek(size // 2)
+            mid = f.read(_ENCODING_SAMPLE)
+    return head + mid
+
+
+class _HashingRaw(io.RawIOBase):
+    """只读包装：边读边累计 SHA-256，实现“解析即哈希”的单次读盘。"""
+
+    def __init__(self, fh) -> None:
+        self._fh = fh
+        self.hash = hashlib.sha256()
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        n = self._fh.readinto(b)
+        if n:
+            self.hash.update(memoryview(b)[:n])
+        return n or 0
 
 
 def parse_filename_meta(stem: str, category: str) -> tuple[str, str]:
@@ -96,69 +177,73 @@ def _is_chapter_heading(line: str) -> tuple[bool, str]:
     return False, ""
 
 
-def parse_txt_text(text: str) -> list[ParsedChapter]:
-    """按章节标题切分正文。无法识别时整本作为单章。"""
-    # 统一换行，去掉 BOM / 空白行开头
-    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
-    lines = text.split("\n")
+def iter_chapters(lines: Iterable[str], cancel=None) -> Iterator[ParsedChapter]:
+    """逐行流式切章：迭代文本行（可含换行），边读边产出章节，避免整本驻留内存。
 
-    chapters: list[ParsedChapter] = []
-    # 伪章节标题留空（不用书名），避免目录出现「0 书名」条目
+    无法识别章节标题时，整本作为单章（标题留空）产出。
+    cancel（threading.Event）置位时抛 ParseCancelled，供导入中途中断。
+    """
     current_title = ""
     buf: list[str] = []
+    emitted = 0
+    first = True
+    checked = 0
 
-    def flush() -> None:
+    def finish() -> str:
         content = "\n".join(buf).strip()
         # 压缩过多空行
-        content = re.sub(r"\n{3,}", "\n\n", content)
-        if content or chapters:
-            chapters.append(ParsedChapter(title=current_title, content=content))
-        buf.clear()
+        return re.sub(r"\n{3,}", "\n\n", content)
 
-    for line in lines:
+    for raw in lines:
+        # 每若干行检查一次取消，避免超大文件一直跑
+        checked += 1
+        if cancel is not None and (checked & 1023) == 0 and cancel.is_set():
+            raise ParseCancelled()
+        line = raw.rstrip("\r\n")
+        if first:
+            first = False
+            line = line.lstrip("\ufeff")
         ok, title = _is_chapter_heading(line)
         if ok:
-            # 若缓冲区里已有正文，认为是新章并先落盘；否则直接采用该章标题
+            # 缓冲区已有正文则先落盘，否则直接采用该章标题
             body = "".join(buf).strip()
             if body:
-                flush()
+                content = finish()
+                buf.clear()
+                if content or emitted:
+                    emitted += 1
+                    yield ParsedChapter(title=current_title, content=content)
                 current_title = title
             else:
+                buf.clear()
                 current_title = title
             continue
         buf.append(line)
 
-    flush()
+    content = finish()
+    buf.clear()
+    if content or emitted:
+        yield ParsedChapter(title=current_title, content=content)
 
-    # 丢弃开头空章节（无内容且标题非章节名）
-    cleaned = [c for c in chapters if c.content.strip()]
+
+def parse_txt_text(text: str) -> list[ParsedChapter]:
+    """按章节标题切分正文（内存版）。无法识别时整本作为单章。"""
+    # 统一换行，去掉 BOM / 空白行开头
+    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    cleaned = [c for c in iter_chapters(io.StringIO(text)) if c.content.strip()]
     if not cleaned:
         # 整本无法识别章节时：单章标题留空，前端回退「第 1 章」
         cleaned = [ParsedChapter(title="", content=text.strip())]
     return cleaned
 
 
-def load_txt_book(path: Path, category: str) -> ParsedBook:
-    raw = path.read_bytes()
-    text = None
-    for enc in ("utf-8", "utf-8-sig", "gb18030", "gbk", "big5"):
-        try:
-            text = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        text = raw.decode("utf-8", errors="replace")
-
-    title, author = parse_filename_meta(path.stem, category)
-    chapters = parse_txt_text(text)
+def _build_parsed(stem: str, category: str, chapters: list[ParsedChapter]) -> ParsedBook:
+    title, author = parse_filename_meta(stem, category)
     word_count = sum(len(c.content) for c in chapters)
-
     intro = ""
     if chapters:
         head = chapters[0].content.strip().replace("\n", " ")
         intro = head[:200] + ("…" if len(head) > 200 else "")
-
     return ParsedBook(
         title=title,
         author=author,
@@ -167,23 +252,32 @@ def load_txt_book(path: Path, category: str) -> ParsedBook:
         word_count=word_count,
         intro=intro,
     )
+
+
+def load_txt_book_with_hash(path: Path, category: str, cancel=None) -> tuple[ParsedBook, str]:
+    """流式解析文件并返回 (ParsedBook, sha256)。单次读盘：边读边算哈希与切章。
+
+    cancel 置位时抛 ParseCancelled（超大文件解析中途可中断）。
+    """
+    enc = detect_encoding(_sample_file(path))
+    with path.open("rb") as fh:
+        raw = _HashingRaw(fh)
+        text = io.TextIOWrapper(
+            io.BufferedReader(raw), encoding=enc, errors="replace", newline=None
+        )
+        chapters = [c for c in iter_chapters(text, cancel=cancel) if c.content.strip()]
+        text.detach()  # 不关闭底层文件，交由 with 收尾
+    if not chapters:
+        chapters = [ParsedChapter(title="", content="")]
+    return _build_parsed(path.stem, category, chapters), raw.hash.hexdigest()
+
+
+def load_txt_book(path: Path, category: str) -> ParsedBook:
+    parsed, _digest = load_txt_book_with_hash(path, category)
+    return parsed
 
 
 def load_txt_book_from_text(text: str, stem: str, category: str) -> ParsedBook:
-    """从内存文本构建书籍（WebDAV 导入用）。"""
-    text = (text or "").replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
-    title, author = parse_filename_meta(stem, category)
-    chapters = parse_txt_text(text)
-    word_count = sum(len(c.content) for c in chapters)
-    intro = ""
-    if chapters:
-        head = chapters[0].content.strip().replace("\n", " ")
-        intro = head[:200] + ("…" if len(head) > 200 else "")
-    return ParsedBook(
-        title=title,
-        author=author,
-        category=category,
-        chapters=chapters,
-        word_count=word_count,
-        intro=intro,
-    )
+    """从内存文本构建书籍（重解析 / WebDAV 导入用）。"""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    return _build_parsed(stem, category, parse_txt_text(text))

@@ -10,18 +10,23 @@ import {
   BATCH_STREAM_URL,
   cancelBatchScrape,
   fetchBatchStatus,
+  fetchTasksStatus,
   startBatchScrape,
 } from "@/api/progress";
 import {
-  fetchLibraryReport,
+  SCAN_STREAM_URL,
+  cancelScan,
+  fetchScanStatus,
   mergeDuplicates,
   relocateBooks,
   repairAll,
   repairOne,
+  startScan,
 } from "@/api/library";
-import type { BatchStatus, LibraryReport } from "@/api/types";
+import type { BatchStatus, LibraryReport, ScanStatus, TasksStatus } from "@/api/types";
 import { openSse, pollStatus, type SseHandle } from "@/utils/sse";
 import { useLibraryStore } from "@/stores/library";
+import { useCheckStore } from "@/stores/check";
 import AppIcon from "@/components/AppIcon.vue";
 
 const router = useRouter();
@@ -37,37 +42,47 @@ watch(
   },
   { immediate: true },
 );
-const report = ref<LibraryReport | null>(null);
-const reportLoading = ref(false);
-/** 深度体检：读正文查乱码/控制符，大库较慢 */
+// 报告缓存在 Pinia（内存态，避免 sessionStorage 5MB 上限导致大报告静默丢失）
+const check = useCheckStore();
+const report = computed(() => check.report);
+const scanned = computed(() => check.scanned);
+/** 深度体检：读正文查乱码/控制符，大库较慢（改为后台任务，带进度） */
 const deepScan = ref(false);
-/** 是否已扫描过（含会话缓存恢复） */
-const scanned = ref(false);
+/** 后台体检任务状态 */
+const scan = ref<ScanStatus | null>(null);
+let scanHandle: SseHandle | null = null;
 
-/** 会话内缓存报告，切走再进不重扫 */
-const REPORT_CACHE_KEY = "novel-library-report";
+// 互斥任务：导入/体检/刮削同一时刻只允许一个在跑
+const tasks = ref<TasksStatus | null>(null);
+let tasksTimer: ReturnType<typeof setInterval> | null = null;
+const scanBlocked = computed(() => {
+  const t = tasks.value;
+  if (!t) return "";
+  if (t.import) return "导入";
+  if (t.scrape) return "刮削";
+  return "";
+});
+const scrapeBlocked = computed(() => {
+  const t = tasks.value;
+  if (!t) return "";
+  if (t.import) return "导入";
+  if (t.scan) return "体检";
+  return "";
+});
 
-function restoreReportCache(): boolean {
+async function refreshTasks() {
   try {
-    const raw = sessionStorage.getItem(REPORT_CACHE_KEY);
-    if (!raw) return false;
-    const data = JSON.parse(raw) as LibraryReport;
-    if (!data || typeof data !== "object") return false;
-    report.value = data;
-    scanned.value = true;
-    return true;
+    tasks.value = await fetchTasksStatus();
   } catch {
-    return false;
+    /* ignore */
   }
 }
 
-function saveReportCache(r: LibraryReport) {
-  try {
-    sessionStorage.setItem(REPORT_CACHE_KEY, JSON.stringify(r));
-  } catch {
-    /* 缓存失败不影响功能 */
-  }
-}
+const scanPercent = computed(() => {
+  const st = scan.value;
+  if (!st) return 0;
+  return Math.min(100, Math.max(0, Number(st.percent) || 0));
+});
 
 const batch = ref<BatchStatus | null>(null);
 /** all=按起点→番茄→纵横顺序，命中即停 */
@@ -136,23 +151,69 @@ function fmtWords(n?: number) {
   return String(n);
 }
 
+/** 启动后台体检（深度/快速），完成后从状态里取回报告 */
 async function loadReport() {
-  reportLoading.value = true;
+  await refreshTasks();
+  if (scanBlocked.value) {
+    ElMessage.warning(`有「${scanBlocked.value}」任务进行中，请先等待完成`);
+    return;
+  }
   try {
-    const r = await fetchLibraryReport(deepScan.value);
-    report.value = r;
-    scanned.value = true;
-    saveReportCache(r);
+    const res = await startScan(deepScan.value);
+    scan.value = res.status;
+    ElMessage.success(res.started ? "开始体检…" : "体检已在进行中");
+    watchScan();
+    void refreshTasks();
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : "加载体检报告失败");
-  } finally {
-    reportLoading.value = false;
+    ElMessage.error(e instanceof Error ? e.message : "启动体检失败");
+  }
+}
+
+function stopScanWatch() {
+  scanHandle?.close();
+  scanHandle = null;
+}
+
+function onScanMessage(data: unknown) {
+  const st = data as ScanStatus;
+  scan.value = st;
+  if (!st.running) {
+    stopScanWatch();
+    if (st.error) {
+      ElMessage.error(`体检失败：${st.error}`);
+    } else {
+      if (st.report) check.setReport(st.report);
+      ElMessage.success("体检完成");
+    }
+  }
+}
+
+function watchScan() {
+  stopScanWatch();
+  scanHandle = openSse(SCAN_STREAM_URL, onScanMessage, {
+    shouldStop: (d) => !(d as ScanStatus).running,
+    onFallback: () => {
+      scanHandle = pollStatus(fetchScanStatus, onScanMessage, {
+        shouldStop: (d) => !(d as ScanStatus).running,
+      });
+    },
+  });
+}
+
+async function onCancelScan() {
+  try {
+    const res = await cancelScan();
+    scan.value = res.status;
+    ElMessage[res.ok ? "success" : "warning"](res.ok ? "已请求停止体检" : "当前没有进行中的体检");
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "停止失败");
   }
 }
 
 async function refreshAll() {
-  // 修复/合并后按当前深度档位重扫一次
-  await Promise.all([loadReport(), lib.loadBooks(), lib.loadStats()]);
+  // 修复/合并后刷新书库并按当前深度档位重扫一次
+  await Promise.all([lib.loadBooks(), lib.loadStats()]);
+  await loadReport();
 }
 
 async function onMerge(g: NonNullable<LibraryReport["duplicates"]>[number]) {
@@ -192,6 +253,12 @@ async function onRepairOne(bookId: number) {
 }
 
 async function onRepairAll() {
+  // 只修当前报告里已列出的问题书；后端要求显式 ids，避免隐式全库深扫
+  const ids = [...new Set((report.value?.issues || []).map((i) => i.book_id))];
+  if (!ids.length) {
+    ElMessage.warning("没有需要修复的问题书");
+    return;
+  }
   try {
     await ElMessageBox.confirm(
       "对所有异常书执行自动修复？\n（清理字符，必要时从源 TXT 重解析）",
@@ -203,10 +270,7 @@ async function onRepairAll() {
   }
   acting.value = true;
   try {
-    // 只修当前报告里已列出的问题书，避免隐式全库深扫
-    const ids = (report.value?.issues || []).map((i) => i.book_id);
-    const uniqueIds = [...new Set(ids)];
-    const res = await repairAll("auto", uniqueIds.length ? uniqueIds : undefined);
+    const res = await repairAll("auto", ids);
     ElMessage.success(`已修复 ${res.count || 0} 本`);
     await refreshAll();
   } catch (e) {
@@ -276,6 +340,11 @@ function watchBatch() {
 }
 
 async function onStartBatch() {
+  await refreshTasks();
+  if (scrapeBlocked.value) {
+    ElMessage.warning(`有「${scrapeBlocked.value}」任务进行中，请先等待完成`);
+    return;
+  }
   starting.value = true;
   try {
     const res = await startBatchScrape({
@@ -287,6 +356,7 @@ async function onStartBatch() {
     batch.value = res.status;
     ElMessage.success(res.started ? "一键刮削已开始" : "批处理已在运行");
     watchBatch();
+    void refreshTasks();
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "启动失败");
   } finally {
@@ -314,15 +384,28 @@ async function onRefreshBatch() {
 }
 
 onMounted(async () => {
-  // 只恢复会话缓存，不自动扫描；无缓存则展示「未扫描」空态
-  restoreReportCache();
+  // 报告缓存在 Pinia（内存态）；如后台体检在跑则恢复进度，否则沿用上次报告
+  try {
+    const st = await fetchScanStatus();
+    scan.value = st;
+    if (st.running) watchScan();
+    else if (st.report) check.setReport(st.report);
+  } catch {
+    /* ignore */
+  }
+  await refreshTasks();
+  tasksTimer = setInterval(refreshTasks, 3000);
   await onRefreshBatch();
 });
-onUnmounted(stopWatch);
+onUnmounted(() => {
+  stopWatch();
+  stopScanWatch();
+  if (tasksTimer) clearInterval(tasksTimer);
+});
 </script>
 
 <template>
-  <div v-loading="reportLoading || acting" class="page check-page">
+  <div v-loading="acting" class="page check-page">
     <header class="page-header">
       <div class="title-row">
         <h1 class="page-title">书库体检</h1>
@@ -330,12 +413,28 @@ onUnmounted(stopWatch);
       </div>
       <div class="page-actions">
         <label class="check-label" title="读正文检查乱码/控制字符，书多时较慢">
-          <input v-model="deepScan" type="checkbox" />
+          <input v-model="deepScan" type="checkbox" :disabled="!!scan?.running" />
           深度体检
         </label>
-        <button type="button" class="ghost-btn" :disabled="reportLoading" @click="loadReport">
+        <button
+          type="button"
+          class="ghost-btn"
+          :disabled="!!scan?.running || !!scanBlocked"
+          @click="loadReport"
+        >
           <AppIcon name="refresh" :size="14" />
-          {{ scanned ? "重新扫描" : "开始扫描" }}
+          {{
+            scan?.running
+              ? `扫描中 ${scanPercent}%`
+              : scanBlocked
+                ? `${scanBlocked}进行中`
+                : scanned
+                  ? "重新扫描"
+                  : "开始扫描"
+          }}
+        </button>
+        <button v-if="scan?.running" type="button" class="ghost-btn danger" @click="onCancelScan">
+          停止扫描
         </button>
         <button type="button" class="ghost-btn" @click="onRepairAll">修复全部问题</button>
         <button
@@ -347,6 +446,9 @@ onUnmounted(stopWatch);
           按分类归位
         </button>
       </div>
+      <p v-if="scanBlocked" class="muted check-hint">
+        当前有「{{ scanBlocked }}」任务进行中，体检暂不可用（导入 / 体检 / 刮削互斥）。
+      </p>
     </header>
 
     <section class="page-card tabs-card">
@@ -477,12 +579,20 @@ onUnmounted(stopWatch);
             step="0.05"
             class="field-input narrow"
           />
-          <button type="button" class="primary-btn" :disabled="starting" @click="onStartBatch">
-            {{ starting ? "启动中…" : "开始一键刮削" }}
+          <button
+            type="button"
+            class="primary-btn"
+            :disabled="starting || !!scrapeBlocked"
+            @click="onStartBatch"
+          >
+            {{ starting ? "启动中…" : scrapeBlocked ? `${scrapeBlocked}进行中` : "开始一键刮削" }}
           </button>
           <button type="button" class="ghost-btn danger" @click="onCancelBatch">停止</button>
           <button type="button" class="ghost-btn" @click="onRefreshBatch">刷新进度</button>
         </div>
+        <p v-if="scrapeBlocked" class="muted check-hint">
+          当前有「{{ scrapeBlocked }}」任务进行中，刮削暂不可用（导入 / 体检 / 刮削互斥）。
+        </p>
 
         <div v-if="batch" class="batch-status">
           <div class="status-line">

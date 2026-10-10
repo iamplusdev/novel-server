@@ -64,14 +64,15 @@ export function pollStatus(
   } = {},
 ): SseHandle {
   const intervalMs = options.intervalMs ?? 1500;
-  const maxTicks = options.maxTicks ?? 120;
+  // 默认不设上限（长任务持续轮询），显式传 maxTicks>0 才限制
+  const maxTicks = options.maxTicks ?? 0;
   let ticks = 0;
   let stopped = false;
 
   const timer = setInterval(async () => {
     if (stopped) return;
     ticks += 1;
-    if (ticks > maxTicks) {
+    if (maxTicks > 0 && ticks > maxTicks) {
       stopped = true;
       clearInterval(timer);
       return;

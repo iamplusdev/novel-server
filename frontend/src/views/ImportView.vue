@@ -9,10 +9,11 @@ import {
   cancelImport,
   fetchImportLogs,
   fetchImportStatus,
+  fetchTasksStatus,
   startImport,
   type ImportLogItem,
 } from "@/api/progress";
-import type { ImportStatus } from "@/api/types";
+import type { ImportStatus, TasksStatus } from "@/api/types";
 import { openSse, pollStatus, type SseHandle } from "@/utils/sse";
 import { useLibraryStore } from "@/stores/library";
 import AppIcon from "@/components/AppIcon.vue";
@@ -23,6 +24,25 @@ const status = ref<ImportStatus | null>(null);
 const starting = ref(false);
 const novelsPath = ref("NOVELS_DIR（服务端配置）");
 let handle: SseHandle | null = null;
+
+// 互斥任务：导入/体检/刮削同一时刻只允许一个在跑
+const tasks = ref<TasksStatus | null>(null);
+let tasksTimer: ReturnType<typeof setInterval> | null = null;
+const blockedBy = computed(() => {
+  const t = tasks.value;
+  if (!t) return "";
+  if (t.scan) return "体检";
+  if (t.scrape) return "刮削";
+  return "";
+});
+
+async function refreshTasks() {
+  try {
+    tasks.value = await fetchTasksStatus();
+  } catch {
+    /* 状态查询失败不阻断 */
+  }
+}
 
 // 历史查询
 const historyDate = ref<string>("");
@@ -131,12 +151,22 @@ function watchProgress() {
 }
 
 async function onStart() {
+  await refreshTasks();
+  if (blockedBy.value) {
+    ElMessage.warning(`有「${blockedBy.value}」任务进行中，请先等待完成`);
+    return;
+  }
   starting.value = true;
   try {
     const res = await startImport();
+    if (!res.started && blockedBy.value) {
+      ElMessage.warning(`有「${blockedBy.value}」任务进行中，请先等待完成`);
+      return;
+    }
     ElMessage.success(res.started ? "导入已开始" : "导入已在进行中");
     status.value = res.import;
     watchProgress();
+    void refreshTasks();
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "导入失败");
   } finally {
@@ -179,6 +209,8 @@ function showLogDetail(row: ImportLogItem) {
 }
 
 onMounted(async () => {
+  await refreshTasks();
+  tasksTimer = setInterval(refreshTasks, 3000);
   await onRefresh();
   if (status.value?.running) watchProgress();
   try {
@@ -190,7 +222,10 @@ onMounted(async () => {
   await loadHistory();
 });
 
-onUnmounted(stopWatch);
+onUnmounted(() => {
+  stopWatch();
+  if (tasksTimer) clearInterval(tasksTimer);
+});
 </script>
 
 <template>
@@ -198,9 +233,9 @@ onUnmounted(stopWatch);
     <header class="page-header">
       <h1 class="page-title">导入</h1>
       <div class="page-actions">
-        <button type="button" class="primary-btn" :disabled="starting" @click="onStart">
+        <button type="button" class="primary-btn" :disabled="starting || !!blockedBy" @click="onStart">
           <AppIcon name="play" :size="14" />
-          {{ starting ? "启动中…" : "开始导入" }}
+          {{ starting ? "启动中…" : blockedBy ? `${blockedBy}进行中` : "开始导入" }}
         </button>
         <button type="button" class="ghost-btn danger" @click="onCancel">
           <AppIcon name="stop" :size="14" />
@@ -224,6 +259,9 @@ onUnmounted(stopWatch);
     </header>
 
     <section class="page-card">
+      <p v-if="blockedBy" class="muted import-hint">
+        当前有「{{ blockedBy }}」任务进行中，导入暂不可用（导入 / 体检 / 刮削互斥）。
+      </p>
       <div class="section-head">
         <h2 class="section-title">导入进度</h2>
         <span v-if="status?.running" class="tag-soft is-accent">进行中</span>

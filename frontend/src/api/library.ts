@@ -1,5 +1,21 @@
 import { http } from "./client";
-import type { LibraryReport } from "./types";
+import type { LibraryReport, ScanStatus } from "./types";
+
+/** 后台体检进度 SSE */
+export const SCAN_STREAM_URL = "/api/admin/library/scan/stream";
+
+/** 启动后台体检（重复 + 异常），深度体检不再阻塞请求 */
+export function startScan(deep = false) {
+  return http.post<{ started: boolean; status: ScanStatus }>("/api/admin/library/scan", { deep });
+}
+
+export function fetchScanStatus() {
+  return http.get<ScanStatus>("/api/admin/library/scan/status");
+}
+
+export function cancelScan() {
+  return http.post<{ ok: boolean; status: ScanStatus }>("/api/admin/library/scan/cancel");
+}
 
 /** deep=false 快速体检（SQL）；deep=true 深度体检（含正文乱码/控制符） */
 export function fetchLibraryReport(deep = false) {

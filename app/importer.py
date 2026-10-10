@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import threading
@@ -30,7 +31,12 @@ from .config import (
 from .content_store import commit_pack, discard_pack, write_pack_staged
 from .database import SessionLocal
 from .models import Book, Chapter, ImportLog
-from .parsers import load_txt_book, load_txt_book_from_text
+from .parsers import (
+    ParseCancelled,
+    decode_bytes as decode_txt_bytes,
+    load_txt_book_from_text,
+    load_txt_book_with_hash,
+)
 
 # 兼容旧导入
 CATEGORIES = list(SOURCE_CATEGORIES.keys())
@@ -106,12 +112,11 @@ def request_import_cancel() -> bool:
     return True
 
 
-def file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 256), b""):
-            h.update(chunk)
-    return h.hexdigest()
+# 单文件大小上限（字节）；0=不限制。超限跳过并计入失败，避免超大 TXT 拖垮导入
+try:
+    MAX_TXT_BYTES = max(0, int((os.environ.get("MAX_TXT_BYTES") or "0").strip() or "0"))
+except ValueError:
+    MAX_TXT_BYTES = 0
 
 
 _SKIP_NAMES = {
@@ -209,18 +214,16 @@ def _upsert_parsed(
     """写入/更新一本书。source_key 为本地路径或 webdav:... 标识。"""
     label = f"{category}/{parsed.title}"
     existing = _find_book_by_source(db, source_key)
-    if existing and existing.source_hash == content_hash:
-        return "skipped", label
-
-    if not existing:
-        existing = _find_book_by_hash(db, content_hash) or _find_book_by_title_author(
-            db, parsed.title, parsed.author
-        )
-        if existing:
-            existing.source_path = source_key
-
-    if existing and existing.source_hash == content_hash and existing.source_path == source_key:
-        return "skipped", label
+    if existing is not None:
+        if existing.source_hash == content_hash:
+            return "skipped", label
+        # 同一路径内容已变：走更新分支
+    else:
+        # 未按路径命中：内容完全相同或同名同作者均视为已存在，跳过导入（不覆盖）
+        if _find_book_by_hash(db, content_hash) is not None:
+            return "skipped", label
+        if _find_book_by_title_author(db, parsed.title, parsed.author) is not None:
+            return "skipped", f"{category}/{parsed.title}（同名同作者已存在）"
 
     if existing:
         book = existing
@@ -325,22 +328,8 @@ def _relocate_local_txt(book: Book, src: Path, parts: tuple[str, ...]) -> bool:
     return True
 
 
-def _upsert_book(db: Session, path: Path, category: str, content_hash: str) -> tuple[str, str]:
-    parsed = load_txt_book(path, category)
-    return _upsert_parsed(db, str(path), category, parsed, content_hash)
-
-
 def _bytes_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def decode_txt_bytes(raw: bytes) -> str:
-    for enc in ("utf-8", "utf-8-sig", "gb18030", "gbk", "big5"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
 
 
 def _progress_fields(result: ImportResult, total: int, done: int, current: str) -> dict:
@@ -369,9 +358,6 @@ def import_all(db: Session | None = None) -> ImportResult:
         db = SessionLocal()
     result = ImportResult()
     root = settings.novels_dir
-    # 分批提交：大库中途崩溃时已入库部分不丢
-    batch_size = 10
-    pending = 0
     try:
         files = list(_iter_txt_files(root))
         total = len(files)
@@ -387,15 +373,18 @@ def import_all(db: Session | None = None) -> ImportResult:
             current_name = path.name
             _set_import_status(**_progress_fields(result, total, done - 1, current_name))
             try:
-                digest = file_sha256(path)
-                action, label = _upsert_book(db, path, category, digest)
+                if MAX_TXT_BYTES and path.stat().st_size > MAX_TXT_BYTES:
+                    raise ValueError(f"文件超过上限 {MAX_TXT_BYTES} 字节，已跳过")
+                parsed, digest = load_txt_book_with_hash(path, category, cancel=_import_cancel)
+                action, label = _upsert_parsed(db, str(path), category, parsed, digest)
                 getattr(result, action).append(label)
                 mark = {"added": "+", "updated": "~", "skipped": "·", "failed": "!"}.get(action, "?")
                 result.recent_log.append(f"{mark} {label}")
-                pending += 1
-                if pending >= batch_size:
-                    db.commit()
-                    pending = 0
+            except ParseCancelled:
+                # 超大文件解析中途被取消
+                result.failed.append("（已取消）")
+                result.recent_log.append("取消")
+                break
             except Exception as exc:  # noqa: BLE001
                 err_label = f"{path.name}: {exc}"
                 log.warning("导入失败 %s: %s", path, exc)
@@ -416,9 +405,12 @@ def import_all(db: Session | None = None) -> ImportResult:
 def import_all_async(mode: str = "local") -> bool:
     """后台线程导入（仅本地 NOVELS_DIR；WebDAV 导入已移除）。"""
     global _import_status
+    from .task_guard import other_task_running
+
     if not _import_lock.acquire(blocking=False):
         return False
-    if _import_status.get("running"):
+    # 与体检/刮削互斥：其它长任务在跑时不启动
+    if _import_status.get("running") or other_task_running("import"):
         _import_lock.release()
         return False
     _import_cancel.clear()
@@ -479,14 +471,18 @@ def import_all_async(mode: str = "local") -> bool:
 
 
 def save_import_log(result: ImportResult, *, started_at: str, mode: str = "local") -> None:
-    """把导入结果写入 import_logs；仅记录「新增」，无新增则不落库。"""
+    """把导入结果写入 import_logs；新增/更新/跳过/失败任一非空即落库（含取消）。"""
     import json as _json
 
-    if not result.added:
+    if not (result.added or result.updated or result.skipped or result.failed):
         return
     finished = datetime.now().isoformat(timespec="seconds")
     detail = {
         "added": result.added[:500],
+        "updated": result.updated[:500],
+        "skipped": result.skipped[:500],
+        "failed": result.failed[:500],
+        "recent": result.recent_log[-100:],
     }
     db = SessionLocal()
     try:

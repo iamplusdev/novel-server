@@ -182,7 +182,8 @@ export interface LibraryIssue {
   title: string;
   kind: string;
   message: string;
-  detail?: string;
+  // 后端为结构化 dict（如 {chapter_count, word_count}）
+  detail?: Record<string, unknown>;
 }
 
 export interface LibraryReport {
@@ -192,4 +193,25 @@ export interface LibraryReport {
   issue_count: number;
   /** 是否为深度体检（含正文乱码/控制符检查） */
   deep?: boolean;
+}
+
+/** 后台体检任务状态 */
+export interface ScanStatus {
+  running: boolean;
+  deep: boolean;
+  total: number;
+  done: number;
+  percent: number;
+  error: string;
+  /** 完成后回传的完整报告 */
+  report: LibraryReport | null;
+}
+
+/** 导入/体检/刮削的互斥任务状态 */
+export interface TasksStatus {
+  import: boolean;
+  scan: boolean;
+  scrape: boolean;
+  /** 任一任务在跑 */
+  busy: boolean;
 }

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -45,15 +47,42 @@ def _load_chapter_texts(db: Session, book_id: int, chapters) -> list[str]:
     return [t or (c.content or "") for t, c in zip(texts, chapters)]
 
 
-def scan_issues(db: Session, deep: bool = False) -> list[BookIssue]:
-    """体检扫描。
+def scan_issues(
+    db: Session,
+    deep: bool = False,
+    on_progress=None,
+    cancel: threading.Event | None = None,
+) -> list[BookIssue]:
+    """体检扫描（分批处理，避免一次性加载整库）。
 
     deep=False（默认，快速）：仅 SQL 聚合 + 源文件存在性，不读正文。
     deep=True（深度）：额外读正文包检查乱码/控制字符，大库较慢。
+    on_progress(done, total) 可选，供后台任务展示进度；cancel 可中止。
     """
     issues: list[BookIssue] = []
-    books = db.execute(select(Book)).scalars().all()
+    total = db.execute(select(func.count(Book.id))).scalar_one()
+    page_size = 500
+    last_id = 0
+    done = 0
+    while True:
+        if cancel is not None and cancel.is_set():
+            break
+        books = db.execute(
+            select(Book).where(Book.id > last_id).order_by(Book.id).limit(page_size)
+        ).scalars().all()
+        if not books:
+            break
+        last_id = books[-1].id
+        _scan_books(db, books, deep, issues)
+        done += len(books)
+        if on_progress is not None:
+            on_progress(min(done, total), total)
+    return issues
 
+
+def _scan_books(db: Session, books, deep: bool, issues: list[BookIssue]) -> None:
+    """扫描一批书：先做章节聚合（不读正文），deep 时再按书读正文包查乱码/控制符。"""
+    ids = [b.id for b in books]
     # 章节级聚合：数量 / 总字数 / 空章（不加载正文）
     stats_rows = db.execute(
         select(
@@ -63,32 +92,33 @@ def scan_issues(db: Session, deep: bool = False) -> list[BookIssue]:
             func.coalesce(
                 func.sum(case((Chapter.content_chars == 0, 1), else_=0)), 0
             ).label("empty_n"),
-        ).group_by(Chapter.book_id)
+        ).where(Chapter.book_id.in_(ids)).group_by(Chapter.book_id)
     ).all()
     stats = {
         r.book_id: {"n": r.n, "total_len": r.total_len, "empty_n": r.empty_n}
         for r in stats_rows
     }
 
-    # 控制字符 / 乱码：仅深度体检时按书读正文包；一次性取全部偏移元数据，避免 N+1
+    # 控制字符 / 乱码：仅深度体检时按书读正文包；按批次取偏移元数据，避免整库进内存
     ctrl_counts: dict[int, int] = {}
     repl_counts: dict[int, int] = {}
     if deep:
-        all_ch_rows = db.execute(
+        rows = db.execute(
             select(
                 Chapter.book_id,
                 Chapter.content_offset,
                 Chapter.content_length,
                 Chapter.content,
-            ).order_by(Chapter.book_id, Chapter.index, Chapter.id)
+            ).where(Chapter.book_id.in_(ids)).order_by(Chapter.book_id, Chapter.index, Chapter.id)
         ).all()
         chapters_by_book: dict[int, list] = {}
-        for r in all_ch_rows:
+        for r in rows:
             chapters_by_book.setdefault(r.book_id, []).append(r)
         for book in books:
             ch_rows = chapters_by_book.get(book.id) or []
             if not ch_rows:
                 continue
+
             class _Ch:
                 pass
 
@@ -105,97 +135,122 @@ def scan_issues(db: Session, deep: bool = False) -> list[BookIssue]:
                 n_ctrl = len(_CTRL_RE.findall(text))
                 if n_ctrl:
                     ctrl_counts[book.id] = ctrl_counts.get(book.id, 0) + n_ctrl
-                n_repl = text.count("�")
+                n_repl = text.count("\ufffd")
                 if n_repl:
                     repl_counts[book.id] = repl_counts.get(book.id, 0) + n_repl
 
     for book in books:
-        st = stats.get(book.id)
-        if not st or st["n"] == 0:
-            issues.append(BookIssue(book.id, book.title, "empty_chapters", "没有任何章节"))
-            continue
+        _issues_for_book(book, stats.get(book.id), ctrl_counts, repl_counts, issues)
 
-        total_len = st["total_len"] or 0
-        # 大体量却只有 1 章 → 多半章节标题没识别
-        if book.word_count >= 5000 and st["n"] <= 1:
-            issues.append(
-                BookIssue(
-                    book.id,
-                    book.title,
-                    "chapter_parse",
-                    f"疑似未分章（仅 {st['n']} 章 / {book.word_count} 字）",
-                    {"chapter_count": st["n"], "word_count": book.word_count},
-                )
-            )
 
-        repl = repl_counts.get(book.id, 0)
-        if repl >= 5:
-            issues.append(
-                BookIssue(
-                    book.id,
-                    book.title,
-                    "encoding",
-                    f"存在乱码替换符 ×{repl}（可能编码识别错误）",
-                    {"replacements": repl},
-                )
-            )
-        ctrl = ctrl_counts.get(book.id, 0)
-        if ctrl >= 10:
-            issues.append(
-                BookIssue(
-                    book.id,
-                    book.title,
-                    "control_chars",
-                    f"含控制字符 ×{ctrl}（可清理）",
-                    {"count": ctrl},
-                )
-            )
+def _issues_for_book(book, st, ctrl_counts, repl_counts, issues: list[BookIssue]) -> None:
+    """依据聚合统计为单本书汇总问题明细。"""
+    if not st or st["n"] == 0:
+        issues.append(BookIssue(book.id, book.title, "empty_chapters", "没有任何章节"))
+        return
 
-        empty_n = st["empty_n"] or 0
-        if empty_n and empty_n >= max(1, st["n"] // 3):
-            issues.append(
-                BookIssue(
-                    book.id,
-                    book.title,
-                    "empty_chapters",
-                    f"空章节 {empty_n}/{st['n']}",
-                    {"empty": empty_n, "total": st["n"]},
-                )
+    total_len = st["total_len"] or 0
+    # 大体量却只有 1 章 → 多半章节标题没识别
+    if book.word_count >= 5000 and st["n"] <= 1:
+        issues.append(
+            BookIssue(
+                book.id,
+                book.title,
+                "chapter_parse",
+                f"疑似未分章（仅 {st['n']} 章 / {book.word_count} 字）",
+                {"chapter_count": st["n"], "word_count": book.word_count},
             )
+        )
 
-        # 源文件是否还在（便于重解析）
-        if book.source_path:
-            if book.source_path.startswith("webdav:"):
-                pass  # WebDAV 源运行时再查
-            else:
-                p = Path(book.source_path)
-                if not p.is_file():
-                    issues.append(
-                        BookIssue(book.id, book.title, "source_missing", "源 TXT 不在原路径，无法自动重解析")
-                    )
-        if total_len == 0:
-            issues.append(BookIssue(book.id, book.title, "empty_chapters", "正文全部为空"))
-    return issues
+    repl = repl_counts.get(book.id, 0)
+    if repl >= 5:
+        issues.append(
+            BookIssue(
+                book.id,
+                book.title,
+                "encoding",
+                f"存在乱码替换符 ×{repl}（可能编码识别错误）",
+                {"replacements": repl},
+            )
+        )
+    ctrl = ctrl_counts.get(book.id, 0)
+    if ctrl >= 10:
+        issues.append(
+            BookIssue(
+                book.id,
+                book.title,
+                "control_chars",
+                f"含控制字符 ×{ctrl}（可清理）",
+                {"count": ctrl},
+            )
+        )
+
+    empty_n = st["empty_n"] or 0
+    if empty_n and empty_n >= max(1, st["n"] // 3):
+        issues.append(
+            BookIssue(
+                book.id,
+                book.title,
+                "empty_chapters",
+                f"空章节 {empty_n}/{st['n']}",
+                {"empty": empty_n, "total": st["n"]},
+            )
+        )
+
+    # 源文件是否还在（便于重解析）
+    if book.source_path and not book.source_path.startswith("webdav:"):
+        if not Path(book.source_path).is_file():
+            issues.append(
+                BookIssue(book.id, book.title, "source_missing", "源 TXT 不在原路径，无法自动重解析")
+            )
+    if total_len == 0:
+        issues.append(BookIssue(book.id, book.title, "empty_chapters", "正文全部为空"))
+
+
+_DUP_STRIP_RE = re.compile(r"[《》〈〉\[\]【】()（）\s·:：\-—・]")
+_DUP_SUFFIX_RE = re.compile(r"(校对版全本|校对版|精校版|全本|修订版|未删节版|未删节|实体书|完本)")
+
+
+def _norm_dup(s: str) -> str:
+    """重复检测归一化：去掉书名号/括号/空白/常见版本后缀，容忍近似书名。"""
+    s = _DUP_SUFFIX_RE.sub("", s or "")
+    return _DUP_STRIP_RE.sub("", s).lower()
 
 
 def find_duplicate_groups(db: Session) -> list[dict]:
+    """按“归一化书名+作者”找出重复书（容忍书名号/空白/校对版等差异）。
+
+    只投影必要列，避免把 intro 等大字段读进内存。
+    """
     rows = db.execute(
-        select(Book.title, Book.author, func.count(Book.id).label("n"))
-        .group_by(Book.title, Book.author)
-        .having(func.count(Book.id) > 1)
+        select(
+            Book.id,
+            Book.title,
+            Book.author,
+            Book.chapter_count,
+            Book.word_count,
+            Book.source_path,
+            Book.source,
+            Book.source_id,
+            Book.cover_file,
+        )
     ).all()
+    buckets: dict[tuple[str, str], list] = {}
+    for r in rows:
+        buckets.setdefault((_norm_dup(r.title), _norm_dup(r.author)), []).append(r)
+
     groups = []
-    for title, author, n in rows:
-        books = db.execute(
-            select(Book)
-            .where(Book.title == title, Book.author == author)
-            .order_by(Book.chapter_count.desc(), Book.word_count.desc(), Book.id.asc())
-        ).scalars().all()
+    for books in buckets.values():
+        if len(books) < 2:
+            continue
+        # 保留章节/字数最多的那本（与原行为一致）
+        books.sort(key=lambda b: (-(b.chapter_count or 0), -(b.word_count or 0), b.id))
+        keep = books[0]
         groups.append({
-            "title": title,
-            "author": author,
-            "count": n,
-            "keep_id": books[0].id,
+            "title": keep.title,
+            "author": keep.author,
+            "count": len(books),
+            "keep_id": keep.id,
             "books": [
                 {
                     "id": b.id,
@@ -209,6 +264,7 @@ def find_duplicate_groups(db: Session) -> list[dict]:
                 for b in books
             ],
         })
+    groups.sort(key=lambda g: (-g["count"], g["title"]))
     return groups
 
 
@@ -229,7 +285,9 @@ def merge_duplicates(db: Session, keep_id: int, delete_ids: list[int]) -> dict:
         book = db.get(Book, bid)
         if not book:
             continue
-        if book.title != keep.title or book.author != keep.author:
+        if _norm_dup(book.title) != _norm_dup(keep.title) or _norm_dup(book.author) != _norm_dup(
+            keep.author
+        ):
             raise ValueError(f"《{book.title}》与保留项书名/作者不一致，已中止")
         cover_name = book.cover_file
         if book.source and not keep.source:
@@ -267,24 +325,6 @@ def _read_source_text(book: Book) -> str | None:
         return decode_txt_bytes(p.read_bytes())
     except OSError:
         return None
-
-
-def _best_decode(raw: bytes) -> str:
-    """优先选无替换符的编码。"""
-    best = ""
-    best_score = -1
-    for enc in ("utf-8", "utf-8-sig", "gb18030", "gbk", "big5", "utf-16", "utf-16-le"):
-        try:
-            text = raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-        score = -text.count("�") * 100 + len(text)
-        if text.startswith("﻿"):
-            score += 5
-        if score > best_score:
-            best_score = score
-            best = text
-    return best or raw.decode("utf-8", errors="replace")
 
 
 def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
@@ -441,7 +481,8 @@ def relocate_book(book: Book) -> dict:
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     if dest.exists() and dest.resolve() != local_src.resolve():
                         dest = dest_dir / f"{local_src.stem}_{book.id}{local_src.suffix}"
-                    local_src.replace(dest)
+                    # shutil.move 支持跨盘（Path.replace 仅同盘原子）
+                    shutil.move(str(local_src), str(dest))
                     actions.append(f"本地 → {target_disp}/{dest.name}")
                     book.source_path = str(dest)
             except OSError as e:
@@ -489,3 +530,104 @@ def relocate_books(db: Session, book_ids: list[int] | None = None) -> dict:
         "moved": moved,
         "failed": failed_n,
     }
+
+
+# ---------------------------------------------------------------------------
+# 后台体检任务：深度扫描耗时较长，改为后台线程 + 进度轮询/SSE，前端不阻塞、可取消
+# ---------------------------------------------------------------------------
+_scan_lock = threading.Lock()
+_scan_status_lock = threading.Lock()
+_scan_cancel = threading.Event()
+_scan_status: dict = {
+    "running": False,
+    "deep": False,
+    "total": 0,
+    "done": 0,
+    "percent": 0,
+    "error": "",
+    "report": None,
+}
+
+
+def _set_scan_status(**fields) -> None:
+    global _scan_status
+    with _scan_status_lock:
+        _scan_status = {**_scan_status, **fields}
+
+
+def get_scan_status() -> dict:
+    with _scan_status_lock:
+        return dict(_scan_status)
+
+
+def request_scan_cancel() -> bool:
+    """请求中止后台体检；运行中才有效。"""
+    if not _scan_status.get("running"):
+        return False
+    _scan_cancel.set()
+    return True
+
+
+def run_library_scan(deep: bool = False) -> dict:
+    """执行一次体检（重复 + 异常），返回报告 dict；供后台任务调用。"""
+    from .database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        dups = find_duplicate_groups(db)
+        issues = scan_issues(
+            db,
+            deep=deep,
+            on_progress=lambda done, total: _set_scan_status(
+                done=done,
+                total=total,
+                percent=int(done * 100 / total) if total else 0,
+            ),
+            cancel=_scan_cancel,
+        )
+        return {
+            "duplicates": dups,
+            "issues": [
+                {
+                    "book_id": i.book_id,
+                    "title": i.title,
+                    "kind": i.kind,
+                    "message": i.message,
+                    "detail": i.detail,
+                }
+                for i in issues
+            ],
+            "duplicate_groups": len(dups),
+            "issue_count": len(issues),
+            "deep": deep,
+        }
+    finally:
+        db.close()
+
+
+def start_library_scan(deep: bool = False) -> bool:
+    """后台线程执行体检；已有任务在跑返回 False。"""
+    from .task_guard import other_task_running
+
+    if not _scan_lock.acquire(blocking=False):
+        return False
+    # 与导入/刮削互斥：其它长任务在跑时不启动
+    if _scan_status.get("running") or other_task_running("scan"):
+        _scan_lock.release()
+        return False
+    _scan_cancel.clear()
+
+    def _run() -> None:
+        _set_scan_status(
+            running=True, deep=deep, total=0, done=0, percent=0, error="", report=None
+        )
+        try:
+            report = run_library_scan(deep)
+            _set_scan_status(running=False, percent=100, report=report)
+        except Exception as exc:  # noqa: BLE001
+            _set_scan_status(running=False, error=str(exc))
+        finally:
+            _scan_lock.release()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True

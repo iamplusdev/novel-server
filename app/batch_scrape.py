@@ -964,9 +964,12 @@ def _run_browser_fallback(
 
 
 def start_batch_scrape(**kwargs) -> bool:
+    from .task_guard import other_task_running
+
     if not _lock.acquire(blocking=False):
         return False
-    if _status.get("running"):
+    # 与导入/体检互斥：其它长任务在跑时不启动
+    if _status.get("running") or other_task_running("scrape"):
         _lock.release()
         return False
     _cancel.clear()
