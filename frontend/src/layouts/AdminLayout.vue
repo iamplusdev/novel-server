@@ -372,7 +372,7 @@ const themeLabel = computed(() => {
   border-bottom: 1px solid var(--color-border);
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: var(--z-nav);
 }
 
 .topbar-brand {
@@ -389,6 +389,13 @@ const themeLabel = computed(() => {
   min-width: 0;
 }
 
+/* iOS 底部手势条留白，避免遮住最后一行内容 */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .main {
+    padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom));
+  }
+}
+
 .drawer-inner {
   display: flex;
   flex-direction: column;
@@ -397,7 +404,7 @@ const themeLabel = computed(() => {
 }
 
 /* 平板：主区内边距收紧 */
-@media (max-width: 1024px) {
+@media (max-width: 900px) {
   .main {
     padding: var(--space-4);
   }

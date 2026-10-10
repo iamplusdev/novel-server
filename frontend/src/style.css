@@ -13,7 +13,7 @@
   --color-border-strong: #cfd6e0;
   --color-text: #1f2933;
   --color-text-2: #5b6573;
-  --color-text-3: #9aa3b2;
+  --color-text-3: #5f6875; /* 由 #9aa3b2 加深：暗色小字对比度不足，提升到约 4.8:1 */
   --color-accent: #3b5bdb;
   --color-accent-hover: #2f4bc4;
   --color-accent-soft: rgba(59, 91, 219, 0.12);
@@ -68,6 +68,22 @@
   --content-max: 1280px;
   --header-h: 56px;
   --duration: 160ms;
+
+  /* ---- 控件尺寸（统一按钮/输入高度，消除 32/36 混用） ---- */
+  --control-h: 36px;
+  --control-h-sm: 32px;
+  --control-h-lg: 40px;
+
+  /* ---- 层级（语义化 z-index） ---- */
+  --z-sticky: 10;
+  --z-nav: 20;
+  --z-mask: 30;
+  --z-drawer: 40;
+
+  /* ---- 阅读器主题（默认纸白；.theme-* 覆盖） ---- */
+  --reader-bg: #f7f5f0;
+  --reader-fg: #2a2a28;
+  --reader-muted: #7a7770;
 
   /* ---- Element Plus 映射（亮色） ---- */
   --el-color-primary: var(--color-accent);
@@ -142,8 +158,8 @@ html.dark {
   --color-border: #2a3240;
   --color-border-strong: #3a4556;
   --color-text: #e6eaf0;
-  --color-text-2: #9aa3b2;
-  --color-text-3: #6c7686;
+  --color-text-2: #b3bccb;
+  --color-text-3: #8b95a5; /* 由 #6c7686 提亮：暗底小字约 5.6:1 */
   --color-accent: #6b8afd;
   --color-accent-hover: #8aa4ff;
   --color-accent-soft: rgba(107, 138, 253, 0.16);
@@ -477,7 +493,7 @@ html.dark .skeleton::after {
 .el-button {
   border-radius: var(--radius-sm);
   font-weight: 500;
-  height: 36px;
+  height: var(--control-h);
   padding: 0 16px;
   transition:
     background var(--duration) ease,
@@ -567,7 +583,7 @@ html.dark .skeleton::after {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 36px;
+  height: var(--control-h);
   padding: 0 14px;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
@@ -632,7 +648,7 @@ html.dark .skeleton::after {
   background: var(--color-accent);
   color: #fff;
   border-color: var(--color-accent);
-  height: 40px;
+  height: var(--control-h-lg);
 }
 
 .block-btn:hover:not(:disabled) {
@@ -680,7 +696,7 @@ html.dark .skeleton::after {
 .field-textarea,
 .field-select {
   width: 100%;
-  min-height: 36px;
+  min-height: var(--control-h);
   padding: 8px 12px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -808,8 +824,8 @@ html.dark .skeleton::after {
   max-width: 320px;
 }
 
-/* 响应式工具 */
-@media (max-width: 768px) {
+/* 响应式工具：统一断点 576（手机）/ 900（平板，见各组件） */
+@media (max-width: 576px) {
   .page {
     gap: var(--space-3);
   }
@@ -828,5 +844,20 @@ html.dark .skeleton::after {
   .danger-btn {
     flex: 1;
     min-width: 0;
+  }
+}
+
+/* 尊重系统“减少动态”偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .skeleton::after {
+    display: none;
   }
 }

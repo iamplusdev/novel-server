@@ -3,8 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>爱小说 · 管理后台</title>
     <link rel="icon" href="/favicon.ico" />
+    <!-- 首屏预置主题，避免深色模式白闪（FOUC） -->
+    <script>
+      try {
+        var m = localStorage.getItem("novel_theme_mode");
+        var dark =
+          m === "dark" ||
+          (m !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        if (dark) document.documentElement.classList.add("dark");
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>

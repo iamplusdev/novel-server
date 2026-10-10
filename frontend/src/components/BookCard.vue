@@ -452,8 +452,31 @@ function statusClass(status: string) {
   gap: 8px;
 }
 
-/* 窄屏强制紧凑（与书库移动端 100px 网格一致） */
-@media (max-width: 768px) {
+/* 触屏无 hover：多选框常显，保证移动端可选 */
+@media (hover: none) {
+  .book-card .select-box {
+    opacity: 1;
+  }
+}
+
+/* 列表模式窄屏降级：收起简介，改两列 */
+@media (max-width: 900px) {
+  .book-card.is-list {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .book-card.is-list .intro-block {
+    display: none;
+  }
+
+  .book-card.is-list .cover,
+  .book-card.is-list .cover-wrap {
+    width: 64px;
+  }
+}
+
+/* 窄屏强制紧凑（与书库移动端网格一致） */
+@media (max-width: 576px) {
   .book-card.is-grid .meta {
     min-height: 48px;
     padding: 6px 8px 8px;

@@ -31,6 +31,8 @@ const emit = defineEmits<{ (e: "action"): void }>();
 
 <style scoped>
 .base-empty {
+  /* 作为网格子项时占满整行，避免空态被挤成一列 */
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   align-items: center;

@@ -452,11 +452,11 @@ onUnmounted(() => {
   gap: 10px;
   height: 52px;
   padding: 0 12px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--reader-border, var(--color-border));
   background: var(--color-surface);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
 }
 
 /* 章节名相对视口水平居中（左右栏不等宽也不偏） */
@@ -468,7 +468,7 @@ onUnmounted(() => {
   height: 52px;
   display: flex;
   align-items: center;
-  max-width: 42vw;
+  max-width: 32vw;
   pointer-events: none;
   z-index: 1;
 }
@@ -609,7 +609,7 @@ onUnmounted(() => {
 
 .toc,
 .settings {
-  border-right: 1px solid var(--color-border);
+  border-right: 1px solid var(--reader-border, var(--color-border));
   background: var(--color-surface);
   overflow: auto;
   min-height: 0;
@@ -617,7 +617,7 @@ onUnmounted(() => {
 
 .settings {
   border-right: none;
-  border-left: 1px solid var(--color-border);
+  border-left: 1px solid var(--reader-border, var(--color-border));
   padding: var(--space-4);
   display: flex;
   flex-direction: column;
@@ -634,7 +634,7 @@ onUnmounted(() => {
   color: var(--color-text-3);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--reader-border, var(--color-border));
 }
 
 .icon-btn.sm {
@@ -722,6 +722,9 @@ onUnmounted(() => {
   margin: 0 0 1em;
   text-indent: 2em;
   line-height: inherit;
+  /* 超长章节：离屏段落跳过渲染，降低长章卡顿 */
+  content-visibility: auto;
+  contain-intrinsic-size: 0 1.6em;
 }
 
 .demo-line {
@@ -734,6 +737,7 @@ onUnmounted(() => {
   --reader-bg: #f7f5f0;
   --reader-fg: #2a2a28;
   --reader-muted: #7a7770;
+  --reader-border: #e2ddd2;
   background: var(--reader-bg);
   color: var(--reader-fg);
 }
@@ -754,6 +758,7 @@ onUnmounted(() => {
   --reader-bg: #f3e7d3;
   --reader-fg: #3b2f22;
   --reader-muted: #8a7460;
+  --reader-border: #e0cfae;
   background: var(--reader-bg);
   color: var(--reader-fg);
 }
@@ -769,6 +774,7 @@ onUnmounted(() => {
   --reader-bg: #12161c;
   --reader-fg: #c9d1d9;
   --reader-muted: #7d8794;
+  --reader-border: #2a3240;
   background: var(--reader-bg);
   color: var(--reader-fg);
 }
@@ -845,7 +851,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   margin-top: 2.5em;
   padding-top: 1.25em;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--reader-border, var(--color-border));
 }
 
 .foot-btn {
@@ -869,6 +875,13 @@ onUnmounted(() => {
   color: var(--color-text-3);
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+@media (max-width: 900px) {
+  /* 中窄屏隐藏居中章节名，避免与左右工具重叠 */
+  .top-center {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {

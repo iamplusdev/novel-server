@@ -658,8 +658,8 @@ watch(bookId, () => void load());
 }
 
 .detail-page {
-  /* 一屏装下：扣掉顶栏/内边距；页面自身不滚动，仅目录列表滚动 */
-  height: calc(100vh - 100px);
+  /* 一屏装下：扣掉顶栏/内边距；页面自身不滚动，仅目录与卡片内滚动 */
+  height: calc(100dvh - var(--header-h) - var(--space-5) * 2);
   min-height: 520px;
   display: flex;
   flex-direction: column;
@@ -688,7 +688,7 @@ watch(bookId, () => void load());
 @media (max-width: 900px) {
   .detail-page {
     height: auto;
-    min-height: calc(100vh - 100px);
+    min-height: calc(100dvh - var(--header-h) - var(--space-4) * 2);
     overflow: visible;
   }
 
@@ -884,8 +884,8 @@ watch(bookId, () => void load());
   flex-direction: column;
   gap: 6px;
   min-height: 0;
-  /* 封面区完整展示，不出现滚动条 */
-  overflow: hidden;
+  /* 内容超出时卡片内滚动，避免被裁剪不可达 */
+  overflow: auto;
 }
 
 .cover-side .meta-block {
@@ -895,15 +895,16 @@ watch(bookId, () => void load());
 .form-side {
   min-width: 0;
   min-height: 0;
-  /* 基础信息完整展示，不出现滚动条 */
-  overflow: hidden;
+  /* 基础信息超出时卡片内滚动，避免被裁剪不可达 */
+  overflow: auto;
   display: flex;
   flex-direction: column;
 }
 
 .cover-img {
   width: 100%;
-  height: 168px;
+  aspect-ratio: 3 / 4;
+  height: auto;
   object-fit: cover;
   border-radius: var(--radius-md);
   background: var(--color-surface-2);
@@ -912,7 +913,8 @@ watch(bookId, () => void load());
 
 .cover-placeholder {
   width: 100%;
-  height: 168px;
+  aspect-ratio: 3 / 4;
+  height: auto;
   border-radius: var(--radius-md);
   background: linear-gradient(160deg, var(--color-surface-2), var(--color-surface-3));
   display: flex;
@@ -1097,7 +1099,7 @@ watch(bookId, () => void load());
   gap: 8px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 576px) {
   .three-col {
     grid-template-columns: 1fr;
   }

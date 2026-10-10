@@ -184,7 +184,7 @@ function fmtWords(n?: number) {
   <el-dialog
     v-model="dialogVisible"
     title="刮削元数据"
-    width="680px"
+    :width="'min(680px, 92vw)'"
     class="scrape-dialog"
     :close-on-click-modal="false"
   >

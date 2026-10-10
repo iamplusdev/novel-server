@@ -477,7 +477,7 @@ function enterApp() {
   font-size: 11px;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 576px) {
   .login-page {
     padding: 16px;
     justify-content: center;

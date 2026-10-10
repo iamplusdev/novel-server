@@ -449,6 +449,13 @@ onUnmounted(() => {
       <p v-if="scanBlocked" class="muted check-hint">
         当前有「{{ scanBlocked }}」任务进行中，体检暂不可用（导入 / 体检 / 刮削互斥）。
       </p>
+      <div v-if="scan?.running" class="scan-progress">
+        <div class="progress-track">
+          <div class="progress-bar" :style="{ width: scanPercent + '%' }" />
+        </div>
+        <span class="progress-label">{{ scanPercent }}%</span>
+      </div>
+      <p v-else-if="scan?.error" class="muted check-hint is-error">体检失败：{{ scan.error }}</p>
     </header>
 
     <section class="page-card tabs-card">
@@ -637,6 +644,26 @@ onUnmounted(() => {
   color: var(--color-text-2);
   font-size: var(--text-xs);
   border: 1px solid var(--color-border);
+}
+
+.check-hint {
+  margin: 0;
+}
+
+.check-hint.is-error {
+  color: var(--color-danger);
+}
+
+.scan-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.scan-progress .progress-track {
+  flex: 1;
 }
 
 .ghost-btn {

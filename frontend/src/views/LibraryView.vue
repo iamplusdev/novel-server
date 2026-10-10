@@ -371,7 +371,7 @@ function onResize() {
       :style="gridStyle"
       aria-hidden="true"
     >
-      <div v-for="i in 8" :key="i" class="skel-card">
+      <div v-for="i in Math.min(Math.max(lib.pageSize, 8), 24)" :key="i" class="skel-card">
         <div class="skeleton skel-cover" />
         <div class="skeleton skel-line" />
         <div class="skeleton skel-line short" />
@@ -699,7 +699,7 @@ function onResize() {
   font-variant-numeric: tabular-nums;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 576px) {
   .search-box {
     min-width: 0;
     flex: 1;
@@ -714,17 +714,19 @@ function onResize() {
     gap: 10px;
   }
 
-  /* 工具条纵向堆叠，筛选可横向滚动 */
+  /* 工具条纵向堆叠 */
   .page-actions {
     width: 100%;
   }
 
+  /* 每行筛选各自横向滚动，避免两行被同一个容器绑在一起滚动 */
   .filter-bar {
-    overflow-x: auto;
+    overflow: visible;
   }
 
   .chip-row {
     flex-wrap: nowrap;
+    overflow-x: auto;
     padding-bottom: 4px;
   }
 
