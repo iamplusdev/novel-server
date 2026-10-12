@@ -338,19 +338,19 @@ onMounted(async () => {
   max-height: none;
 }
 
-/* 刮削参数表单：两列自适应 */
+/* 刮削参数表单：自适应多列；label 在上、输入框撑满单元格 → 各行对齐 */
 .scrape-form {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3) var(--space-4);
   margin: var(--space-3) 0 var(--space-4);
 }
 
 .scrape-field {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
 .scrape-label {
@@ -364,11 +364,16 @@ onMounted(async () => {
   color: var(--color-text-3);
 }
 
+/* 输入框占满单元格宽度，跨行/跨列起点一致对齐 */
 .scrape-field .field-input {
-  width: 120px;
+  width: 100%;
+}
+
+.scrape-field :deep(.el-switch) {
+  align-self: flex-start;
 }
 
 .scrape-hint {
-  grid-column: 1 / -1;
+  margin-top: 2px;
 }
 </style>
