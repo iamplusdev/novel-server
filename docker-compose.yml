@@ -32,7 +32,7 @@ services:
       # 可选：刮削/备份代理（默认直连，不读系统代理）
       # SCRAPER_PROXY: "http://127.0.0.1:7890"
       # WEBDAV_PROXY: "http://127.0.0.1:7890"
-      # 浏览器兜底（Playwright CDP → fnOS tieron Chrome）
+      # 浏览器兜底（auto=API 优先、失败用 Chrome）：1=允许，0=完全禁用浏览器通道
       SCRAPER_BROWSER_FALLBACK: "1"
       CDP_URL: "http://127.0.0.1:16002"
       CDP_READY_WAIT: "20"

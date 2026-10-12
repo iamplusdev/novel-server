@@ -31,8 +31,8 @@ const emit = defineEmits<{
 
 const keyword = ref(props.localName || "");
 const source = ref("qidian");
-/** 刮削取数方式：auto / api / chrome（fnOS Chrome） */
-const scrapeMode = ref("auto");
+/** 刮削取数方式：api（默认）/ auto（API 优先）/ chrome（备用） */
+const scrapeMode = ref("api");
 const loading = ref(false);
 const applying = ref(false);
 const tip = ref("将把结果写入当前编辑中的书籍。多条结果时请核对书名/作者后再点「采用」。");

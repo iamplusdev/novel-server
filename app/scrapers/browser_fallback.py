@@ -38,14 +38,16 @@ def _env(name: str, default: str = "") -> str:
 
 
 def browser_fallback_enabled() -> bool:
-    """浏览器模式是否可用。
+    """浏览器通道是否可用。
 
-    任一条件满足即可：
-    1. 环境变量 SCRAPER_BROWSER_FALLBACK=1
-    2. 当前刮削方式为 chrome
-    3. 本次调用已 set_browser_mode(True)（请求指定 chrome / auto 重试）
+    显式 SCRAPER_BROWSER_FALLBACK=0/false/no/off 时禁用；否则默认允许
+    （auto 模式需要它在 API 失败后回退 Chrome）。当前刮削方式为 chrome 或已强制
+    浏览器模式时同样视为可用。
     """
-    if _env("SCRAPER_BROWSER_FALLBACK").lower() in ("1", "true", "yes", "on"):
+    val = _env("SCRAPER_BROWSER_FALLBACK").lower()
+    if val in ("0", "false", "no", "off"):
+        return False
+    if val in ("1", "true", "yes", "on"):
         return True
     try:
         from .mode import MODE_CHROME, get_scrape_mode
@@ -62,7 +64,8 @@ def browser_fallback_enabled() -> bool:
             return True
     except Exception:  # noqa: BLE001
         pass
-    return False
+    # 未显式设置：默认允许（auto = API 优先、失败 Chrome 兜底）
+    return True
 
 
 def cdp_url() -> str:

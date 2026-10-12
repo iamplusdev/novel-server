@@ -14,8 +14,8 @@ MODE_AUTO = "auto"
 VALID_MODES = (MODE_API, MODE_CHROME, MODE_AUTO)
 
 _lock = threading.Lock()
-# 默认自动：与历史「HTTP 失败再浏览器兜底」行为兼容
-_current_mode = MODE_AUTO
+# 默认 API 直连：Chrome 仅作备用（显式选择或 API 失败且开关允许时兜底）
+_current_mode = MODE_API
 
 
 def normalize_mode(raw: str | None) -> str:
@@ -47,9 +47,17 @@ def mode_uses_browser(mode: str | None = None) -> bool:
 
 
 def describe_modes() -> list[dict]:
-    """前端下拉用的可选项说明。"""
+    """前端下拉用的可选项说明（api/chrome 为单一通道，auto 才有两段）。"""
     return [
-        {"value": MODE_API, "label": "API 直连", "hint": "轻量 HTTP 请求，速度快"},
-        {"value": MODE_CHROME, "label": "Chrome 浏览器", "hint": "经 fnOS Chrome / CDP 渲染取页，抗风控更强"},
-        {"value": MODE_AUTO, "label": "自动", "hint": "检测到 fnOS Chrome 则优先 Chrome，否则走 API"},
+        {"value": MODE_API, "label": "API 直连", "hint": "默认：只走 HTTP，不与浏览器互兜底"},
+        {
+            "value": MODE_AUTO,
+            "label": "自动（API 优先）",
+            "hint": "API 优先；失败后再用 Chrome 兜底（唯一的两段式）",
+        },
+        {
+            "value": MODE_CHROME,
+            "label": "Chrome 浏览器",
+            "hint": "强制走浏览器，不与 API 互兜底；需 CDP/Playwright 环境支持",
+        },
     ]

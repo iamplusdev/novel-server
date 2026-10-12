@@ -111,10 +111,33 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
-# 同域两次请求的最小间隔（秒）；0 = 关闭节流
-_HOST_MIN_INTERVAL = max(0.0, _env_float("SCRAPER_HOST_MIN_INTERVAL", 1.2))
+# 同域两次请求的最小间隔（秒）；0 = 关闭节流。默认较保守，降低被风控概率
+_HOST_MIN_INTERVAL = max(0.0, _env_float("SCRAPER_HOST_MIN_INTERVAL", 2.0))
 # 间隔随机抖动上限（秒），避免固定节拍
-_HOST_JITTER_MAX = max(0.0, _env_float("SCRAPER_HOST_JITTER_MAX", 0.4))
+_HOST_JITTER_MAX = max(0.0, _env_float("SCRAPER_HOST_JITTER_MAX", 0.6))
+
+# 被限流/风控（429/403/503）时的退避重试
+_RETRY_STATUS = {429, 403, 503}
+_RETRY_MAX = max(0, int(_env_float("SCRAPER_RETRY_MAX", 3)))
+_RETRY_BASE = max(0.0, _env_float("SCRAPER_RETRY_BASE", 2.0))
+_RETRY_MAX_WAIT = max(1.0, _env_float("SCRAPER_RETRY_MAX_WAIT", 30.0))
+_RESPECT_RETRY_AFTER = _env_float("SCRAPER_RESPECT_RETRY_AFTER", 1) != 0
+
+
+def _retry_wait(attempt: int, err: "urllib.error.HTTPError | None" = None) -> float:
+    """第 attempt 次重试前的等待秒数：指数退避 + 抖动，可选尊重 Retry-After。"""
+    wait = min(_RETRY_MAX_WAIT, _RETRY_BASE * (2**attempt)) + random.uniform(0.0, _HOST_JITTER_MAX)
+    if _RESPECT_RETRY_AFTER and err is not None:
+        try:
+            ra = err.headers.get("Retry-After") if err.headers else None
+        except Exception:  # noqa: BLE001
+            ra = None
+        if ra:
+            try:
+                wait = max(wait, min(float(ra), _RETRY_MAX_WAIT))
+            except (TypeError, ValueError):
+                pass
+    return wait
 
 
 def _host_of(url: str) -> str:
@@ -167,18 +190,32 @@ def _build_opener(proxy_handler: urllib.request.ProxyHandler) -> urllib.request.
     )
 
 
+# 进程级复用 opener：减少 TCP/TLS 握手与新连接特征
+_opener_lock = threading.Lock()
+_openers: dict[str, urllib.request.OpenerDirector] = {}
+
+
+def _get_opener(kind: str) -> urllib.request.OpenerDirector:
+    """按通道取（缓存）opener；kind: direct=直连/指定代理，system=系统代理。"""
+    op = _openers.get(kind)
+    if op is None:
+        handler = _proxy_handler() if kind == "direct" else _system_proxy_handler()
+        op = _build_opener(handler)
+        with _opener_lock:
+            _openers[kind] = op
+    return op
+
+
 def _open(req: urllib.request.Request, timeout: int):
     """先直连（或指定代理），失败再回退系统代理。"""
     try:
-        opener = _build_opener(_proxy_handler())
-        return opener.open(req, timeout=timeout)
+        return _get_opener("direct").open(req, timeout=timeout)
     except urllib.error.HTTPError:
         # HTTP 状态码错误与网络无关，直接抛出
         raise
     except (urllib.error.URLError, TimeoutError, OSError) as first:
         try:
-            opener = _build_opener(_system_proxy_handler())
-            return opener.open(req, timeout=timeout)
+            return _get_opener("system").open(req, timeout=timeout)
         except urllib.error.HTTPError:
             raise
         except (urllib.error.URLError, TimeoutError, OSError) as second:
@@ -254,18 +291,26 @@ def http_get(
     if headers:
         hdrs.update(headers)
     req = urllib.request.Request(url, headers=hdrs, method="GET")
-    try:
-        with _open(req, timeout=timeout) as resp:
-            raw = resp.read()
-            if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
-                try:
-                    raw = gzip.decompress(raw)
-                except OSError:
-                    pass
-            charset = resp.headers.get_content_charset() or "utf-8"
-            return raw.decode(charset, errors="replace")
-    except urllib.error.HTTPError as e:
-        raise HttpError(f"请求失败 HTTP {e.code}") from e
+    attempt = 0
+    while True:
+        try:
+            with _open(req, timeout=timeout) as resp:
+                raw = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                    try:
+                        raw = gzip.decompress(raw)
+                    except OSError:
+                        pass
+                charset = resp.headers.get_content_charset() or "utf-8"
+                return raw.decode(charset, errors="replace")
+        except urllib.error.HTTPError as e:
+            # 被限流/风控（429/403/503）：指数退避重试，尊重 Retry-After
+            if e.code in _RETRY_STATUS and attempt < _RETRY_MAX:
+                time.sleep(_retry_wait(attempt, e))
+                throttle_host(url)
+                attempt += 1
+                continue
+            raise HttpError(f"请求失败 HTTP {e.code}") from e
 
 
 def http_get_bytes(

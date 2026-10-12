@@ -41,8 +41,8 @@ class SearchIn(BaseModel):
     keyword: str = Field(..., min_length=1, max_length=80)
     source: str = Field(default="qidian", max_length=20)
     limit: int = Field(default=10, ge=1, le=20)
-    # 取数方式：api=HTTP / chrome=fnOS 浏览器 / auto=检测 Chrome 优先，失败回退 API
-    mode: str = Field(default="auto", max_length=20)
+    # 取数方式：api=HTTP（默认）/ chrome=浏览器（备用）/ auto=API 优先，失败回退 Chrome
+    mode: str = Field(default="api", max_length=20)
 
 
 class ApplyIn(BaseModel):
@@ -50,8 +50,8 @@ class ApplyIn(BaseModel):
     source_book_id: str = Field(..., min_length=1, max_length=32)
     keyword: str | None = Field(default=None, max_length=80)
     with_cover: bool = True
-    # 取数方式：api / chrome / auto（Chrome 优先，失败回退 API）
-    mode: str = Field(default="auto", max_length=20)
+    # 取数方式：api（默认）/ auto（API 优先，失败回退 Chrome）/ chrome（备用）
+    mode: str = Field(default="api", max_length=20)
     # 搜索列表里已有的字段，详情被风控时可作回退
     hint_name: str | None = Field(default=None, max_length=200)
     hint_author: str | None = Field(default=None, max_length=100)
@@ -82,8 +82,21 @@ def _mod(source: str):
     return mod
 
 
+def _browser_fallback_ok() -> bool:
+    """是否允许在 API 失败后用 Chrome 兜底（受 SCRAPER_BROWSER_FALLBACK 开关控制）。"""
+    try:
+        from ..scrapers.browser_fallback import browser_fallback_enabled
+
+        return bool(browser_fallback_enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _with_mode(mode: str, fn):
-    """按刮削方式执行 fn()：api=HTTP，chrome=浏览器，auto=检测 Chrome 优先、失败回退 API。"""
+    """按刮削方式执行 fn()。
+
+    api=HTTP（默认）；chrome=浏览器（备用）；auto=API 优先、失败且开关允许时回退 Chrome。
+    """
     from ..scrapers import http_util
     from ..scrapers.qidian import ScrapeError
 
@@ -102,34 +115,23 @@ def _with_mode(mode: str, fn):
             return fn()
         except ScrapeError as e:
             raise HTTPException(502, str(e)) from e
-    # auto：检测到 fnOS Chrome 则优先浏览器，失败回退 API；未检测到则纯 API
-    try:
-        from ..scrapers.browser_fallback import chrome_available
-    except Exception:  # noqa: BLE001
-        chrome_available = None  # type: ignore[assignment]
-    use_chrome = bool(chrome_available and chrome_available())
-    if use_chrome:
-        http_util.set_browser_mode(True)
-        try:
-            return fn()
-        except ScrapeError as first_err:
-            # Chrome 优先但失败：回退 API 一次
-            http_util.set_browser_mode(False)
-            try:
-                return fn()
-            except ScrapeError as second_err:
-                raise HTTPException(
-                    502,
-                    f"刮削失败（Chrome 与 API 均不可用）：{first_err}；{second_err}",
-                ) from second_err
-        finally:
-            http_util.set_browser_mode(False)
-    # 无 Chrome：纯 API
+    # auto：API 优先；失败且允许浏览器兜底时才用 Chrome
     http_util.set_browser_mode(False)
     try:
         return fn()
-    except ScrapeError as e:
-        raise HTTPException(502, str(e)) from e
+    except ScrapeError as api_err:
+        if not _browser_fallback_ok():
+            raise HTTPException(502, str(api_err)) from api_err
+        http_util.set_browser_mode(True)
+        try:
+            return fn()
+        except ScrapeError as chrome_err:
+            raise HTTPException(
+                502,
+                f"刮削失败（API 与 Chrome 均不可用）：{api_err}；{chrome_err}",
+            ) from chrome_err
+        finally:
+            http_util.set_browser_mode(False)
 
 
 @router.get("/modes")
@@ -163,7 +165,8 @@ def scrape_search(payload: SearchIn) -> dict:
     mod = _mod(payload.source)
 
     def _run():
-        return mod.search(payload.keyword, limit=payload.limit)
+        # enrich=False：单本书名搜索不再补抓详情，降低请求量（防频繁请求被拒）
+        return mod.search(payload.keyword, limit=payload.limit, enrich=False)
 
     hits = _with_mode(payload.mode, _run)
     label = SOURCE_LABELS.get(payload.source.strip().lower(), payload.source)

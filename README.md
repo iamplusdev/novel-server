@@ -14,7 +14,8 @@
 - 管理后台：账号登录、封面墙、书源/分类筛选、元数据编辑、刮削、体检、网页阅读
 - **两级分类**：书源（起点 / 番茄 / 纵横 / 本地）+ 统一分类（以起点 15 类为准），与 TXT 目录层级一致
 - **刮削**：起点 / 番茄 / 纵横元数据（书名、作者、简介、状态、分类、标签、封面）
-- **刮削方式可选**：API 直连 / Chrome 浏览器（fnOS CDP）/ 自动（检测到 Chrome 优先，否则 API）
+- **刮削方式**：**默认 API 直连**；`自动` = API 优先、失败用 Chrome 兜底；`Chrome` = 强制浏览器。API 侧带按域限速与 429/403/503 退避重试，降低被风控概率
+- **后台任务互斥**：导入 / 体检 / 批量刮削同一时刻只允许一个运行，前端会禁用并提示
 - **网页阅读器** + **Legado 书源**
 - 封面本地 `covers/` 由服务直接提供；章节正文存 `data/contents/` 正文包
 
@@ -134,41 +135,44 @@ docker compose exec novel-server python import_novels.py
 | 改元数据 / 封面 / 分类 | 管理后台书库，点封面卡片 |
 | 网页阅读 | 书库/详情 →「阅读」 |
 | 再次导入 | 管理后台「导入」或 `docker compose exec novel-server python import_novels.py` |
-| 刮削补全 | 详情「刮削…」或体检页「一键刮削」；可选 **API / Chrome / 自动** |
+| 刮削补全 | 详情「刮削…」或体检页「一键刮削」；方式 **默认 API**，`自动`=API 优先→Chrome 兜底 |
 | 体检 | 重复合并、损坏修复、按分类归位 |
 | 升级 | `docker compose build && docker compose up -d`（卷数据保留） |
 
 ---
 
-## 刮削方式（API / Chrome / 自动）
+## 刮削方式（默认 API）
 
 单本刮削弹窗与「体检 → 刮削」均可选择取数方式：
 
 | 方式 | 说明 |
 |------|------|
-| **API 直连** | 轻量 HTTP 请求，速度快 |
-| **Chrome 浏览器** | 经 fnOS tieron Chrome（CDP）渲染取页，抗风控更强 |
-| **自动** | 检测到「CDP 可达 **且** Playwright 已装」则优先 Chrome、失败回退 API；否则纯 API |
+| **API 直连**（默认） | 只走 HTTP，轻量、速度快；不与浏览器互兜底 |
+| **自动** | 唯一的两段式：先 API，失败后再用 Chrome 兜底 |
+| **Chrome 浏览器** | 强制走浏览器（fnOS CDP / Playwright）；不与 API 互兜底 |
 
 相关环境变量：
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `SCRAPER_BROWSER_FALLBACK` | 关 | `1` 时允许浏览器兜底路径（手动 chrome / 批量重试） |
+| `SCRAPER_BROWSER_FALLBACK` | `1` | 浏览器通道开关：`1`/留空=允许；`0`=彻底禁用（`自动` 也不再兜底） |
 | `CDP_URL` | `http://127.0.0.1:16002` | fnOS Chrome / CDP 网关 |
 | `CDP_READY_WAIT` | `20` | 唤醒/等待 Chrome ready 超时（秒） |
+| `SCRAPER_HOST_MIN_INTERVAL` | `2.0` | 同域名两次请求最小间隔（秒），较保守防封 |
+| `SCRAPER_HOST_JITTER_MAX` | `0.6` | 域名间隔随机抖动上限（秒） |
+| `SCRAPER_RETRY_MAX` | `3` | 收到 429/403/503 时的退避重试次数 |
+| `SCRAPER_RETRY_BASE` | `2` | 退避基数（秒），指数增长，单次上限 30s |
+| `SCRAPER_RESPECT_RETRY_AFTER` | `1` | 是否尊重响应的 `Retry-After` |
 
-启用 Chrome 方式：
+启用 Chrome（仅 `自动` / `Chrome` 方式需要）：
 
 1. 安装 Playwright Python 包（`connect_over_cdp` 连宿主机 Chrome，无需 `playwright install` 内核）
    - 本机/虚机：`pip install -r requirements-optional.txt`
    - Docker：`docker compose build --build-arg INSTALL_BROWSER_DEPS=1 && docker compose up -d`
 2. `docker-compose.yml` 已用 `network_mode: host`，容器内 `127.0.0.1:16002` 即宿主机 CDP
-3. 手动 Chrome / 兜底建议设置：`SCRAPER_BROWSER_FALLBACK=1`、`CDP_URL=http://127.0.0.1:16002`（auto 在 CDP+Playwright 齐备时即优先 Chrome，无需该变量）
+3. 缺 Playwright / CDP 时：`自动` 的 Chrome 兜底失败会返回 502 提示；默认 `API` 不受影响
 
-缺 Playwright 时：auto 自动改走 API，不会报「未安装 playwright」；只有手动选「Chrome 浏览器」才会提示缺依赖。
-
-日志中会看到「取数通道（auto 检测）… / [API] 恢复 / [浏览器] 恢复」等字样。
+**防风控**：API 请求按域名限速（默认 2s + 抖动）、命中 429/403/503 指数退避重试并（可）尊重 `Retry-After`，且复用连接会话；批量刮削另有书间间隔、长休息、单源冷却与连续被拦熔断。日志中可见「取数通道 / 浏览器兜底恢复」等字样。
 
 ---
 
@@ -188,6 +192,8 @@ services:
     network_mode: host   # host 模式下 ports 不生效，服务监听 HOST:PORT
     environment:
       PUBLIC_BASE_URL: "http://192.168.1.100:7311"  # 必改
+      READ_API_KEY: "please-change-me"              # 公网必备：Legado 读接口密钥
+      TRUSTED_HOSTS: "192.168.1.100"                # 反代可信 Host（可选）
       HOST: "0.0.0.0"
       PORT: "7312"
       FRONTEND_PORT: "7311"
@@ -244,8 +250,8 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 | 场景 | 建议 |
 |------|------|
 | 纯局域网 | `PUBLIC_BASE_URL=http://<内网IP>:7311`，防火墙放行 7311（前端）、7312（API） |
-| 外网 / 穿透 | 用 HTTPS 域名；设 `COOKIE_SECURE=1`；反代加 Basic Auth 或只允许内网 |
-| Legado 外网 | 书源 `header` 可带反代账号；或走 Tailscale 等私有网 |
+| 外网 / 穿透 | 用 HTTPS 域名；设 `COOKIE_SECURE=1`；**必须设 `READ_API_KEY`**（否则读接口匿名 401）；可按需设 `TRUSTED_HOSTS`；交互式文档与通配 CORS 已关闭 |
+| Legado 外网 | 书源 JSON 会自动注入 `header.X-Api-Key`；或走 Tailscale 等私有网 |
 
 ---
 
@@ -259,7 +265,10 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 | `DATABASE_PATH` | `./data/novels.db` | SQLite 路径 |
 | `CONTENTS_DIR` | `./data/contents` | 章节正文包目录 |
 | `COVERS_DIR` | `./covers` | 封面目录 |
-| `COOKIE_SECURE` | `0` | HTTPS/反代设 `1` |
+| `COOKIE_SECURE` | `0` | HTTPS/反代设 `1`（会话 Cookie 带 Secure） |
+| `READ_API_KEY` | （空） | 读接口密钥（Legado 以 `X-Api-Key` 携带）；未设则读接口只认管理会话 |
+| `TRUSTED_HOSTS` | （空） | 反代可信 Host 白名单（逗号分隔）；留空则基址固定用 `PUBLIC_BASE_URL` |
+| `MAX_TXT_BYTES` | `0` | 单本 TXT 导入大小上限（字节）；`0` 不限，超限跳过并计入失败 |
 | `LOG_LEVEL` | `INFO` | 日志级别（`DEBUG` / `INFO` / `WARNING`） |
 | `LOG_FILE` | 空 | 设为 `1` 写入 `data/novel-server.log`，或指定文件名 |
 | `SCRAPER_PROXY` | （空） | 刮削代理，默认直连（不读系统代理） |
@@ -269,8 +278,11 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 | `SCRAPER_LONG_PAUSE_MIN` / `MAX` | `6` / `12` | 长休息随机秒数范围 |
 | `SCRAPER_BLOCK_BREAK_AT` | `3` | 连续被拦截多少次后熔断冷却 |
 | `SCRAPER_BLOCK_BREAK_SECONDS` | `180` | 熔断冷却时长（秒） |
-| `SCRAPER_HOST_MIN_INTERVAL` | `1.2` | 同一域名两次请求最小间隔（秒）；`0` 关闭 |
-| `SCRAPER_HOST_JITTER_MAX` | `0.4` | 域名间隔随机抖动上限（秒） |
+| `SCRAPER_HOST_MIN_INTERVAL` | `2.0` | 同一域名两次请求最小间隔（秒）；`0` 关闭（较保守，防封） |
+| `SCRAPER_HOST_JITTER_MAX` | `0.6` | 域名间隔随机抖动上限（秒） |
+| `SCRAPER_RETRY_MAX` | `3` | 429/403/503 退避重试次数 |
+| `SCRAPER_RETRY_BASE` | `2` | 退避基数（秒），指数增长，单次上限 30s |
+| `SCRAPER_RESPECT_RETRY_AFTER` | `1` | 是否尊重响应 `Retry-After` |
 | `SCRAPER_SEARCH_CACHE_TTL` | `1800` | 搜索结果缓存秒数；`0` 关闭 |
 | `SCRAPER_SKIP_DETAIL` | `1` | 高置信命中跳过详情请求（省 1～3 次/本） |
 | `SCRAPER_SKIP_DETAIL_SCORE` | `0.95` | 跳过详情的最低匹配分 |
@@ -279,7 +291,7 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 | `SCRAPER_SOURCE_COOLDOWN_SECONDS` | `180` | 单源冷却时长（秒），期间 `all` 跳过该源 |
 | `SCRAPER_FANQIE_BING` | `1` | 批量番茄无书号时用必应反查书名 |
 | `SCRAPER_FANQIE_BING_MAX` | `0` | 整批最多必应反查次数；`0` 不限 |
-| `SCRAPER_BROWSER_FALLBACK` | 关 | `1` 开启浏览器兜底路径（手动 chrome / 批量重试） |
+| `SCRAPER_BROWSER_FALLBACK` | `1` | 浏览器通道开关：`1`/留空=允许；`0`=彻底禁用（含 `自动` 兜底） |
 | `CDP_URL` | `http://127.0.0.1:16002` | fnOS Chrome CDP 网关 |
 | `CDP_READY_WAIT` | `20` | 唤醒/等待 Chrome ready 超时（秒） |
 
@@ -318,7 +330,7 @@ npm run typecheck
 |------|------|
 | 管理后台 | `http://<host>:7311/`（登录 `/login`） |
 | 后端 API | `http://<host>:7312/` |
-| OpenAPI | `http://<host>:7312/docs` |
+| OpenAPI | 生产默认关闭（`/docs`、`/redoc`、`/openapi.json` 均 404） |
 | 健康检查 | `http://<host>:7312/health` |
 | 测试 | `python -m pytest tests/ -q` 或 `python -m unittest tests.test_core` |
 
@@ -362,11 +374,13 @@ npm run typecheck
 
 1. 首次打开 `http://<host>:7311/` 创建用户名/密码，**保存恢复码**
 2. **书库**：书源/分类筛选、封面墙、点卡片编辑；可多选批量刮削/删除
-3. **详情**：书源/分类两级下拉、刮削（可选方式）、封面、删除、进入阅读
-4. **导入**：扫描本地 `NOVELS_DIR`，SSE 进度
-5. **体检**：重复合并、损坏修复、一键刮削（可选方式）、按分类归位
+3. **详情**：书源/分类两级下拉、刮削（默认 API）、封面、删除、进入阅读
+4. **导入**：扫描本地 `NOVELS_DIR`（流式解析、编码择优），SSE 进度、可中途取消；同名同作者默认跳过
+5. **体检**：重复合并、损坏修复（需显式选中）、一键刮削、按分类归位；深度体检为后台任务（带进度/停止）
 6. **API / 书源**：查看接口、复制 Legado JSON
 7. **设置**：主题、改密、退出、运行环境
+
+> **任务互斥**：导入 / 体检 / 批量刮削同一时刻只允许一个运行，运行中其它入口会禁用并提示。
 
 忘记密码：登录页「忘记密码」+ 恢复码，或容器内 `python reset_auth.py`。
 
@@ -377,8 +391,11 @@ npm run typecheck
 ```text
 novel-server/
 ├── app/                 # FastAPI 应用
-│   ├── routers/         # auth / admin / scrape / library / public / legado
-│   ├── scrapers/        # 起点 / 番茄 / 纵横 + mode + browser_fallback
+│   ├── routers/         # auth / admin / scrape / library / public / legado / batch_scrape
+│   ├── scrapers/        # 起点 / 番茄 / 纵横 + mode + http_util + browser_fallback
+│   ├── content_store.py # 章节正文包（按偏移存取）
+│   ├── parsers.py       # TXT 流式解析 + 编码识别
+│   ├── task_guard.py    # 长任务互斥（导入 / 体检 / 刮削）
 │   └── ...
 ├── frontend/            # Vue3 + Vite（构建产物 frontend/dist）
 ├── tests/               # pytest / unittest
@@ -400,6 +417,8 @@ novel-server/
 ## 维护
 
 - 源 TXT 内容未变时重复导入几乎无开销（SHA256 跳过）
+- 导入：编码自动择优（UTF-8 / GBK / Big5 / UTF-16 等），异常编码会兜底解码；同名同作者默认跳过
+- 正文包采用「先写临时包、DB 提交成功后再切换」，避免中断导致正文错乱
 - 升级：重新 `docker compose build && up -d`，卷数据保留
 - 排查问题：看容器日志；或设 `LOG_FILE=1` 落盘 `data/novel-server.log`
 - 勿将密码、恢复码提交进仓库

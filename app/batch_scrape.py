@@ -679,7 +679,7 @@ def run_batch_scrape(
     min_score: float = 0.8,
     limit: int | None = None,
     book_ids: list[int] | None = None,
-    mode: str = "auto",
+    mode: str = "api",
     refs: list[str] | None = None,
 ) -> dict:
     """同步执行一批刮削（供后台线程调用）。
@@ -688,25 +688,15 @@ def run_batch_scrape(
     番茄不走书名搜索，仅有书号/链接时直连详情；
     book_ids 非空时只刮削指定书（书库多选批量刮削）；
     refs 非空时按书号/链接批量刮削（不走书名搜索）；
-    mode：api=仅 HTTP / chrome=fnOS 浏览器 / auto=检测 Chrome 优先，失败回退 API。
+    mode：api=仅 HTTP（默认） / chrome=fnOS 浏览器 / auto=API 优先，失败回退 Chrome。
     """
     from .scrapers import http_util
-    from .scrapers.mode import MODE_API, MODE_CHROME, normalize_mode
+    from .scrapers.mode import MODE_API, MODE_AUTO, MODE_CHROME, normalize_mode
 
     scrape_mode = normalize_mode(mode)
     _status["mode"] = scrape_mode
-    # auto：检测到 fnOS Chrome 则优先浏览器，否则纯 API
-    resolved = scrape_mode
-    if scrape_mode != MODE_API and scrape_mode != MODE_CHROME:
-        try:
-            from .scrapers.browser_fallback import chrome_available
-
-            if chrome_available():
-                resolved = MODE_CHROME
-            else:
-                resolved = MODE_API
-        except Exception:  # noqa: BLE001
-            resolved = MODE_API
+    # auto = API 优先（Chrome 仅作失败兜底），故主阶段解析为：显式 chrome 才用浏览器，其余走 API
+    resolved = MODE_CHROME if scrape_mode == MODE_CHROME else MODE_API
     _status["resolved"] = resolved
     # chrome（手动或 auto 解析后）：全程走浏览器；api：全程 HTTP
     if resolved == MODE_CHROME:
@@ -720,7 +710,7 @@ def run_batch_scrape(
     src_names = "→".join(label for _, _, label in source_pairs)
     _log(f"刮削源顺序：{src_names}（阈值 {min_score}，命中即停）")
     if scrape_mode != MODE_API and scrape_mode != MODE_CHROME:
-        _log(f"取数通道（auto 检测）：{'Chrome 浏览器' if resolved == MODE_CHROME else 'API 直连'}")
+        _log(f"取数通道（auto=API 优先）：{'Chrome 浏览器' if resolved == MODE_CHROME else 'API 直连'}")
     db = SessionLocal()
     try:
         # —— 书号/链接批量（番茄直连，不走书名搜索）——
@@ -735,8 +725,6 @@ def run_batch_scrape(
             _status["min_score"] = min_score
             _status["browser_retried"] = 0
             _status["browser_recovered"] = 0
-            _status["api_retried"] = 0
-            _status["api_recovered"] = 0
             _status["fanqie_bing_used"] = 0
             _log(f"书号/链接刮削：{len(ref_list)} 条（番茄详情直连）")
             _run_ref_jobs(db, ref_list, book_ids, min_score=min_score)
@@ -767,8 +755,6 @@ def run_batch_scrape(
         _status["min_score"] = min_score
         _status["browser_retried"] = 0
         _status["browser_recovered"] = 0
-        _status["api_retried"] = 0
-        _status["api_recovered"] = 0
         _status["fanqie_bing_used"] = 0
 
         # 风控退避状态：连续被拦计数 + 当前退避档位
@@ -842,23 +828,16 @@ def run_batch_scrape(
                 _log(f"节奏暂停 {pause:.1f}s（每 {_LONG_PAUSE_EVERY} 本）")
             time.sleep(delay)
 
-        # 阶段2：失败项反向兜底
-        # - auto+Chrome 优先：失败项用 API 再试一次
-        # - 手动 chrome：失败项用浏览器重试（原兜底语义）
-        # - 纯 API：跳过
-        if failed_jobs and not _cancel.is_set() and resolved != MODE_API:
-            if scrape_mode != MODE_CHROME and resolved == MODE_CHROME:
-                # auto 解析为 Chrome：失败项回退 API
-                _run_api_fallback(db, primary_mod, primary_label, failed_jobs, min_score=min_score)
-            else:
-                _run_browser_fallback(db, primary_mod, primary_label, failed_jobs, min_score=min_score)
+        # 阶段2：仅 auto 有兜底（API 优先失败 → Chrome）
+        # api / chrome 为单一通道，互不兜底
+        if failed_jobs and not _cancel.is_set() and scrape_mode == MODE_AUTO:
+            _run_browser_fallback(db, primary_mod, primary_label, failed_jobs, min_score=min_score)
 
         summary = (
             f"共 {_status['total']} 本 · 写入 {_status['matched']} · "
             f"跳过 {_status['skipped']} · 失败 {_status['failed']}"
             + (f" · 取数通道 {resolved}" if scrape_mode != MODE_API and scrape_mode != MODE_CHROME else "")
             + (f" · 浏览器兜底恢复 {_status['browser_recovered']}" if _status.get("browser_retried") else "")
-            + (f" · API 回退恢复 {_status['api_recovered']}" if _status.get("api_retried") else "")
         )
         _log(summary)
         return dict(_status)
@@ -868,47 +847,6 @@ def run_batch_scrape(
 
             _hu.set_browser_mode(False)
         db.close()
-
-
-def _run_api_fallback(
-    db: Session,
-    mod,
-    label: str,
-    failed_jobs: list[tuple[int, str]],
-    *,
-    min_score: float,
-) -> None:
-    """auto 已走 Chrome 仍失败的书，用纯 HTTP 再试一次（反向兜底）。"""
-    from .scrapers import http_util
-
-    _log(f"Chrome 阶段失败 {len(failed_jobs)} 本，回退 API 重试…")
-    http_util.set_browser_mode(False)
-    try:
-        for book_id, title in failed_jobs:
-            if _cancel.is_set():
-                _log("（已取消）")
-                break
-            book = db.get(Book, book_id)
-            if not book:
-                continue
-            _status["api_retried"] = _status.get("api_retried", 0) + 1
-            try:
-                result = _scrape_one(db, mod, label, book, min_score=min_score)
-                if result in ("ok", "blocked_ok"):
-                    _status["api_recovered"] = _status.get("api_recovered", 0) + 1
-                    # 成功则从 failed 计数里扣回
-                    _status["failed"] = max(0, _status["failed"] - 1)
-                    _log(f"[API] 恢复《{title}》")
-                elif result == "skip":
-                    _log(f"[API] 《{title}》仍无匹配")
-            except Exception as exc:  # noqa: BLE001
-                db.rollback()
-                _log(f"[API] 《{title}》仍失败: {exc}")
-            time.sleep(_BASE_DELAY + random.uniform(0.0, _JITTER_MAX))
-    finally:
-        # 恢复 Chrome 通道（若主阶段是浏览器）
-        http_util.set_browser_mode(True)
-        _log("API 回退阶段结束")
 
 
 def _run_browser_fallback(

@@ -89,8 +89,8 @@ const batch = ref<BatchStatus | null>(null);
 const source = ref("all");
 const onlyMissing = ref(true);
 const minScore = ref(0.8);
-/** 刮削取数方式：auto / api / chrome（fnOS Chrome） */
-const scrapeMode = ref("auto");
+/** 刮削取数方式：api（默认）/ auto（API 优先）/ chrome（备用） */
+const scrapeMode = ref("api");
 const starting = ref(false);
 const acting = ref(false);
 let handle: SseHandle | null = null;
