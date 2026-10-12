@@ -135,6 +135,41 @@ class CoreTests(unittest.TestCase):
         self.assertIn("正文乙内容", joined)
         self.assertTrue(content_pack_path(chs[0].book_id).is_file())
 
+    def test_import_utf16_bom(self) -> None:
+        """UTF-16(带 BOM) 文本也能导入（曾因编解码器 BOM 检查抛 UnicodeError 失败）。"""
+        from sqlalchemy import select
+
+        from app.content_store import read_chapter_text
+        from app.database import SessionLocal
+        from app.importer import import_all
+        from app.models import Book, Chapter
+
+        novels = self._tmp / "novels" / "未分类"
+        novels.mkdir(parents=True)
+        body = "我在精神病院学斩神\n第一章 开始\n正文甲内容\n第二章 继续\n正文乙内容"
+        (novels / "斩神.txt").write_bytes(body.encode("utf-16"))
+
+        res = import_all()
+        self.assertTrue(res.added, res.summary)
+
+        s = SessionLocal()
+        book = s.execute(select(Book).where(Book.title == "斩神")).scalars().first()
+        self.assertIsNotNone(book)
+        chs = (
+            s.execute(
+                select(Chapter).where(Chapter.book_id == book.id).order_by(Chapter.index)
+            )
+            .scalars()
+            .all()
+        )
+        joined = "".join(
+            read_chapter_text(c.book_id, c.content_offset, c.content_length, c.content)
+            for c in chs
+        )
+        self.assertIn("正文甲内容", joined)
+        self.assertIn("正文乙内容", joined)
+        s.close()
+
     def test_toc_does_not_load_content(self) -> None:
         """目录接口只投影标题列。"""
         from sqlalchemy import select

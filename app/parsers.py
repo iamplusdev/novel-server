@@ -254,22 +254,45 @@ def _build_parsed(stem: str, category: str, chapters: list[ParsedChapter]) -> Pa
     )
 
 
+def _resolve_stream_encoding(sample: bytes) -> str:
+    """流式读取用的编码：utf-16 按 BOM 落成具体端序。
+
+    直接用 "utf-16" 编解码器要求首块必须是 BOM，否则抛 UnicodeError（errors=replace 也压不住），
+    故这里按 BOM 明确端序（utf-16-le/be），由 iter_chapters 去掉开头的 \\ufeff。
+    """
+    if sample.startswith(b"\xff\xfe"):
+        return "utf-16-le"
+    if sample.startswith(b"\xfe\xff"):
+        return "utf-16-be"
+    return detect_encoding(sample)
+
+
 def load_txt_book_with_hash(path: Path, category: str, cancel=None) -> tuple[ParsedBook, str]:
     """流式解析文件并返回 (ParsedBook, sha256)。单次读盘：边读边算哈希与切章。
 
     cancel 置位时抛 ParseCancelled（超大文件解析中途可中断）。
+    任何编码异常都会退化为整段兜底解码，保证导入不因编码失败。
     """
-    enc = detect_encoding(_sample_file(path))
-    with path.open("rb") as fh:
-        raw = _HashingRaw(fh)
-        text = io.TextIOWrapper(
-            io.BufferedReader(raw), encoding=enc, errors="replace", newline=None
-        )
-        chapters = [c for c in iter_chapters(text, cancel=cancel) if c.content.strip()]
-        text.detach()  # 不关闭底层文件，交由 with 收尾
+    enc = _resolve_stream_encoding(_sample_file(path))
+    try:
+        with path.open("rb") as fh:
+            raw = _HashingRaw(fh)
+            text = io.TextIOWrapper(
+                io.BufferedReader(raw), encoding=enc, errors="replace", newline=None
+            )
+            chapters = [c for c in iter_chapters(text, cancel=cancel) if c.content.strip()]
+            text.detach()  # 不关闭底层文件，交由 with 收尾
+        digest = raw.hash.hexdigest()
+    except (UnicodeError, LookupError):
+        # 非规范/损坏编码：整段兜底解码（decode_bytes 已按择优选择），保证可导入
+        data = path.read_bytes()
+        chapters = [
+            c for c in iter_chapters(io.StringIO(decode_bytes(data)), cancel=cancel) if c.content.strip()
+        ]
+        digest = hashlib.sha256(data).hexdigest()
     if not chapters:
         chapters = [ParsedChapter(title="", content="")]
-    return _build_parsed(path.stem, category, chapters), raw.hash.hexdigest()
+    return _build_parsed(path.stem, category, chapters), digest
 
 
 def load_txt_book(path: Path, category: str) -> ParsedBook:
