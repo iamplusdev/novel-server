@@ -8,6 +8,12 @@ import { ElMessage } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import { useThemeStore, type ThemeMode } from "@/stores/theme";
 import { useLibraryStore } from "@/stores/library";
+import {
+  fetchScrapeSettings,
+  saveScrapeSettings,
+  type ScrapeSettingSpec,
+  type ScrapeSettingsValues,
+} from "@/api/admin";
 import AppIcon from "@/components/AppIcon.vue";
 
 const auth = useAuthStore();
@@ -16,6 +22,34 @@ const lib = useLibraryStore();
 
 const pwForm = ref({ old_password: "", new_password: "", new_password2: "" });
 const pwLoading = ref(false);
+
+// 刮削参数（设置页可调，保存到服务端即时生效）
+const scrapeSpec = ref<ScrapeSettingSpec[]>([]);
+const scrapeForm = ref<ScrapeSettingsValues>({});
+const scrapeSaving = ref(false);
+
+async function loadScrape() {
+  try {
+    const r = await fetchScrapeSettings();
+    scrapeSpec.value = r.spec;
+    scrapeForm.value = { ...r.values };
+  } catch {
+    /* 忽略：加载失败不阻断页面 */
+  }
+}
+
+async function saveScrape() {
+  scrapeSaving.value = true;
+  try {
+    const r = await saveScrapeSettings(scrapeForm.value);
+    scrapeForm.value = { ...r.values };
+    ElMessage.success("刮削参数已保存");
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "保存失败");
+  } finally {
+    scrapeSaving.value = false;
+  }
+}
 
 const envText = computed(() => {
   const s = lib.stats;
@@ -61,6 +95,7 @@ async function savePw() {
 
 onMounted(async () => {
   theme.init();
+  void loadScrape();
   try {
     await lib.loadStats();
   } catch {
@@ -137,6 +172,46 @@ onMounted(async () => {
           {{ pwLoading ? "保存中…" : "保存新密码" }}
         </button>
       </form>
+    </section>
+
+    <section class="page-card">
+      <div class="section-head">
+        <AppIcon name="settings" :size="16" />
+        <h2 class="section-title">刮削参数</h2>
+      </div>
+      <p class="muted">
+        批量刮削节奏与防风控限速/重试；保存后<strong>即时生效</strong>（未保存则用环境变量默认值）。
+      </p>
+      <div class="scrape-form">
+        <label v-for="s in scrapeSpec" :key="s.key" class="scrape-field">
+          <span class="scrape-label">
+            {{ s.label }}<em v-if="s.unit">（{{ s.unit }}）</em>
+          </span>
+          <el-switch
+            v-if="s.type === 'bool'"
+            :model-value="scrapeForm[s.key] === true"
+            @update:model-value="(v: boolean) => (scrapeForm[s.key] = v)"
+          />
+          <input
+            v-else
+            v-model.number="scrapeForm[s.key]"
+            type="number"
+            class="field-input"
+            :min="s.min"
+            :max="s.max"
+            :step="s.type === 'int' ? 1 : 0.1"
+          />
+          <span v-if="s.hint" class="scrape-hint muted-xs">{{ s.hint }}</span>
+        </label>
+      </div>
+      <button
+        type="button"
+        class="primary-btn"
+        :disabled="scrapeSaving || !scrapeSpec.length"
+        @click="saveScrape"
+      >
+        {{ scrapeSaving ? "保存中…" : "保存刮削参数" }}
+      </button>
     </section>
 
     <section class="page-card">
@@ -261,5 +336,39 @@ onMounted(async () => {
 
 .env {
   max-height: none;
+}
+
+/* 刮削参数表单：两列自适应 */
+.scrape-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-3) 0 var(--space-4);
+}
+
+.scrape-field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.scrape-label {
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
+  font-weight: 500;
+}
+
+.scrape-label em {
+  font-style: normal;
+  color: var(--color-text-3);
+}
+
+.scrape-field .field-input {
+  width: 120px;
+}
+
+.scrape-hint {
+  grid-column: 1 / -1;
 }
 </style>

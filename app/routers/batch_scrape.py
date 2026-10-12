@@ -19,7 +19,7 @@ class BatchIn(BaseModel):
     # 番茄不走书名搜索，仅有书号/链接时直连详情
     source: str = Field(default="all", max_length=20)
     only_missing: bool = True
-    min_score: float = Field(default=0.8, ge=0.3, le=1.0)
+    min_score: float = Field(default=0.7, ge=0.3, le=1.0)
     limit: int | None = Field(default=None, ge=1, le=5000)
     # 非空时只刮削指定书（书库多选批量刮削）；为空则按 only_missing 扫全库
     book_ids: list[int] | None = Field(default=None, max_length=500)

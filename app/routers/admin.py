@@ -109,6 +109,36 @@ def admin_stats(request: Request, db: Session = Depends(get_db)) -> dict:
     }
 
 
+class ScrapeSettingsIn(BaseModel):
+    """刮削参数（设置页可调，保存到 data/scraper_settings.json）。"""
+
+    delay: float | None = Field(default=None, ge=0.3, le=120)
+    jitter_max: float | None = Field(default=None, ge=0, le=120)
+    long_pause_every: int | None = Field(default=None, ge=0, le=10000)
+    long_pause_min: float | None = Field(default=None, ge=0, le=600)
+    long_pause_max: float | None = Field(default=None, ge=0, le=600)
+    host_min_interval: float | None = Field(default=None, ge=0, le=120)
+    host_jitter_max: float | None = Field(default=None, ge=0, le=120)
+    retry_max: int | None = Field(default=None, ge=0, le=20)
+    retry_base: float | None = Field(default=None, ge=0, le=120)
+    respect_retry_after: bool | None = None
+
+
+@router.get("/settings/scrape")
+def admin_get_scrape_settings() -> dict:
+    from .. import scraper_settings
+
+    return {"values": scraper_settings.get_all(), "spec": scraper_settings.spec()}
+
+
+@router.put("/settings/scrape")
+def admin_put_scrape_settings(payload: ScrapeSettingsIn) -> dict:
+    from .. import scraper_settings
+
+    values = scraper_settings.update(payload.model_dump(exclude_none=True))
+    return {"ok": True, "values": values}
+
+
 @router.get("/tasks/status")
 def admin_tasks_status() -> dict:
     """导入/体检/刮削的互斥任务状态，供前端禁用按钮与提示。"""

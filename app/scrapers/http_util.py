@@ -111,23 +111,21 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
-# 同域两次请求的最小间隔（秒）；0 = 关闭节流。默认较保守，降低被风控概率
-_HOST_MIN_INTERVAL = max(0.0, _env_float("SCRAPER_HOST_MIN_INTERVAL", 2.0))
-# 间隔随机抖动上限（秒），避免固定节拍
-_HOST_JITTER_MAX = max(0.0, _env_float("SCRAPER_HOST_JITTER_MAX", 0.6))
-
+# 同域最小间隔 / 抖动 / 退避重试参数改为运行时读取（app/scraper_settings，可在设置页调节），
+# 默认值仍取环境变量 SCRAPER_HOST_MIN_INTERVAL / SCRAPER_HOST_JITTER_MAX / SCRAPER_RETRY_*。
 # 被限流/风控（429/403/503）时的退避重试
 _RETRY_STATUS = {429, 403, 503}
-_RETRY_MAX = max(0, int(_env_float("SCRAPER_RETRY_MAX", 3)))
-_RETRY_BASE = max(0.0, _env_float("SCRAPER_RETRY_BASE", 2.0))
 _RETRY_MAX_WAIT = max(1.0, _env_float("SCRAPER_RETRY_MAX_WAIT", 30.0))
-_RESPECT_RETRY_AFTER = _env_float("SCRAPER_RESPECT_RETRY_AFTER", 1) != 0
 
 
 def _retry_wait(attempt: int, err: "urllib.error.HTTPError | None" = None) -> float:
     """第 attempt 次重试前的等待秒数：指数退避 + 抖动，可选尊重 Retry-After。"""
-    wait = min(_RETRY_MAX_WAIT, _RETRY_BASE * (2**attempt)) + random.uniform(0.0, _HOST_JITTER_MAX)
-    if _RESPECT_RETRY_AFTER and err is not None:
+    from .. import scraper_settings
+
+    wait = min(_RETRY_MAX_WAIT, scraper_settings.get("retry_base") * (2**attempt)) + random.uniform(
+        0.0, scraper_settings.get("host_jitter_max")
+    )
+    if scraper_settings.get("respect_retry_after") and err is not None:
         try:
             ra = err.headers.get("Retry-After") if err.headers else None
         except Exception:  # noqa: BLE001
@@ -149,7 +147,10 @@ def _host_of(url: str) -> str:
 
 def throttle_host(url: str) -> float:
     """按 host 等待到允许发请求的时刻；返回实际等待秒数。"""
-    if _HOST_MIN_INTERVAL <= 0:
+    from .. import scraper_settings
+
+    min_interval = scraper_settings.get("host_min_interval")
+    if min_interval <= 0:
         return 0.0
     host = _host_of(url)
     if not host:
@@ -159,7 +160,7 @@ def throttle_host(url: str) -> float:
         with _HOST_THROTTLE_LOCK:
             now = time.monotonic()
             last = _HOST_LAST_AT.get(host, 0.0)
-            gap = _HOST_MIN_INTERVAL + random.uniform(0.0, _HOST_JITTER_MAX)
+            gap = min_interval + random.uniform(0.0, scraper_settings.get("host_jitter_max"))
             due = last + gap
             if now >= due:
                 _HOST_LAST_AT[host] = now
@@ -305,7 +306,9 @@ def http_get(
                 return raw.decode(charset, errors="replace")
         except urllib.error.HTTPError as e:
             # 被限流/风控（429/403/503）：指数退避重试，尊重 Retry-After
-            if e.code in _RETRY_STATUS and attempt < _RETRY_MAX:
+            from .. import scraper_settings
+
+            if e.code in _RETRY_STATUS and attempt < scraper_settings.get("retry_max"):
                 time.sleep(_retry_wait(attempt, e))
                 throttle_host(url)
                 attempt += 1

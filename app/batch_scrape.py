@@ -12,6 +12,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import scraper_settings
 from .database import SessionLocal
 from .importer import ensure_category_tag
 from .models import Book
@@ -35,14 +36,8 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
-# 书与书之间的基础间隔（秒）；过大容易拖慢，过小易触发起点 WAF
-_BASE_DELAY = max(0.3, _env_float("SCRAPER_DELAY", 2.0))
-# 在基础间隔上随机抖动（秒），避免固定节拍被识别为脚本
-_JITTER_MAX = max(0.0, _env_float("SCRAPER_JITTER_MAX", 1.5))
-# 每完成 N 本插入一次「像人休息」的长间隔；0 = 关闭
-_LONG_PAUSE_EVERY = max(0, _env_int("SCRAPER_LONG_PAUSE_EVERY", 10))
-_LONG_PAUSE_MIN = max(3.0, _env_float("SCRAPER_LONG_PAUSE_MIN", 6.0))
-_LONG_PAUSE_MAX = max(_LONG_PAUSE_MIN, _env_float("SCRAPER_LONG_PAUSE_MAX", 12.0))
+# 书间间隔 / 抖动 / 长休息参数改为运行时读取（app/scraper_settings，可在设置页调节），
+# 默认值仍取环境变量 SCRAPER_DELAY / SCRAPER_JITTER_MAX / SCRAPER_LONG_PAUSE_*。
 # 被拦截后的退避序列（秒），超过则取最后一档
 _BACKOFF_STEPS = [5.0, 15.0, 60.0]
 # 连续被拦达到该次数则熔断暂停
@@ -232,7 +227,7 @@ def score_match(local_title: str, local_author: str, hit_title: str, hit_author:
     return round(title_score * 0.75 + author_score * 0.25, 4)
 
 
-def pick_best_hit(book: Book, hits: list, min_score: float = 0.8):
+def pick_best_hit(book: Book, hits: list, min_score: float = 0.7):
     scored = []
     for h in hits or []:
         sc = score_match(book.title, book.author, getattr(h, "name", "") or (h.get("name") if isinstance(h, dict) else ""), getattr(h, "author", "") or (h.get("author") if isinstance(h, dict) else ""))
@@ -444,7 +439,7 @@ def _run_ref_jobs(
             _log(f"书号 {bid} 详情失败: {e}")
             if bool(getattr(e, "blocked", False)):
                 _note_source_blocked("fanqie", label)
-        time.sleep(_BASE_DELAY + random.uniform(0.0, _JITTER_MAX))
+        time.sleep(scraper_settings.get("delay") + random.uniform(0.0, scraper_settings.get("jitter_max")))
 
     # 2) 写入
     if pair_by_index:
@@ -676,7 +671,7 @@ def _scrape_book_across(
 def run_batch_scrape(
     source: str = "all",
     only_missing: bool = True,
-    min_score: float = 0.8,
+    min_score: float = 0.7,
     limit: int | None = None,
     book_ids: list[int] | None = None,
     mode: str = "api",
@@ -811,21 +806,23 @@ def run_batch_scrape(
 
             if _cancel.is_set():
                 break
-            # 间隔：2s 基准 + 随机抖动；被拦时改为指数退避；偶发长休息更像真人
-            delay = _BASE_DELAY + random.uniform(0.0, _JITTER_MAX)
+            # 间隔：基准 + 随机抖动；被拦时改为指数退避；偶发长休息更像真人
+            delay = scraper_settings.get("delay") + random.uniform(0.0, scraper_settings.get("jitter_max"))
             if block_streak > 0:
                 step = _BACKOFF_STEPS[min(backoff_idx, len(_BACKOFF_STEPS) - 1)]
                 backoff_idx = min(backoff_idx + 1, len(_BACKOFF_STEPS) - 1)
                 delay = step
                 _log(f"风控退避，等待 {delay:.0f}s…")
             elif (
-                _LONG_PAUSE_EVERY > 0
+                scraper_settings.get("long_pause_every") > 0
                 and _status["done"] > 0
-                and _status["done"] % _LONG_PAUSE_EVERY == 0
+                and _status["done"] % scraper_settings.get("long_pause_every") == 0
             ):
-                pause = random.uniform(_LONG_PAUSE_MIN, _LONG_PAUSE_MAX)
+                pause = random.uniform(
+                    scraper_settings.get("long_pause_min"), scraper_settings.get("long_pause_max")
+                )
                 delay += pause
-                _log(f"节奏暂停 {pause:.1f}s（每 {_LONG_PAUSE_EVERY} 本）")
+                _log(f"节奏暂停 {pause:.1f}s（每 {scraper_settings.get('long_pause_every')} 本）")
             time.sleep(delay)
 
         # 阶段2：仅 auto 有兜底（API 优先失败 → Chrome）
@@ -895,7 +892,7 @@ def _run_browser_fallback(
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
                 _log(f"[浏览器] 《{title}》仍失败: {exc}")
-            time.sleep(_BASE_DELAY + random.uniform(0.0, _JITTER_MAX))
+            time.sleep(scraper_settings.get("delay") + random.uniform(0.0, scraper_settings.get("jitter_max")))
     finally:
         http_util.set_browser_mode(False)
         _log("浏览器兜底阶段结束")

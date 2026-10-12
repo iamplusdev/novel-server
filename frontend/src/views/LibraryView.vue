@@ -190,7 +190,7 @@ async function onBatchScrape() {
     const res = await startBatchScrape({
       source: "all",
       only_missing: false,
-      min_score: 0.8,
+      min_score: 0.7,
       book_ids: ids,
     });
     if (res.started) {

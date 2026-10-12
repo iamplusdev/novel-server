@@ -174,6 +174,8 @@ docker compose exec novel-server python import_novels.py
 
 **防风控**：API 请求按域名限速（默认 2s + 抖动）、命中 429/403/503 指数退避重试并（可）尊重 `Retry-After`，且复用连接会话；批量刮削另有书间间隔、长休息、单源冷却与连续被拦熔断。日志中可见「取数通道 / 浏览器兜底恢复」等字样。
 
+> 上表中的批量节奏、限速与重试参数，均可在**管理后台 →「设置 → 刮削参数」**内调节，保存后**立即生效**（写入 `data/scraper_settings.json`）；环境变量为未保存时的默认值。
+
 ---
 
 ## Docker 部署说明
@@ -274,8 +276,8 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 | `SCRAPER_PROXY` | （空） | 刮削代理，默认直连（不读系统代理） |
 | `SCRAPER_DELAY` | `2.0` | 批量刮削书与书基础间隔（秒） |
 | `SCRAPER_JITTER_MAX` | `1.5` | 基础间隔随机抖动上限（秒） |
-| `SCRAPER_LONG_PAUSE_EVERY` | `10` | 每多少本插入一次长休息；`0` 关闭 |
-| `SCRAPER_LONG_PAUSE_MIN` / `MAX` | `6` / `12` | 长休息随机秒数范围 |
+| `SCRAPER_LONG_PAUSE_EVERY` | `5` | 每多少本插入一次长休息；`0` 关闭 |
+| `SCRAPER_LONG_PAUSE_MIN` / `MAX` | `5` / `15` | 长休息随机秒数范围 |
 | `SCRAPER_BLOCK_BREAK_AT` | `3` | 连续被拦截多少次后熔断冷却 |
 | `SCRAPER_BLOCK_BREAK_SECONDS` | `180` | 熔断冷却时长（秒） |
 | `SCRAPER_HOST_MIN_INTERVAL` | `2.0` | 同一域名两次请求最小间隔（秒）；`0` 关闭（较保守，防封） |
@@ -378,7 +380,7 @@ npm run typecheck
 4. **导入**：扫描本地 `NOVELS_DIR`（流式解析、编码择优），SSE 进度、可中途取消；同名同作者默认跳过
 5. **体检**：重复合并、损坏修复（需显式选中）、一键刮削、按分类归位；深度体检为后台任务（带进度/停止）
 6. **API / 书源**：查看接口、复制 Legado JSON
-7. **设置**：主题、改密、退出、运行环境
+7. **设置**：主题、改密、**刮削参数**、退出、运行环境
 
 > **任务互斥**：导入 / 体检 / 批量刮削同一时刻只允许一个运行，运行中其它入口会禁用并提示。
 

@@ -24,6 +24,7 @@ import {
   startScan,
 } from "@/api/library";
 import type { BatchStatus, LibraryReport, ScanStatus, TasksStatus } from "@/api/types";
+import { SCRAPE_MODE_OPTS } from "@/api/scrape";
 import { openSse, pollStatus, type SseHandle } from "@/utils/sse";
 import { useLibraryStore } from "@/stores/library";
 import { useCheckStore } from "@/stores/check";
@@ -88,7 +89,7 @@ const batch = ref<BatchStatus | null>(null);
 /** all=按起点→番茄→纵横顺序，命中即停 */
 const source = ref("all");
 const onlyMissing = ref(true);
-const minScore = ref(0.8);
+const minScore = ref(0.7);
 /** 刮削取数方式：api（默认）/ auto（API 优先）/ chrome（备用） */
 const scrapeMode = ref("api");
 const starting = ref(false);
@@ -557,7 +558,8 @@ onUnmounted(() => {
       <div v-else class="tab-panel">
         <p class="muted">
           按所选刮削源对书库批量识别：以<strong>书名+作者</strong>相似度取最近匹配后写入。
-          选「全部」时按<strong>起点 → 番茄 → 纵横</strong>顺序，达到阈值即写入并停止，不再试后续书源。
+          选「全部」时按<strong>起点 → 番茄 → 纵横</strong>顺序，达到阈值即写入并停止，不再试后续书源。<br />
+          刮削方式<strong>默认 API 直连</strong>；「自动」为 API 优先、失败再回退 Chrome；「Chrome」强制走浏览器（需环境支持）。
         </p>
         <div class="controls">
           <span class="label">刮削源</span>
@@ -568,10 +570,10 @@ onUnmounted(() => {
             <option value="zongheng">纵横</option>
           </select>
           <span class="label">刮削方式</span>
-          <select v-model="scrapeMode" class="field-input" title="API 直连 / Chrome 浏览器 / 自动">
-            <option value="auto">自动（Chrome 优先，无则 API）</option>
-            <option value="api">API 直连</option>
-            <option value="chrome">Chrome 浏览器</option>
+          <select v-model="scrapeMode" class="field-input" title="刮削取数方式">
+            <option v-for="opt in SCRAPE_MODE_OPTS" :key="opt.value" :value="opt.value" :title="opt.hint">
+              {{ opt.label }}
+            </option>
           </select>
           <label class="check-label">
             <input v-model="onlyMissing" type="checkbox" />

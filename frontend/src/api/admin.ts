@@ -151,3 +151,29 @@ export function fetchChapterContent(bookId: number | string, chapterId: number |
     content: string;
   }>(`/api/books/${bookId}/chapters/${chapterId}`);
 }
+
+/** 刮削参数（设置页可调） */
+export interface ScrapeSettingSpec {
+  key: string;
+  type: "float" | "int" | "bool";
+  min?: number;
+  max?: number;
+  label: string;
+  unit?: string;
+  hint?: string;
+}
+
+export type ScrapeSettingsValues = Record<string, number | boolean>;
+
+export function fetchScrapeSettings() {
+  return http.get<{ values: ScrapeSettingsValues; spec: ScrapeSettingSpec[] }>(
+    "/api/admin/settings/scrape",
+  );
+}
+
+export function saveScrapeSettings(values: ScrapeSettingsValues) {
+  return http.put<{ ok: boolean; values: ScrapeSettingsValues }>(
+    "/api/admin/settings/scrape",
+    values,
+  );
+}
