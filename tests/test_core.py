@@ -170,6 +170,52 @@ class CoreTests(unittest.TestCase):
         self.assertIn("正文乙内容", joined)
         s.close()
 
+    def test_chapter_parse_variants(self) -> None:
+        """分章：标题+正文同行 / 全角与大写数字 / 无换行连排 均应识别。"""
+        from app.parsers import parse_txt_text
+
+        # 标题与正文同行：标题截到句末标点前，正文并入该章
+        chs = parse_txt_text("第一章 重生。夜色沉沉。\n第二章 归来。三年之后。")
+        self.assertEqual(len(chs), 2)
+        self.assertIn("夜色沉沉", chs[0].content)
+
+        # 全角数字 / 大写数字
+        chs = parse_txt_text("第１２３章 A\n内容\n第壹章 B\n内容二")
+        self.assertEqual(len(chs), 2)
+
+        # 正文句不应被当成章节标题 → 整本单章
+        chs = parse_txt_text("第一章的内容他早忘了。\n第二天他去了城里。")
+        self.assertEqual(len(chs), 1)
+
+        # 无换行整行连排（>2000 字）：按章标记虚拟切行
+        big = "".join(f"第{i}章 标题。正文。" for i in range(1, 401))
+        chs = parse_txt_text(big)
+        self.assertGreaterEqual(len(chs), 300)
+
+    def test_encoding_detection_no_bom_utf16(self) -> None:
+        """无 BOM 的单字节文本不得被判为 utf-16（否则整篇乱码、无法分章）。"""
+        from app.parsers import decode_bytes, detect_encoding
+
+        raw = ("第一章 开始\n正文内容。\n" * 300).encode("utf-8")
+        self.assertEqual(detect_encoding(raw[:4096]), "utf-8")
+        # 采样 head+mid 拼接截断多字节字符时，仍应选 utf-8
+        self.assertEqual(detect_encoding(raw[:100] + raw[3:103]), "utf-8")
+        self.assertIn("第一章", decode_bytes(raw))
+
+    def test_scraper_settings_roundtrip(self) -> None:
+        """刮削参数：默认值、保存、范围夹紧、长休息区间颠倒自动交换。"""
+        from app import scraper_settings as ss
+
+        ss.reset_cache()
+        self.assertEqual(ss.get_all()["long_pause_every"], 5)
+        ss.update({"delay": 3.5})
+        self.assertEqual(ss.get("delay"), 3.5)
+        ss.update({"retry_max": 999})
+        self.assertLessEqual(ss.get("retry_max"), 20)
+        u = ss.update({"long_pause_min": 20, "long_pause_max": 5})
+        self.assertLessEqual(u["long_pause_min"], u["long_pause_max"])
+        ss.reset_cache()
+
     def test_toc_does_not_load_content(self) -> None:
         """目录接口只投影标题列。"""
         from sqlalchemy import select

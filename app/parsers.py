@@ -8,14 +8,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator
 
-# 常见章节行：第X章/节/回/卷/篇、Chapter N、卷X、序章/楔子/番外 等
+# 中文数字 + 半角/全角阿拉伯数字 + 大写（壹贰…）数字
+_NUM = "0-9０-９零〇一二三四五六七八九十百千万亿两廿卅壹贰叁肆伍陆柒捌玖拾佰仟"
+_UNIT = "章回节卷篇集部"
+# 标题后紧跟这些符号视为“标题/正文分隔符”
+_TITLE_SEPS = " \u3000:：、.．。·・-—－_|/\\【】[]（）()"
+_SENT_END = "。！？；!?;"
+
+# 常见章节行：第X章/节/回/卷/篇、卷X、Chapter N、序章/楔子/番外 等
 CHAPTER_PATTERNS = [
-    re.compile(r"^\s*第\s*[0-9零一二三四五六七八九十百千两〇]+[章回节卷篇集部]\s*[：:.\-—　 ]*\s*(.*)$", re.I),
-    re.compile(r"^\s*第\s*[0-9]+\s*[章回节卷篇集部]\b\s*(.*)$", re.I),
-    re.compile(r"^\s*(?:Chapter|CHAPTER)\s*[0-9]+\b\s*(.*)$", re.I),
-    re.compile(r"^\s*卷\s*[0-9零一二三四五六七八九十百千两〇]+\s*[：:.\-—　 ]*\s*(.*)$", re.I),
-    re.compile(r"^\s*(序章|楔子|前言|引子|后记|番外|终章|尾声|完结感言)\s*[：:.\-—　 ]*\s*(.*)$"),
+    re.compile(rf"^\s*第\s*[{_NUM}]+\s*[{_UNIT}]\s*(.*)$", re.I),
+    re.compile(rf"^\s*卷\s*[{_NUM}]+\s*(.*)$", re.I),
+    re.compile(r"^\s*(?:Chapter|CHAPTER)\s*[0-9０-９]+\b\s*(.*)$", re.I),
+    re.compile(r"^\s*(序章|序言|楔子|前言|引子|后记|番外|终章|尾声|完结感言|后序|跋)\s*(.*)$"),
 ]
+# “无换行”长文本的虚拟切分：在每个章标记前插入断点
+_CHAPTER_MARK_RE = re.compile(rf"(?=第\s*[{_NUM}]+\s*[{_UNIT}])")
+_SENT_END_RE = re.compile("[" + re.escape(_SENT_END) + "]")
+_LONG_LINE_MIN = 2000  # 超过该长度且含多个章标记的行，按标记切分
 
 FILENAME_PATTERNS = [
     re.compile(r"^(?P<title>.+?)[\s_\-\[\(（]+(?P<author>[^\[\]()（）_\-]{2,20})[\s_\-\]\)）]*$"),
@@ -53,22 +63,35 @@ _ENCODING_SAMPLE = 256 * 1024
 _REPLACEMENT = "\ufffd"
 # 明显“解码错误”的字符：替换符 + 私用区（gb18030 误读 Big5 常落这里）
 _BAD_RE = re.compile(r"[\ufffd\ue000-\uf8ff]")
+# 采样是 head+mid 拼接，接缝可能截断多字节字符产生 1~2 个替换符，容忍之
+_BAD_TOLERATE = 2
+
+
+def _is_bom(sample: bytes) -> bool:
+    return sample.startswith((b"\xff\xfe", b"\xfe\xff"))
 
 
 def _bad_count(sample: bytes, enc: str) -> int | None:
-    """采样解码后的“坏字符”个数（替换符 + 私用区）；无法解码返回 None。"""
-    try:
-        text = sample.decode(enc)
-    except (UnicodeError, LookupError):  # utf-16 无 BOM 等抛 UnicodeError
+    """采样按 enc 解码后的“坏字符”数（替换符 + 私用区）；不可用返回 None。
+
+    - utf-16/utf-16-le/be 仅在带 BOM 时才参与：否则一次性 decode 会把单字节文本
+      两两配对读成乱码（0 个替换符但全是错字），从而错误胜出。
+    - 用 errors="replace" 解码，避免采样接缝截断多字节字符时整档编码被判“不可用”。
+    """
+    if enc.startswith("utf-16") and not _is_bom(sample):
         return None
-    return len(_BAD_RE.findall(text))
+    try:
+        text = sample.decode(enc, errors="replace")
+    except LookupError:
+        return None
+    return max(0, len(_BAD_RE.findall(text)) - _BAD_TOLERATE)
 
 
 def detect_encoding(sample: bytes) -> str:
     """采样择优给出最可能的编码：BOM 优先，其次坏字符最少（同分按优先级）。"""
     if sample.startswith(b"\xef\xbb\xbf"):
         return "utf-8-sig"
-    if sample.startswith((b"\xff\xfe", b"\xfe\xff")):
+    if _is_bom(sample):
         return "utf-16"
     fallback = None
     for enc in _ENCODINGS:
@@ -81,16 +104,14 @@ def detect_encoding(sample: bytes) -> str:
 
 
 def decode_bytes(raw: bytes) -> str:
-    """整段解码：先按采样择优，失败再依次尝试其它编码，最后兜底 replace。"""
+    """整段解码：先按采样择优，严格失败再以 replace 兜底。"""
     if not raw:
         return ""
     enc = detect_encoding(raw[:_ENCODING_SAMPLE])
-    for candidate in (enc, *_ENCODINGS):
-        try:
-            return raw.decode(candidate)
-        except (UnicodeError, LookupError):
-            continue
-    return raw.decode("utf-8", errors="replace")
+    try:
+        return raw.decode(enc)
+    except (UnicodeError, LookupError):
+        return raw.decode(enc, errors="replace")
 
 
 def _sample_file(path: Path) -> bytes:
@@ -162,19 +183,48 @@ def parse_filename_meta(stem: str, category: str) -> tuple[str, str]:
     return clean_title(name) or stem, "佚名"
 
 
-def _is_chapter_heading(line: str) -> tuple[bool, str]:
+def _split_line_by_markers(line: str) -> list[str]:
+    """把含多个章标记的行按标记切开（应对“多章标题排在同一行 / 整本不换行”）。"""
+    if len(_CHAPTER_MARK_RE.findall(line)) < 2:
+        return [line]
+    parts = [p for p in _CHAPTER_MARK_RE.split(line) if p and p.strip()]
+    return parts if len(parts) >= 2 else [line]
+
+
+def _match_heading(line: str) -> tuple[bool, str, str]:
+    """判断一行是否为章节标题，返回 (是否标题, 标题, 同行正文)。
+
+    标题与正文排在同一行时（如「第一章 重生。夜色沉沉…」），标题取到首个句末标点前，
+    其余作为“同行正文”并入该章内容，避免正文被丢弃。
+    """
     s = line.strip()
-    if not s or len(s) > 80:
-        return False, ""
-    if s.count("，") >= 2 or s.count("。") >= 1:
-        return False, ""
+    if not s:
+        return False, "", ""
     for pat in CHAPTER_PATTERNS:
         m = pat.match(s)
-        if m:
-            # 去掉多余空白，保留标题
-            title = re.sub(r"\s+", " ", s).strip()
-            return True, title
-    return False, ""
+        if not m:
+            continue
+        title_raw = m.group(1) or ""
+        # 数字/单位后是否带分隔符（空格/标点）：注意正则已吞掉空白，需看 group1 前一字符
+        before = s[m.start(1) - 1] if m.start(1) > 0 else ""
+        has_sep = before.isspace() or (bool(title_raw) and title_raw[0] in _TITLE_SEPS)
+        # 无分隔符且“标题”很长 → 判为正文（如「第一章的内容他早忘了」）
+        if title_raw and not has_sep and len(title_raw) > 6:
+            return False, "", ""
+        mm = _SENT_END_RE.search(title_raw)
+        cut = m.start(1) + (mm.start() if mm else len(title_raw))
+        title = s[:cut].strip().rstrip("，,、;；:：")
+        if not title or len(title) > 40:
+            return False, "", ""
+        body = s[cut:].strip()
+        return True, title, body
+    return False, "", ""
+
+
+def _is_chapter_heading(line: str) -> tuple[bool, str]:
+    """兼容旧签名：仅返回 (是否标题, 标题)。"""
+    ok, title, _body = _match_heading(line)
+    return ok, title
 
 
 def iter_chapters(lines: Iterable[str], cancel=None) -> Iterator[ParsedChapter]:
@@ -199,26 +249,31 @@ def iter_chapters(lines: Iterable[str], cancel=None) -> Iterator[ParsedChapter]:
         checked += 1
         if cancel is not None and (checked & 1023) == 0 and cancel.is_set():
             raise ParseCancelled()
-        line = raw.rstrip("\r\n")
+        raw = raw.rstrip("\r\n")
         if first:
             first = False
-            line = line.lstrip("\ufeff")
-        ok, title = _is_chapter_heading(line)
-        if ok:
-            # 缓冲区已有正文则先落盘，否则直接采用该章标题
-            body = "".join(buf).strip()
-            if body:
-                content = finish()
-                buf.clear()
-                if content or emitted:
-                    emitted += 1
-                    yield ParsedChapter(title=current_title, content=content)
-                current_title = title
-            else:
-                buf.clear()
-                current_title = title
-            continue
-        buf.append(line)
+            raw = raw.lstrip("\ufeff")
+        # 无换行/多章标题串排：先按章标记切分成多段再逐段判定
+        for line in _split_line_by_markers(raw):
+            ok, title, inline = _match_heading(line)
+            if ok:
+                # 缓冲区已有正文则先落盘，否则直接采用该章标题
+                body = "".join(buf).strip()
+                if body:
+                    content = finish()
+                    buf.clear()
+                    if content or emitted:
+                        emitted += 1
+                        yield ParsedChapter(title=current_title, content=content)
+                    current_title = title
+                else:
+                    buf.clear()
+                    current_title = title
+                # 标题与正文同行时，标题后的正文并入本章
+                if inline:
+                    buf.append(inline)
+                continue
+            buf.append(line)
 
     content = finish()
     buf.clear()
