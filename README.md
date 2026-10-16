@@ -8,6 +8,13 @@
 
 目标：极简、零多余依赖，可长期跑在个人服务器 / NAS 上。
 
+## 仓库地址
+
+- **GitHub**：<https://github.com/iamplusdev/novel-server>（主仓，CI 自动构建镜像）
+- **Gitee**：<https://gitee.com/iamplus/novel-server>
+- **Gitea**：<https://gitea.iamplus.cn/iamplus/novel-server>
+- **Docker 镜像**：`iamplusdev/novel-server`（Docker Hub）
+
 ## 功能
 
 - 扫描 `novels/<书源>/<分类>/*.txt`，解析章节写入 SQLite（内容哈希未变则跳过）
@@ -42,36 +49,38 @@ mkdir -p novel-server && cd novel-server
 mkdir -p novels data covers
 ```
 
-把 TXT 放到：
+把 TXT 放到 **`novels/<书源>/<分类>/`** 或 **`novels/未分类/`**——导入器**只扫描这两处**，其余目录（含 `novels/` 根目录散落的 txt）一律不导入：
 
 ```text
 novels/
-├── 起点/
-│   └── 都市/
-│       └── 书名.txt
-├── 番茄/
-│   └── 奇幻/
-│       └── 书名.txt
-└── 玄幻/                 # 本地/未刮削也可按分类放
-    └── 书名.txt
+├── 起点/都市/书名.txt          # 书源（起点 / 番茄 / 纵横）+ 分类 两级
+├── 番茄/奇幻/书名.txt
+├── 纵横/仙侠/书名.txt
+└── 未分类/书名.txt             # 未分类：递归扫描该目录下所有 txt
 ```
 
-文件名建议：`书名.txt`、`书名(作者).txt`、`作者-书名.txt`。
+- 「分类」需是起点 15 类之一（玄幻 / 都市 / 仙侠 …）；未知分类归入「未分类」。
+- 文件名建议：`书名.txt`、`书名(作者).txt`、`作者-书名.txt`。
 
 ### 2. 修改对外地址（必做）
 
-编辑 `docker-compose.yml`：
+书源里的 `bookSourceUrl`、封面/章节绝对链接都以后端“对外基址”为准，它取自 **`PUBLIC_BASE_URL`**。请改成手机/域名能访问到的地址：
 
 ```yaml
 environment:
-  PUBLIC_BASE_URL: "http://192.168.1.100:7311"   # 改成手机能访问到的地址
+  PUBLIC_BASE_URL: "https://novel.example.com"   # 域名，或 http://192.168.1.100:7311
 ```
 
-该地址会写入 Legado 书源的 `bookSourceUrl` 与封面/章节绝对链接。
-
-也可复制 `.env.example` 为 `.env` 后按需修改（本地源码运行时用）。
+- 也可改用 `TRUSTED_HOSTS=novel.example.com`：命中白名单时按请求 Host 自动推导基址，无需写死域名（需反代透传 `Host`/`X-Forwarded-*`）。
+- **注意**：`docker-compose.yml` 的 `environment:` 值会**覆盖** `.env`。改了 `.env` 却仍显示 `127.0.0.1`，多半是 compose 里写死了 `PUBLIC_BASE_URL`。
+- 改完 `docker compose up -d` 重建容器；**Legado 里删除旧书源再重新导入**（旧书源内嵌的是旧地址）。
+- 本地源码运行时，复制 `.env.example` 为 `.env` 后修改即可。
 
 ### 3. 构建镜像
+
+> 也可直接用预构建镜像（push 到 `main` 会自动构建发布到 Docker Hub）：
+> `docker pull iamplusdev/novel-server:latest`。
+> 使用镜像时把 `docker-compose.yml` 里的 `build:` 段删掉、改为 `image: iamplusdev/novel-server:latest` 即可。
 
 ```bash
 # 在仓库根目录（含 Dockerfile）
@@ -115,9 +124,9 @@ docker compose exec novel-server python import_novels.py
 
 ### 6. 手机 Legado 接入
 
-1. 手机与服务器同一局域网（或已穿透），能打开 `http://<host>:7312/health`
+1. 手机与服务器同一局域网（或已穿透），能打开 `http://<域名或IP>:7312/health`
 2. 获取书源 JSON（三选一）：
-   - 浏览器打开 `http://<host>:7311/legado_book_source.json`（需管理会话登录）
+   - 浏览器打开 `http://<域名或IP>:7311/legado_book_source.json`（需管理会话登录）
    - 管理后台 →「API / 书源」→「下载 / 复制书源 JSON」（已填好 `PUBLIC_BASE_URL` 与 `X-Api-Key`）
    - `GET /api/legado/book-source`
 3. Legado → **我的 → 书源管理 → 本地导入 / 网络导入**
@@ -237,8 +246,11 @@ docker compose down               # 停止（保留卷数据）
 # 只构建不启动
 docker compose build --no-cache
 
-# 备份宿主机数据目录即可保全书库
+# 备份：打包宿主机数据目录即可保全书库（SQLite、正文包、封面、账号、日志）
 tar czf novel-data-$(date +%F).tar.gz data covers novels
+
+# 恢复：先停服、解包覆盖、再启动
+docker compose down && tar xzf novel-data-YYYY-MM-DD.tar.gz && docker compose up -d
 ```
 
 ### 镜像说明
@@ -246,6 +258,17 @@ tar czf novel-data-$(date +%F).tar.gz data covers novels
 - 基础镜像：`python:3.12-slim`（前端多阶段构建 `node` → 拷贝 `frontend/dist`）
 - 只包含运行代码与依赖；**用户数据一律 volume 挂载**
 - 构建上下文通过 `.dockerignore` 排除 `data/` `covers/` `novels/` `scripts/` 等
+
+### 镜像与自动构建（GitHub Actions → Docker Hub）
+
+- 镜像仓库：`iamplusdev/novel-server`；架构 `linux/amd64`。
+- 标签：`latest`（main 分支）、分支名、`sha-<短哈希>`；推送 `v*` 标签时额外产出 `1.2.3` / `1.2` 等版本标签。
+- 触发：push 到 `main` 或推送 `v*` 标签即**自动构建并推送**；也可在 Actions 页手动运行。
+- **README 变更会自动同步为 Docker Hub 仓库说明**。
+- 需要配置的 GitHub Secrets：`DOCKERHUB_USERNAME`（`iamplusdev`）、`DOCKERHUB_TOKEN`（Docker Hub Access Token）。
+- 工作流文件：`.github/workflows/docker-publish.yml`、`.github/workflows/update-dockerhub-description.yml`。
+
+使用预构建镜像：把 `docker-compose.yml` 的 `build:` 段删除、改为 `image: iamplusdev/novel-server:latest`，`docker compose pull && docker compose up -d` 即可升级。
 
 ### 网络与安全
 
@@ -392,22 +415,24 @@ npm run typecheck
 
 ```text
 novel-server/
-├── app/                 # FastAPI 应用
-│   ├── routers/         # auth / admin / scrape / library / public / legado / batch_scrape
-│   ├── scrapers/        # 起点 / 番茄 / 纵横 + mode + http_util + browser_fallback
-│   ├── content_store.py # 章节正文包（按偏移存取）
-│   ├── parsers.py       # TXT 流式解析 + 编码识别
-│   ├── task_guard.py    # 长任务互斥（导入 / 体检 / 刮削）
+├── app/                     # FastAPI 应用
+│   ├── routers/             # auth / admin / scrape / library / public / legado / batch_scrape
+│   ├── scrapers/            # 起点 / 番茄 / 纵横 + mode + http_util + browser_fallback
+│   ├── content_store.py     # 章节正文包（按偏移存取）
+│   ├── parsers.py           # TXT 流式解析 + 编码识别
+│   ├── scraper_settings.py  # 刮削参数运行时配置（设置页可调）
+│   ├── task_guard.py        # 长任务互斥（导入 / 体检 / 刮削）
 │   └── ...
-├── frontend/            # Vue3 + Vite（构建产物 frontend/dist）
-├── tests/               # pytest / unittest
-├── import_novels.py     # CLI 导入
-├── run.py               # 同时拉起前端入口 + 后端 API
+├── frontend/                # Vue3 + Vite（构建产物 frontend/dist）
+├── tests/                   # pytest / unittest
+├── .github/workflows/       # CI：构建推送镜像 + 同步 Docker Hub 说明
+├── import_novels.py         # CLI 导入
+├── run.py                   # 同时拉起前端入口 + 后端 API
 ├── legado_book_source.json
 ├── Dockerfile  docker-compose.yml  .env.example
-├── novels/              # 源 TXT（书源/分类 子目录）
-├── covers/              # 封面
-└── data/                # novels.db、contents/、日志（volume）
+├── novels/                  # 源 TXT（书源/分类 子目录）
+├── covers/                  # 封面
+└── data/                    # novels.db、contents/、scraper_settings.json、日志（volume）
 ```
 
 **books 表**：title / author / category（`起点-都市` 形式）/ intro / status / tags / cover_file / source_path / source_hash / word_count / chapter_count / latest_chapter / source / source_id / read_percent / read_chapter_index / read_at / created_at / updated_at
@@ -424,6 +449,17 @@ novel-server/
 - 升级：重新 `docker compose build && up -d`，卷数据保留
 - 排查问题：看容器日志；或设 `LOG_FILE=1` 落盘 `data/novel-server.log`
 - 勿将密码、恢复码提交进仓库
+
+---
+
+## 常见问题（FAQ）
+
+- **书源 / API 页地址显示 `127.0.0.1:7311`**：后端“对外基址”取自 `PUBLIC_BASE_URL`，且 `docker-compose.yml` 的 `environment:` 会覆盖 `.env`。改成域名或设 `TRUSTED_HOSTS`，`docker compose up -d` 重建，Legado 删旧源重导。见「修改对外地址」。
+- **导入后没有章节 / 无法分章**：确认 TXT 放在 `novels/<书源>/<分类>/` 或 `novels/未分类/`（**根目录不扫描**）；编码会自动择优（UTF-8 / GBK / Big5 / UTF-16 等）。已入库但分章错误的书，用「体检 → 修复 → 重新解析」。
+- **Legado 提示 401 / 读不到**：公网需设 `READ_API_KEY`；请使用后台下载的书源（已自动注入 `header.X-Api-Key`）。
+- **改了 `.env` 不生效**：compose 的 `environment:` 优先级高于 `.env`；优先改 compose，或把 compose 改成引用 `${VAR}`。
+- **端口 / 反向代理**：host 网络下服务直接监听 `HOST:PORT`（默认 7311 前端、7312 API）；反代请透传 `Host` 与 `X-Forwarded-Proto`，HTTPS 下设 `COOKIE_SECURE=1`。
+- **大批量刮削被拒**：在「设置 → 刮削参数」调大书间间隔/长休息，或减小「每 N 本长休息」；API 侧已内置限速与 429/403/503 退避重试。
 
 ## License
 

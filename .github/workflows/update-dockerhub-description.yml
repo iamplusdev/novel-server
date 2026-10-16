@@ -1,0 +1,27 @@
+name: Update Docker Hub Description
+
+# README.md 变更时，把 README 同步为 Docker Hub 仓库说明（令牌走 GitHub Secrets，勿写死）
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - ".github/workflows/update-dockerhub-description.yml"
+  workflow_dispatch:
+
+jobs:
+  update-description:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: iamplusdev/novel-server
+          readme-filepath: ./README.md
