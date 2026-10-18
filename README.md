@@ -12,7 +12,6 @@
 
 - **GitHub**：<https://github.com/iamplusdev/novel-server>（主仓，CI 自动构建镜像）
 - **Gitee**：<https://gitee.com/iamplus/novel-server>
-- **Gitea**：<https://gitea.iamplus.cn/iamplus/novel-server>
 - **Docker 镜像**：`iamplusdev/novel-server`（Docker Hub）
 
 ## 功能
