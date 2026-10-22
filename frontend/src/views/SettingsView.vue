@@ -190,7 +190,9 @@ onMounted(async () => {
           <el-switch
             v-if="s.type === 'bool'"
             :model-value="scrapeForm[s.key] === true"
-            @update:model-value="(v: boolean) => (scrapeForm[s.key] = v)"
+            @update:model-value="
+              (v: string | number | boolean) => (scrapeForm[s.key] = Boolean(v))
+            "
           />
           <input
             v-else

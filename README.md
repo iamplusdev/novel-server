@@ -263,6 +263,7 @@ docker compose down && tar xzf novel-data-YYYY-MM-DD.tar.gz && docker compose up
 - 镜像仓库：`iamplusdev/novel-server`；架构 `linux/amd64`。
 - 标签：`latest`（main 分支）、分支名、`sha-<短哈希>`；推送 `v*` 标签时额外产出 `1.2.3` / `1.2` 等版本标签。
 - 触发：push 到 `main` 或推送 `v*` 标签即**自动构建并推送**；也可在 Actions 页手动运行。
+- **先测后构建**：构建前会先跑后端 `pytest` 与前端 `npm run build`，任一失败则不推送镜像。
 - **README 变更会自动同步为 Docker Hub 仓库说明**。
 - 需要配置的 GitHub Secrets：`DOCKERHUB_USERNAME`（`iamplusdev`）、`DOCKERHUB_TOKEN`（Docker Hub Access Token）。
 - 工作流文件：`.github/workflows/docker-publish.yml`、`.github/workflows/update-dockerhub-description.yml`。

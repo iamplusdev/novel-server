@@ -1,7 +1,10 @@
 """Legado（开源阅读）专用 API：返回完整 URL + 稳定 JSON 结构，方便 JsonPath 解析。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+import hashlib
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -177,7 +180,7 @@ def legado_toc(request: Request, book_id: int, db: Session = Depends(get_db)) ->
 @router.get("/content/{book_id}/{chapter_id}")
 def legado_content(
     request: Request, book_id: int, chapter_id: int, db: Session = Depends(get_db)
-) -> dict:
+) -> Response:
     base = resolve_base_url(request)
     ch = db.get(Chapter, chapter_id)
     if not ch or ch.book_id != book_id:
@@ -191,13 +194,18 @@ def legado_content(
         ch.content_length,
         legacy_content=ch.content,
     )
-    return {
+    data = {
         "title": ch.title,
         "content": text,
         "content_url": _abs(f"/api/legado/content/{book_id}/{chapter_id}", base),
         "isVip": False,
         "isPay": False,
     }
+    etag = '"%s"' % hashlib.sha1((text or "").encode("utf-8")).hexdigest()
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(data, headers=headers)
 
 
 @router.get("/book-source")

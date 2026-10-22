@@ -90,22 +90,28 @@ const progressText = computed(() => {
 const hasPrev = computed(() => chapterNo.value > 1);
 const hasNext = computed(() => chapterNo.value > 0 && chapterNo.value < chapterTotal.value);
 
+/** 正文请求序号：快速切章时丢弃过期响应，避免旧章节覆盖新章节 */
+let contentSeq = 0;
+
 /** 拉取当前章节正文 */
 async function loadChapterContent(chapterId: number) {
   if (!bookId.value || !chapterId) return;
+  const seq = ++contentSeq;
   contentLoading.value = true;
   chapterError.value = "";
   try {
     const data = await fetchChapterContent(bookId.value, chapterId);
+    if (seq !== contentSeq) return;
     chapterText.value = data.content || "";
     if (!chapterText.value) {
       chapterError.value = "本章正文为空";
     }
   } catch (e) {
+    if (seq !== contentSeq) return;
     chapterText.value = "";
     chapterError.value = e instanceof Error ? e.message : "正文加载失败";
   } finally {
-    contentLoading.value = false;
+    if (seq === contentSeq) contentLoading.value = false;
   }
 }
 
@@ -165,7 +171,7 @@ async function load() {
       target = savedIdx >= 0 ? list.find((c) => c.index === savedIdx) : null;
     }
     activeChapterId.value = (target || list[0]!).id;
-    await loadChapterContent(activeChapterId.value);
+    // 正文由 watch(activeChapterId) 统一加载（含进度写回）
   } catch {
     /* 加载失败不阻断界面 */
   } finally {
@@ -196,6 +202,16 @@ watch([fontSize, lineHeight, readerTheme, tocOpen], persistPrefs);
 watch(activeChapterId, (id) => {
   void persistProgress();
   if (id) void loadChapterContent(id);
+});
+// 路由 :id 变化（组件复用）时重置并重新加载，避免显示上一本
+watch(bookId, () => {
+  book.value = null;
+  tocItems.value = [];
+  tocTotal.value = 0;
+  chapterText.value = "";
+  chapterError.value = "";
+  activeChapterId.value = null;
+  void load();
 });
 
 function goChapter(id: number) {

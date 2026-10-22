@@ -81,6 +81,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   }
 
   if (!res.ok) {
+    // 会话失效：通知应用统一跳登录（鉴权接口本身除外，避免登录失败也触发）
+    if (res.status === 401 && !path.startsWith("/api/auth/")) {
+      window.dispatchEvent(new CustomEvent("app:unauthorized"));
+    }
     throw new ApiError(res.status, extractMessage(data, `请求失败（${res.status}）`));
   }
   return data as T;

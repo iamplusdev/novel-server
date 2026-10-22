@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .auth import require_read_dep
@@ -37,6 +38,19 @@ app = FastAPI(
 # 反代场景：仅当配置了可信 Host 白名单时才校验 Host，防 Host 头注入
 if settings.trusted_hosts:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
+
+# 文本响应（正文/目录/列表）gzip 压缩，省带宽
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def add_cache_headers(request: Request, call_next):
+    """封面 / 前端构建资源加长缓存（文件名带时间戳或内容哈希，可 immutable）。"""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/covers/") or path.startswith("/assets/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    return response
 
 app.include_router(auth.router)
 app.include_router(public.router)

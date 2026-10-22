@@ -1,12 +1,21 @@
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import Components from "unplugin-vue-components/vite";
+import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
 
 // 开发态代理到后端 API（默认 7312）；生产经前端 :7311 反代
 const API_TARGET = process.env.VITE_API_TARGET || "http://127.0.0.1:7312";
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // Element Plus 组件按需引入（样式仍用全局 index.css，避免重复注入）
+    Components({
+      resolvers: [ElementPlusResolver({ importStyle: false })],
+      dts: "src/components.d.ts",
+    }),
+  ],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

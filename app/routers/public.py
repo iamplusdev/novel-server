@@ -1,7 +1,10 @@
 """公开 JSON API：分类、列表、搜索、详情、目录、正文。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+import hashlib
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -26,9 +29,9 @@ router = APIRouter(
 )
 
 
-def _paginate(page: int, page_size: int) -> tuple[int, int]:
+def _paginate(page: int, page_size: int, max_size: int = 100) -> tuple[int, int]:
     page = max(1, page)
-    page_size = min(max(1, page_size), 100)
+    page_size = min(max(1, page_size), max_size)
     return (page - 1) * page_size, page_size
 
 
@@ -160,7 +163,7 @@ def list_chapters(
     book = db.get(Book, book_id)
     if not book:
         raise HTTPException(404, "书籍不存在")
-    offset, limit = _paginate(page, page_size)
+    offset, limit = _paginate(page, page_size, max_size=500)
     total = db.execute(
         select(func.count()).select_from(Chapter).where(Chapter.book_id == book_id)
     ).scalar_one()
@@ -186,8 +189,13 @@ def list_chapters(
 @router.get("/books/{book_id}/chapters/{chapter_id}")
 def get_chapter(
     request: Request, book_id: int, chapter_id: int, db: Session = Depends(get_db)
-) -> dict:
+) -> Response:
     ch = db.get(Chapter, chapter_id)
     if not ch or ch.book_id != book_id:
         raise HTTPException(404, "章节不存在")
-    return chapter_content(ch, resolve_base_url(request))
+    data = chapter_content(ch, resolve_base_url(request))
+    etag = '"%s"' % hashlib.sha1((data.get("content") or "").encode("utf-8")).hexdigest()
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(data, headers=headers)
