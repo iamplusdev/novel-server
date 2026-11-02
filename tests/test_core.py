@@ -607,6 +607,7 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(r["total"], 3)
             self.assertEqual(len(r["items"]), 3)
             self.assertIn("林凡", r["items"][0]["snippet"])
+            self.assertGreaterEqual(r["items"][0]["offset"], 0)
             # 命中来自不同章节
             self.assertNotEqual(r["items"][0]["chapter_id"], r["items"][2]["chapter_id"])
             # 大小写不敏感

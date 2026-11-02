@@ -165,6 +165,8 @@ export interface BookSearchHit {
   chapter_id: number;
   index: number;
   title: string;
+  /** 章内字符偏移，用于跳转到匹配位置 */
+  offset: number;
   snippet: string;
 }
 

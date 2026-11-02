@@ -10,13 +10,23 @@ import {
   fetchAllBookChapters,
   fetchBook,
   fetchChapterContent,
-  isTocPlaceholder,
   pullBookProgress,
   searchBookContent,
   updateReadProgress,
 } from "@/api/admin";
-import AppIcon from "@/components/AppIcon.vue";
-import type { BookSearchHit } from "@/api/admin";
+import ReaderHelpPanel from "@/components/reader/ReaderHelpPanel.vue";
+import ReaderSearchPanel from "@/components/reader/ReaderSearchPanel.vue";
+import ReaderSettingsPanel from "@/components/reader/ReaderSettingsPanel.vue";
+import ReaderTocSidebar from "@/components/reader/ReaderTocSidebar.vue";
+import ReaderTopBar from "@/components/reader/ReaderTopBar.vue";
+import { FONT_STACKS } from "@/views/reader/constants";
+import type {
+  ReaderFont,
+  ReaderSyncState,
+  ReaderTheme,
+} from "@/views/reader/constants";
+import { highlightParts } from "@/utils/highlight";
+import type { BookSearchHit, PullProgressResult } from "@/api/admin";
 import type { BookDetail } from "@/api/types";
 
 interface TocItem {
@@ -24,21 +34,6 @@ interface TocItem {
   index: number;
   title: string;
 }
-
-type ReaderTheme = "paper" | "warm" | "night";
-type ReaderFont = "serif" | "sans" | "system";
-
-const FONT_STACKS: Record<ReaderFont, string> = {
-  serif: '"Songti SC", SimSun, "Noto Serif CJK SC", serif',
-  sans: '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif',
-  system: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-};
-
-const fontOptions: { value: ReaderFont; label: string; stack: string }[] = [
-  { value: "serif", label: "宋体", stack: FONT_STACKS.serif },
-  { value: "sans", label: "黑体", stack: FONT_STACKS.sans },
-  { value: "system", label: "系统", stack: FONT_STACKS.system },
-];
 
 const route = useRoute();
 const router = useRouter();
@@ -48,6 +43,18 @@ const loading = ref(false);
 const contentLoading = ref(false);
 const chapterText = ref("");
 const chapterError = ref("");
+
+/** 正文段落及其在原文中的起始偏移（搜索/远端位置跳转用） */
+const chapterParagraphs = computed(() => {
+  const text = chapterText.value || "";
+  const out: { text: string; start: number }[] = [];
+  const re = /[^\n]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    out.push({ text: match[0], start: match.index });
+  }
+  return out;
+});
 const tocItems = ref<TocItem[]>([]);
 const tocTotal = ref(0);
 /** 目录侧栏开合（记忆到 localStorage） */
@@ -61,7 +68,6 @@ const searchLoading = ref(false);
 const searchError = ref("");
 const searchHits = ref<BookSearchHit[]>([]);
 const searchTotal = ref(0);
-const searchInputEl = ref<HTMLInputElement | null>(null);
 /** 搜索请求序号：快速连续搜索时丢弃过期响应 */
 let searchSeq = 0;
 
@@ -107,8 +113,45 @@ const articleEl = ref<HTMLElement | null>(null);
 
 /** 远端进度带来的章内字符位置（绑定目标章节，只消费一次） */
 const pendingRemotePos = ref<{ chapterId: number; pos: number } | null>(null);
+/** 搜索命中跳转：目标章节 + 字内偏移 + 关键词（用于高亮） */
+const pendingSearchJump = ref<{ chapterId: number; offset: number; query: string } | null>(null);
+const activeHighlightQuery = ref("");
 /** Beacon 推送节流：pagehide 与 visibilitychange 可能连续触发 */
 let lastBeaconAt = 0;
+
+/** 快捷键帮助浮层 */
+const helpOpen = ref(false);
+/** 当前章内滚动比例（0–1），用于整体进度条 */
+const scrollFraction = ref(0);
+
+/** WebDAV 同步状态：超时不再阻塞阅读，晚到的远端进度给出手动入口 */
+const syncState = ref<ReaderSyncState>("idle");
+const lateRemote = ref<PullProgressResult | null>(null);
+let syncStateTimer: ReturnType<typeof setTimeout> | undefined;
+
+function setSyncState(state: ReaderSyncState) {
+  syncState.value = state;
+  clearTimeout(syncStateTimer);
+  if (state === "synced" || state === "failed") {
+    syncStateTimer = setTimeout(() => {
+      if (syncState.value === state) syncState.value = "idle";
+    }, 4000);
+  }
+}
+
+/** 首次进入翻页模式的交互提示（只提示一次） */
+const pagedHint = ref(false);
+let pagedHintTimer: ReturnType<typeof setTimeout> | undefined;
+
+function maybeShowPagedHint() {
+  if (localStorage.getItem("novel_read_paged_hint") === "1") return;
+  localStorage.setItem("novel_read_paged_hint", "1");
+  pagedHint.value = true;
+  clearTimeout(pagedHintTimer);
+  pagedHintTimer = setTimeout(() => {
+    pagedHint.value = false;
+  }, 6000);
+}
 
 const bookId = computed(() => {
   const raw = Array.isArray(route.params.id) ? route.params.id[0] : route.params.id;
@@ -117,24 +160,15 @@ const bookId = computed(() => {
 });
 
 const chapters = computed(() => tocItems.value);
-/** 目录展示项：过滤伪占位行（空标题/书名重复）后附带 1 基顺序序号 */
-const displayChapters = computed(() => {
-  const bookName = book.value?.name;
-  const named = tocItems.value.filter((c) => !isTocPlaceholder(c.title, bookName));
-  return named.map((c, i) => ({ ...c, no: i + 1 }));
-});
 /** 目录筛选关键词（标题或章节号） */
 const tocFilter = ref("");
-const filteredChapters = computed(() => {
-  const kw = tocFilter.value.trim().toLowerCase();
-  if (!kw) return displayChapters.value;
-  return displayChapters.value.filter(
-    (c) => c.title.toLowerCase().includes(kw) || String(c.no) === kw,
-  );
-});
-const tocListEl = ref<HTMLElement | null>(null);
 const activeChapter = computed(
   () => chapters.value.find((c) => c.id === activeChapterId.value) || chapters.value[0] || null,
+);
+const activeChapterTitle = computed(() =>
+  activeChapter.value
+    ? chapterHeading(activeChapter.value.title, activeChapter.value.index, book.value?.name)
+    : "选择章节",
 );
 
 /** 当前章序号（1 基）与总章数：总章数优先 book.chapter_count / toc.total */
@@ -158,7 +192,7 @@ const progressText = computed(() => {
   if (!total || !n) return "";
   const pageInfo =
     pagedMode.value && pageCount.value > 1 ? ` · ${pageIndex.value + 1}/${pageCount.value} 页` : "";
-  return `第 ${n} / ${total} 章 · ${readPercent.value}%${pageInfo}`;
+  return `第 ${n} / ${total} 章 · ${overallPercent.value}%${pageInfo}`;
 });
 
 const hasPrev = computed(() => chapterNo.value > 1);
@@ -261,6 +295,12 @@ function onContentScroll() {
   const top = contentEl.value?.scrollTop || 0;
   const delta = top - lastScrollTop;
   lastScrollTop = top;
+  // 章内滚动占比（整体进度条展示用）
+  const max = Math.max(
+    0,
+    (contentEl.value?.scrollHeight || 0) - (contentEl.value?.clientHeight || 0),
+  );
+  scrollFraction.value = max > 0 ? Math.min(1, Math.max(0, top / max)) : 1;
 
   // 沉浸阅读：向下读收起顶栏，向上翻立即显示（翻页模式不靠滚动判断）
   if (!scrollSuppressed && !pagedMode.value) {
@@ -354,11 +394,20 @@ async function relayoutPaged() {
 async function restoreReadingPosition(chapterId: number, seq: number) {
   if (seq !== contentSeq || !chapterText.value) return;
 
-  // 远端进度位置只对目标章节生效一次
+  // 远端进度/搜索命中位置只对目标章节生效一次；搜索优先
   let remotePos: number | null = null;
   if (pendingRemotePos.value?.chapterId === chapterId) {
     remotePos = pendingRemotePos.value.pos;
     pendingRemotePos.value = null;
+  }
+  let searchJump: { offset: number; query: string } | null = null;
+  if (pendingSearchJump.value?.chapterId === chapterId) {
+    searchJump = {
+      offset: pendingSearchJump.value.offset,
+      query: pendingSearchJump.value.query,
+    };
+    pendingSearchJump.value = null;
+    activeHighlightQuery.value = searchJump.query;
   }
 
   if (pagedMode.value) {
@@ -366,10 +415,15 @@ async function restoreReadingPosition(chapterId: number, seq: number) {
     if (seq !== contentSeq) return;
     const wantLast = pendingLastPageFor === chapterId;
     if (wantLast) pendingLastPageFor = null;
+    const ratio = searchJump
+      ? searchJump.offset / Math.max(1, chapterText.value.length)
+      : remotePos != null
+        ? remotePos / Math.max(1, chapterText.value.length)
+        : -1;
     const desired = wantLast
       ? pageCount.value - 1
-      : remotePos != null && chapterText.value.length > 0
-        ? Math.round((remotePos / chapterText.value.length) * Math.max(0, pageCount.value - 1))
+      : ratio >= 0
+        ? Math.round(ratio * Math.max(0, pageCount.value - 1))
         : savedPageFor(chapterId);
     pageIndex.value = Math.max(0, Math.min(desired, pageCount.value - 1));
     return;
@@ -378,7 +432,11 @@ async function restoreReadingPosition(chapterId: number, seq: number) {
   if (!contentEl.value) return;
   await nextTick();
   if (seq !== contentSeq) return;
-  const top = remotePos != null ? scrollTopForChar(remotePos) : savedTopFor(chapterId);
+  const top = searchJump
+    ? scrollTopForChar(searchJump.offset)
+    : remotePos != null
+      ? scrollTopForChar(remotePos)
+      : savedTopFor(chapterId);
   // 程序化滚动不触发顶栏显示/隐藏
   scrollSuppressed = true;
   contentEl.value.scrollTo({ top, behavior: "auto" });
@@ -388,22 +446,19 @@ async function restoreReadingPosition(chapterId: number, seq: number) {
   });
 }
 
-/** 把章内字符位置近似映射为滚动位置（按段落累计字数） */
+/** 把章内字符位置映射为所在段落的滚动位置（段落 start 保留换行偏移） */
 function scrollTopForChar(charPos: number): number {
   const el = contentEl.value;
   if (!el || charPos <= 0) return 0;
-  const paras = el.querySelectorAll<HTMLElement>(".chapter-body .para");
-  let acc = 0;
-  for (const p of paras) {
-    const len = (p.textContent || "").length;
-    if (acc + len >= charPos) {
-      const rect = p.getBoundingClientRect();
-      const cRect = el.getBoundingClientRect();
-      return Math.max(0, el.scrollTop + rect.top - cRect.top - 8);
-    }
-    acc += len;
-  }
-  return 0;
+  const paras = chapterParagraphs.value;
+  let idx = paras.findIndex((p) => charPos >= p.start && charPos < p.start + p.text.length);
+  if (idx < 0) idx = paras.findIndex((p) => p.start >= charPos);
+  if (idx < 0) idx = paras.length - 1;
+  const node = el.querySelectorAll<HTMLElement>(".chapter-body .para")[idx];
+  if (!node) return 0;
+  const rect = node.getBoundingClientRect();
+  const cRect = el.getBoundingClientRect();
+  return Math.max(0, el.scrollTop + rect.top - cRect.top - 8);
 }
 
 /** 拉取当前章节正文（优先内存缓存） */
@@ -451,6 +506,19 @@ const readPercent = computed(() => {
   return Math.min(100, Math.round((n / total) * 100));
 });
 
+/** 展示用整体进度：章节序号 + 章内滚动/页码占比 */
+const overallPercent = computed(() => {
+  const total = chapterTotal.value;
+  const n = chapterNo.value;
+  if (!total || !n) return Number(book.value?.read_percent ?? 0) || 0;
+  const frac = pagedMode.value
+    ? pageCount.value > 0
+      ? (pageIndex.value + 1) / pageCount.value
+      : 0
+    : scrollFraction.value;
+  return Math.min(100, Math.max(0, Math.round(((n - 1 + frac) / total) * 100)));
+});
+
 const readerStyle = computed(() => ({
   fontSize: `${fontSize.value}px`,
   lineHeight: String(lineHeight.value),
@@ -495,13 +563,24 @@ async function persistProgress() {
 
 async function load() {
   if (!bookId.value) return;
+  const loadBookId = bookId.value;
   loading.value = true;
   pendingRemotePos.value = null;
-  // 与书籍/目录并行拉取远端进度；最多等 2.5 秒，失败不阻塞本地阅读
-  const pulledPromise = Promise.race([
-    pullBookProgress(bookId.value).catch(() => null),
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
-  ]);
+  pendingSearchJump.value = null;
+  activeHighlightQuery.value = "";
+  lateRemote.value = null;
+  setSyncState("syncing");
+
+  // 与书籍/目录并行拉取；最多等 1.4 秒，超时后先按本地进度阅读
+  const pullTask = pullBookProgress(loadBookId).then(
+    (r) => (bookId.value === loadBookId ? r : null),
+    () => {
+      if (bookId.value === loadBookId) setSyncState("failed");
+      return null;
+    },
+  );
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 1400));
+
   try {
     book.value = await fetchBook(bookId.value);
     // 完整目录（按 total 翻页拉全，保证章数/进度正确）
@@ -514,9 +593,36 @@ async function load() {
       tocTotal.value = Number(book.value?.chapter_count) || 0;
     }
     const list = chapters.value;
-    if (!list.length) return;
+    if (!list.length) {
+      setSyncState("idle");
+      return;
+    }
 
-    const pulled = await pulledPromise;
+    // 书籍/目录与进度拉取并行；到这里通常已有结果，最坏再等剩余时间
+    const pulled = await Promise.race([pullTask, timeout]);
+    if (pulled) {
+      setSyncState(pulled.enabled ? "synced" : "idle");
+    } else if (syncState.value !== "failed") {
+      setSyncState("syncing");
+      void pullTask.then((late) => {
+        if (bookId.value !== loadBookId) return;
+        if (!late) {
+          setSyncState("failed");
+          return;
+        }
+        if (!late.enabled) {
+          setSyncState("idle");
+          return;
+        }
+        if (late.updated && late.chapter_id) {
+          lateRemote.value = late;
+          setSyncState("remote_newer");
+        } else {
+          setSyncState("synced");
+        }
+      });
+    }
+
     const remoteTarget =
       pulled?.updated && pulled.chapter_id
         ? list.find((c) => c.id === pulled.chapter_id) || null
@@ -546,6 +652,27 @@ async function load() {
   }
 }
 
+/** 晚到的远端进度：用户点击后再切换，避免打断当前阅读 */
+async function applyLateRemote() {
+  const remote = lateRemote.value;
+  if (!remote?.chapter_id) return;
+  const target = chapters.value.find((c) => c.id === remote.chapter_id);
+  lateRemote.value = null;
+  if (!target) {
+    setSyncState("idle");
+    return;
+  }
+  if (typeof remote.chapter_pos === "number" && remote.chapter_pos > 0) {
+    pendingRemotePos.value = { chapterId: target.id, pos: remote.chapter_pos };
+  }
+  setSyncState("synced");
+  if (target.id === activeChapterId.value) {
+    await loadChapterContent(target.id);
+  } else {
+    activeChapterId.value = target.id;
+  }
+}
+
 function persistPrefs() {
   localStorage.setItem("novel_read_font", String(fontSize.value));
   localStorage.setItem("novel_read_leading", String(lineHeight.value));
@@ -570,9 +697,23 @@ function revealTopbar() {
 
 function scheduleTopbarHide() {
   clearTopbarTimer();
-  if (!autoHideTopbar.value || searchOpen.value || settingsOpen.value || tocOpen.value) return;
+  if (
+    !autoHideTopbar.value ||
+    searchOpen.value ||
+    settingsOpen.value ||
+    tocOpen.value ||
+    helpOpen.value
+  )
+    return;
   topbarTimer = setTimeout(() => {
-    if (!autoHideTopbar.value || searchOpen.value || settingsOpen.value || tocOpen.value) return;
+    if (
+      !autoHideTopbar.value ||
+      searchOpen.value ||
+      settingsOpen.value ||
+      tocOpen.value ||
+      helpOpen.value
+    )
+      return;
     // 刚进入/还没开始读时不隐藏；翻页模式看页码/章节进度
     const progressed = pagedMode.value
       ? pageIndex.value > 0 || chapterNo.value > 1
@@ -600,15 +741,19 @@ function toggleToc() {
 
 function toggleSettings() {
   settingsOpen.value = !settingsOpen.value;
-  if (settingsOpen.value) revealTopbar();
-  else scheduleTopbarHide();
+  if (settingsOpen.value) {
+    helpOpen.value = false;
+    revealTopbar();
+  } else {
+    scheduleTopbarHide();
+  }
 }
 
 function openSearch() {
   searchOpen.value = true;
   settingsOpen.value = false;
+  helpOpen.value = false;
   revealTopbar();
-  void nextTick(() => searchInputEl.value?.focus());
 }
 
 function toggleSearch() {
@@ -638,33 +783,44 @@ async function runSearch() {
   }
 }
 
-function openSearchResult(hit: BookSearchHit) {
-  goChapter(hit.chapter_id);
-  searchOpen.value = false;
-}
-
-interface HighlightPart {
-  text: string;
-  hit: boolean;
-}
-
-/** 片段内高亮关键词（大小写不敏感） */
-function highlightParts(text: string, keyword: string): HighlightPart[] {
-  const needle = (keyword || "").trim();
-  if (!needle) return [{ text, hit: false }];
-  const low = text.toLowerCase();
-  const n = needle.toLowerCase();
-  const parts: HighlightPart[] = [];
-  let from = 0;
-  while (from < text.length) {
-    const at = low.indexOf(n, from);
-    if (at < 0) break;
-    if (at > from) parts.push({ text: text.slice(from, at), hit: false });
-    parts.push({ text: text.slice(at, at + n.length), hit: true });
-    from = at + n.length;
+/** 对当前已加载章节执行搜索跳转（同章命中时） */
+async function applySearchJump() {
+  const jump = pendingSearchJump.value;
+  if (!jump || jump.chapterId !== activeChapterId.value || !chapterText.value) return;
+  pendingSearchJump.value = null;
+  activeHighlightQuery.value = jump.query;
+  await nextTick();
+  if (!contentEl.value) return;
+  if (pagedMode.value) {
+    await relayoutPaged();
+    const last = Math.max(0, pageCount.value - 1);
+    pageIndex.value = Math.min(
+      last,
+      Math.max(0, Math.round((jump.offset / Math.max(1, chapterText.value.length)) * last)),
+    );
+    return;
   }
-  if (from < text.length) parts.push({ text: text.slice(from), hit: false });
-  return parts.length ? parts : [{ text, hit: false }];
+  const top = scrollTopForChar(jump.offset);
+  scrollSuppressed = true;
+  contentEl.value.scrollTo({ top, behavior: "auto" });
+  lastScrollTop = top;
+  requestAnimationFrame(() => {
+    scrollSuppressed = false;
+  });
+}
+
+function openSearchResult(hit: BookSearchHit) {
+  pendingSearchJump.value = {
+    chapterId: hit.chapter_id,
+    offset: hit.offset,
+    query: searchQuery.value.trim(),
+  };
+  searchOpen.value = false;
+  if (hit.chapter_id === activeChapterId.value) {
+    void applySearchJump();
+  } else {
+    goChapter(hit.chapter_id);
+  }
 }
 
 function goBack() {
@@ -699,8 +855,14 @@ watch(activeChapterId, (id, oldId) => {
   }
   // 无有效章节（如切书重置）时不写进度，避免把新书进度清成 0
   if (!id) return;
+  // 手动切章时清除高亮；若目标是搜索跳转章节，restore 会重新设置
+  activeHighlightQuery.value = "";
+  if (pendingSearchJump.value && pendingSearchJump.value.chapterId !== id) {
+    pendingSearchJump.value = null;
+  }
   pageIndex.value = 0;
   pageCount.value = 1;
+  scrollFraction.value = 0;
   void persistProgress();
   void loadChapterContent(id);
 });
@@ -709,6 +871,7 @@ watch(activeChapterId, (id, oldId) => {
 watch(pagedMode, async (on) => {
   const id = activeChapterId.value;
   pendingLastPageFor = null;
+  if (on) maybeShowPagedHint();
   if (!id) return;
   if (on) {
     await nextTick();
@@ -767,29 +930,17 @@ watch(bookId, (_next, prev) => {
   topbarHidden.value = false;
   pendingLastPageFor = null;
   pendingRemotePos.value = null;
+  pendingSearchJump.value = null;
+  activeHighlightQuery.value = "";
+  lateRemote.value = null;
+  clearTimeout(syncStateTimer);
+  syncState.value = "idle";
   pageIndex.value = 0;
   pageCount.value = 1;
   chapterCache.clear();
   prefetching.clear();
   void load();
 });
-
-/** 目录打开/切章时，把当前章滚动到列表可视区中间 */
-function scrollActiveTocIntoView() {
-  const id = activeChapterId.value;
-  if (!tocOpen.value || !id) return;
-  void nextTick(() => {
-    const list = tocListEl.value;
-    const el = list?.querySelector<HTMLElement>(`[data-chapter-id="${id}"]`);
-    if (!list || !el) return;
-    const listRect = list.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    const delta = elRect.top - listRect.top - list.clientHeight / 2 + el.clientHeight / 2;
-    list.scrollTo({ top: Math.max(0, list.scrollTop + delta), behavior: "auto" });
-  });
-}
-
-watch([tocOpen, activeChapterId], scrollActiveTocIntoView);
 
 function goChapter(id: number) {
   // 窄屏选完章节后收起目录抽屉
@@ -882,6 +1033,32 @@ async function toggleFullscreen() {
   }
 }
 
+/** 快捷键调整字号（14–28） */
+function changeFont(delta: number) {
+  fontSize.value = Math.min(28, Math.max(14, fontSize.value + delta));
+}
+
+/** PageUp / PageDown：翻页模式翻页，滚动模式翻一屏 */
+function pageScroll(dir: 1 | -1) {
+  if (pagedMode.value) {
+    if (dir > 0) nextPage();
+    else prevPage();
+    return;
+  }
+  const el = contentEl.value;
+  if (el) {
+    el.scrollBy({ top: dir * el.clientHeight * 0.9, behavior: "smooth" });
+  }
+}
+
+function toggleHelp() {
+  helpOpen.value = !helpOpen.value;
+  if (helpOpen.value) {
+    searchOpen.value = false;
+    settingsOpen.value = false;
+  }
+}
+
 function onKeydown(e: KeyboardEvent) {
   // Ctrl/Cmd+F：打开书内搜索并聚焦输入框
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
@@ -893,8 +1070,8 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
     if (searchOpen.value) {
       searchOpen.value = false;
-      searchInputEl.value?.blur();
     }
+    helpOpen.value = false;
     settingsOpen.value = false;
     // 窄屏 Esc 关掉目录抽屉
     if (isNarrow.value) tocOpen.value = false;
@@ -915,6 +1092,12 @@ function onKeydown(e: KeyboardEvent) {
     e.preventDefault();
     if (pagedMode.value) nextPage();
     else goNextChapter();
+  } else if (e.key === "PageUp") {
+    e.preventDefault();
+    pageScroll(-1);
+  } else if (e.key === "PageDown") {
+    e.preventDefault();
+    pageScroll(1);
   } else if (e.key === " ") {
     // 空格翻页/下翻一屏，Shift+空格反向
     e.preventDefault();
@@ -934,6 +1117,14 @@ function onKeydown(e: KeyboardEvent) {
     toggleToc();
   } else if (e.key.toLowerCase() === "h") {
     toggleTopbar();
+  } else if (e.key.toLowerCase() === "f") {
+    void toggleFullscreen();
+  } else if (e.key === "+" || e.key === "=") {
+    changeFont(1);
+  } else if (e.key === "-") {
+    changeFont(-1);
+  } else if (e.key === "?") {
+    toggleHelp();
   }
 }
 
@@ -1057,6 +1248,7 @@ function onVisibilityChange() {
 
 onMounted(() => {
   void load();
+  if (pagedMode.value) maybeShowPagedHint();
   window.addEventListener("keydown", onKeydown);
   window.addEventListener("resize", onResize);
   window.addEventListener("mousemove", onMouseMove);
@@ -1075,6 +1267,8 @@ onUnmounted(() => {
   clearTimeout(scrollTimer);
   clearTimeout(pagedResizeTimer);
   clearTimeout(pagedLayoutTimer);
+  clearTimeout(syncStateTimer);
+  clearTimeout(pagedHintTimer);
   clearTopbarTimer();
   // 离开阅读器时落盘一次章内位置与进度
   if (activeChapterId.value) {
@@ -1087,119 +1281,34 @@ onUnmounted(() => {
 
 <template>
   <div class="reader-root" :class="themeClass">
-    <header class="reader-top" :class="{ 'is-hidden': topbarHidden }">
-      <!-- 左：返回 + 书名 + 进度 -->
-      <div class="top-left">
-        <button type="button" class="icon-btn" title="返回" @click="goBack">
-          <AppIcon name="back" :size="18" />
-        </button>
-        <div class="top-title">
-          <div class="name-line">
-            <span class="name">{{ book?.name || "阅读" }}</span>
-            <span v-if="progressText" class="progress-text muted-xs">{{ progressText }}</span>
-          </div>
-        </div>
-      </div>
+    <ReaderTopBar
+      :book-name="book?.name || ''"
+      :progress-text="progressText"
+      :chapter-title="activeChapterTitle"
+      :hidden="topbarHidden"
+      :toc-open="tocOpen"
+      :search-open="searchOpen"
+      :settings-open="settingsOpen"
+      :sync-state="syncState"
+      @back="goBack"
+      @toggle-toc="toggleToc"
+      @toggle-search="toggleSearch"
+      @toggle-settings="toggleSettings"
+      @fullscreen="toggleFullscreen"
+      @apply-remote="applyLateRemote"
+    />
 
-      <!-- 中：当前章节名（相对视口水平居中） -->
-      <div class="top-center">
-        <div class="chapter-name">
-          {{ activeChapter ? chapterHeading(activeChapter.title, activeChapter.index, book?.name) : "选择章节" }}
-        </div>
-      </div>
-
-      <!-- 右：操作 -->
-      <div class="top-actions">
-        <button
-          type="button"
-          class="icon-btn"
-          :class="{ 'is-on': tocOpen }"
-          title="目录（T）"
-          @click="toggleToc"
-        >
-          <AppIcon name="list" :size="18" />
-        </button>
-        <button
-          type="button"
-          class="icon-btn"
-          :class="{ 'is-on': searchOpen }"
-          title="书内搜索（Ctrl+F）"
-          @click="toggleSearch"
-        >
-          <AppIcon name="search" :size="18" />
-        </button>
-        <button
-          type="button"
-          class="icon-btn"
-          :class="{ 'is-on': settingsOpen }"
-          title="排版"
-          @click="toggleSettings"
-        >
-          <AppIcon name="type" :size="18" />
-        </button>
-        <button type="button" class="icon-btn" title="全屏" @click="toggleFullscreen">
-          <AppIcon name="full" :size="18" />
-        </button>
-      </div>
-    </header>
-
-    <div
-      class="reader-body"
-      :class="{
-        'toc-collapsed': !tocOpen,
-        'set-open': settingsOpen,
-        'is-narrow': isNarrow,
-      }"
-    >
-      <!-- 目录：始终占位，收起时 width=0（不 display:none，避免挤掉正文列） -->
-      <aside
-        class="toc"
-        :class="{ 'is-drawer': isNarrow, 'is-closed': !tocOpen }"
-      >
-        <div class="toc-head">
-          <span>目录</span>
-          <span v-if="tocFilter" class="toc-count muted-xs">
-            {{ filteredChapters.length }}/{{ displayChapters.length }}
-          </span>
-          <button type="button" class="icon-btn sm" title="收起目录" @click="toggleToc">
-            <AppIcon name="back" :size="14" />
-          </button>
-        </div>
-        <div class="toc-search">
-          <input
-            v-model="tocFilter"
-            type="search"
-            class="toc-search-input"
-            placeholder="筛选章节…"
-          />
-          <button
-            v-if="tocFilter"
-            type="button"
-            class="toc-clear"
-            title="清除筛选"
-            @click="tocFilter = ''"
-          >
-            ×
-          </button>
-        </div>
-        <div ref="tocListEl" class="toc-list">
-          <button
-            v-for="ch in filteredChapters"
-            :key="ch.id"
-            type="button"
-            class="toc-item"
-            :data-chapter-id="ch.id"
-            :class="{ 'is-active': ch.id === activeChapter?.id }"
-            @click="goChapter(ch.id)"
-          >
-            <span class="idx">{{ ch.no }}</span>
-            <span class="title">{{ ch.title }}</span>
-          </button>
-          <p v-if="!filteredChapters.length" class="muted toc-empty">
-            {{ tocFilter ? "无匹配章节" : "暂无目录" }}
-          </p>
-        </div>
-      </aside>
+    <div class="reader-body">
+      <ReaderTocSidebar
+        v-model:filter="tocFilter"
+        :items="tocItems"
+        :book-name="book?.name || ''"
+        :active-chapter-id="activeChapterId"
+        :open="tocOpen"
+        :narrow="isNarrow"
+        @select="goChapter"
+        @toggle="toggleToc"
+      />
       <!-- 窄屏点遮罩关目录 -->
       <div
         v-if="isNarrow && tocOpen"
@@ -1231,7 +1340,18 @@ onUnmounted(() => {
           <div v-if="contentLoading" class="placeholder-body muted">正文加载中…</div>
           <div v-else-if="chapterError" class="placeholder-body muted">{{ chapterError }}</div>
           <div v-else-if="chapterText" class="chapter-body">
-            <p v-for="(para, i) in chapterText.split(/\n+/)" :key="i" class="para">{{ para }}</p>
+            <p v-for="(para, i) in chapterParagraphs" :key="i" class="para">
+              <template v-if="activeHighlightQuery">
+                <template
+                  v-for="(seg, si) in highlightParts(para.text, activeHighlightQuery)"
+                  :key="si"
+                >
+                  <mark v-if="seg.hit" class="search-mark">{{ seg.text }}</mark>
+                  <span v-else>{{ seg.text }}</span>
+                </template>
+              </template>
+              <template v-else>{{ para.text }}</template>
+            </p>
           </div>
           <div v-else class="placeholder-body muted">
             <p>选择左侧目录开始阅读。</p>
@@ -1260,139 +1380,46 @@ onUnmounted(() => {
         </div>
       </main>
 
-      <!-- 书内搜索浮层 -->
-      <aside v-if="searchOpen" class="search-panel" aria-label="书内搜索">
-        <div class="search-head">
-          <input
-            ref="searchInputEl"
-            v-model="searchQuery"
-            type="search"
-            class="search-input"
-            placeholder="在本书中搜索…"
-            @keyup.enter="runSearch"
-          />
-          <button type="button" class="search-btn" :disabled="searchLoading" @click="runSearch">
-            {{ searchLoading ? "搜索中" : "搜索" }}
-          </button>
-          <button type="button" class="icon-btn sm" title="关闭" @click="searchOpen = false">
-            ×
-          </button>
-        </div>
-        <div class="search-meta muted-xs">
-          <span v-if="searchLoading">正在扫描正文…</span>
-          <span v-else-if="searchQuery.trim() && searchHits.length">
-            共 {{ searchTotal }} 处匹配
-          </span>
-          <span v-else-if="searchError">{{ searchError }}</span>
-          <span v-else>回车开始搜索</span>
-        </div>
-        <div class="search-list">
-          <button
-            v-for="(hit, i) in searchHits"
-            :key="`${hit.chapter_id}-${i}`"
-            type="button"
-            class="search-hit"
-            @click="openSearchResult(hit)"
-          >
-            <span class="hit-title">
-              {{ chapterHeading(hit.title, hit.index, book?.name) }}
-            </span>
-            <span class="hit-snippet">
-              <template v-for="(seg, si) in highlightParts(hit.snippet, searchQuery)" :key="si">
-                <mark v-if="seg.hit">{{ seg.text }}</mark>
-                <span v-else>{{ seg.text }}</span>
-              </template>
-            </span>
-          </button>
-        </div>
-      </aside>
+      <ReaderHelpPanel v-if="helpOpen" @close="helpOpen = false" />
 
-      <!-- 排版设置 -->
-      <aside v-if="settingsOpen" class="settings">
-        <div class="set-block">
-          <div class="set-label">阅读模式</div>
-          <div class="font-row">
-            <button
-              type="button"
-              class="font-btn"
-              :class="{ 'is-active': !pagedMode }"
-              @click="pagedMode = false"
-            >
-              上下滚动
-            </button>
-            <button
-              type="button"
-              class="font-btn"
-              :class="{ 'is-active': pagedMode }"
-              @click="pagedMode = true"
-            >
-              左右翻页
-            </button>
-          </div>
-        </div>
-        <div class="set-block">
-          <div class="set-label">字号 <span class="val">{{ fontSize }}px</span></div>
-          <input v-model.number="fontSize" type="range" min="14" max="28" step="1" />
-        </div>
-        <div class="set-block">
-          <div class="set-label">行距 <span class="val">{{ lineHeight }}</span></div>
-          <input v-model.number="lineHeight" type="range" min="1.4" max="2.2" step="0.1" />
-        </div>
-        <div class="set-block">
-          <div class="set-label">字体</div>
-          <div class="font-row">
-            <button
-              v-for="opt in fontOptions"
-              :key="opt.value"
-              type="button"
-              class="font-btn"
-              :class="{ 'is-active': readerFont === opt.value }"
-              :style="{ fontFamily: opt.stack }"
-              @click="readerFont = opt.value"
-            >
-              {{ opt.label }}
-            </button>
-          </div>
-        </div>
-        <div class="set-block">
-          <div class="set-label">内容宽度 <span class="val">{{ contentWidth }}px</span></div>
-          <input v-model.number="contentWidth" type="range" min="560" max="1000" step="20" />
-        </div>
-        <div class="set-block">
-          <div class="set-label">背景</div>
-          <div class="theme-row">
-            <button
-              type="button"
-              class="theme-swatch paper"
-              :class="{ 'is-active': readerTheme === 'paper' }"
-              title="纸白"
-              @click="readerTheme = 'paper'"
-            />
-            <button
-              type="button"
-              class="theme-swatch warm"
-              :class="{ 'is-active': readerTheme === 'warm' }"
-              title="暖黄"
-              @click="readerTheme = 'warm'"
-            />
-            <button
-              type="button"
-              class="theme-swatch night"
-              :class="{ 'is-active': readerTheme === 'night' }"
-              title="夜间"
-              @click="readerTheme = 'night'"
-            />
-          </div>
-        </div>
-        <div class="set-block">
-          <label class="autohide-row">
-            <input v-model="autoHideTopbar" type="checkbox" />
-            <span>阅读时自动隐藏顶栏（H 键切换）</span>
-          </label>
-        </div>
-      </aside>
+      <ReaderSearchPanel
+        v-if="searchOpen"
+        v-model:query="searchQuery"
+        :hits="searchHits"
+        :total="searchTotal"
+        :loading="searchLoading"
+        :error="searchError"
+        :book-name="book?.name || ''"
+        @search="runSearch"
+        @close="searchOpen = false"
+        @select="openSearchResult"
+      />
+
+      <ReaderSettingsPanel
+        v-if="settingsOpen"
+        v-model:paged-mode="pagedMode"
+        v-model:font-size="fontSize"
+        v-model:line-height="lineHeight"
+        v-model:reader-font="readerFont"
+        v-model:content-width="contentWidth"
+        v-model:reader-theme="readerTheme"
+        v-model:auto-hide-topbar="autoHideTopbar"
+      />
     </div>
 
+    <!-- 首次进入翻页模式的交互提示 -->
+    <div v-if="pagedHint" class="paged-hint">
+      <span>点击正文左右区域或左右滑动翻页；章末继续翻进入下一章</span>
+      <button type="button" @click="pagedHint = false">知道了</button>
+    </div>
+
+    <!-- 整体阅读进度条与翻页页码 -->
+    <div class="reader-progress" :title="`进度 ${overallPercent}%`" aria-hidden="true">
+      <div class="reader-progress-bar" :style="{ width: `${overallPercent}%` }" />
+    </div>
+    <div v-if="pagedMode" class="reader-page-indicator" aria-hidden="true">
+      {{ pageIndex + 1 }} / {{ pageCount }}
+    </div>
   </div>
 </template>
 
@@ -1406,171 +1433,11 @@ onUnmounted(() => {
   color: var(--color-text);
 }
 
-.reader-top {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 52px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--reader-border, var(--color-border));
-  background: var(--color-surface);
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky);
-  overflow: hidden;
-  transition:
-    height 180ms ease,
-    opacity 180ms ease,
-    border-color 180ms ease;
-}
-
-/* 沉浸模式：高度归零收起，内容自然上移 */
-.reader-top.is-hidden {
-  height: 0;
-  opacity: 0;
-  border-bottom-color: transparent;
-  pointer-events: none;
-}
-
-/* 章节名相对视口水平居中（左右栏不等宽也不偏） */
-.top-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  top: 0;
-  height: 52px;
-  display: flex;
-  align-items: center;
-  max-width: 32vw;
-  pointer-events: none;
-  z-index: 1;
-}
-
-.top-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-}
-
-.top-title {
-  min-width: 0;
-}
-
-.name-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.top-title .name {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 28vw;
-}
-
-.progress-text {
-  flex-shrink: 0;
-  font-size: var(--text-xs);
-  white-space: nowrap;
-}
-
-.chapter-name {
-  font-size: var(--text-sm);
-  font-weight: 500;
-  color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 42vw;
-  margin: 0 auto;
-}
-
-.top-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-  flex: 0 0 auto;
-}
-
-.icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-2);
-  cursor: pointer;
-}
-
-.icon-btn:hover,
-.icon-btn.is-on {
-  background: var(--color-surface-2);
-  color: var(--color-accent);
-}
-
 .reader-body {
   flex: 1;
   display: flex;
   min-height: 0;
   position: relative;
-}
-
-.toc {
-  width: 260px;
-  flex-shrink: 0;
-  overflow: hidden;
-  transition: width var(--duration, 160ms) ease;
-}
-
-/* 收起：宽度归零，仍留在 flex 流中，再点可完整恢复 */
-.toc.is-closed {
-  width: 0;
-  border-right: none;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.toc:not(.is-closed) {
-  opacity: 1;
-}
-
-.content {
-  flex: 1;
-  min-width: 0;
-}
-
-.settings {
-  flex-shrink: 0;
-}
-
-/* 窄屏：目录覆盖抽屉 */
-.reader-body.is-narrow .toc.is-drawer {
-  display: block;
-  position: fixed;
-  left: 0;
-  top: 52px;
-  bottom: 0;
-  width: min(280px, 86vw);
-  z-index: 30;
-  box-shadow: var(--shadow-lg);
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.reader-body.is-narrow .toc.is-drawer.is-closed {
-  width: min(280px, 86vw);
-  transform: translateX(-105%);
-  opacity: 1;
-  pointer-events: none;
 }
 
 .toc-mask {
@@ -1580,262 +1447,10 @@ onUnmounted(() => {
   z-index: 20;
 }
 
-.toc,
-.settings {
-  border-right: 1px solid var(--reader-border, var(--color-border));
-  background: var(--color-surface);
-  overflow: auto;
-  min-height: 0;
-}
-
-.settings {
-  border-right: none;
-  border-left: 1px solid var(--reader-border, var(--color-border));
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-/* ---- 书内搜索浮层 ---- */
-.search-panel {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  width: min(420px, calc(100vw - 24px));
-  max-height: calc(100% - 24px);
-  display: flex;
-  flex-direction: column;
-  background: var(--color-surface);
-  border: 1px solid var(--reader-border, var(--color-border));
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  z-index: 40;
-  overflow: hidden;
-}
-
-.search-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px;
-  border-bottom: 1px solid var(--reader-border, var(--color-border));
-}
-
-.search-input {
-  flex: 1;
-  min-width: 0;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--reader-border, var(--color-border));
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-2);
-  color: var(--reader-fg, var(--color-text));
-  font-size: var(--text-sm);
-  font-family: inherit;
-  outline: none;
-}
-
-.search-input:focus {
-  border-color: var(--color-accent);
-}
-
-.search-btn {
-  height: 32px;
-  padding: 0 10px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: var(--color-accent);
-  color: #fff;
-  font-size: var(--text-sm);
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.search-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.search-meta {
-  padding: 8px 12px 0;
-}
-
-.search-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  overflow: auto;
-  padding: 8px;
-}
-
-.search-hit {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: 100%;
-  padding: 8px 10px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--reader-fg, var(--color-text));
-  text-align: left;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.search-hit:hover {
-  background: var(--color-surface-2);
-}
-
-.hit-title {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--color-accent);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.hit-snippet {
-  font-size: var(--text-xs);
-  line-height: 1.5;
-  color: var(--reader-muted, var(--color-text-2));
-  word-break: break-word;
-}
-
-.hit-snippet mark {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
-  border-radius: 2px;
-  padding: 0 1px;
-}
-
-.toc-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
-  font-size: var(--text-xs);
-  font-weight: 600;
-  color: var(--color-text-3);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border-bottom: 1px solid var(--reader-border, var(--color-border));
-}
-
-.icon-btn.sm {
-  width: 28px;
-  height: 28px;
-}
-
-.toc-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px;
-  border-bottom: 1px solid var(--reader-border, var(--color-border));
-}
-
-.toc-search-input {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--reader-border, var(--color-border));
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-2);
-  color: var(--reader-fg, var(--color-text));
-  font-size: var(--text-xs);
-  font-family: inherit;
-  outline: none;
-}
-
-.toc-search-input:focus {
-  border-color: var(--color-accent);
-}
-
-.toc-clear {
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--color-text-3);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.toc-clear:hover {
-  background: var(--color-surface-2);
-  color: var(--color-text);
-}
-
-.toc-count {
-  margin-left: auto;
-  margin-right: 4px;
-  font-variant-numeric: tabular-nums;
-}
-
-.toc-list {
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.toc-item {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  width: 100%;
-  text-align: left;
-  padding: 8px 10px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-2);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.toc-item:hover {
-  background: var(--color-surface-2);
-  color: var(--color-text);
-}
-
-.toc-item.is-active {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
-  font-weight: 600;
-}
-
-.toc-item .idx {
-  font-size: var(--text-xs);
-  color: var(--color-text-3);
-  min-width: 28px;
-  font-variant-numeric: tabular-nums;
-}
-
-.toc-item .title {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.toc-empty {
-  padding: 16px;
-  text-align: center;
-}
-
 .content {
-  overflow: auto;
+  flex: 1;
   min-width: 0;
+  overflow: auto;
   padding: var(--space-6) var(--space-5);
 }
 
@@ -1889,157 +1504,76 @@ onUnmounted(() => {
   contain-intrinsic-size: 0 1.6em;
 }
 
-.demo-line {
-  margin: 0 0 1em;
-  color: var(--color-text-2);
-}
-
-/* 阅读主题 */
-.theme-paper {
-  --reader-bg: #f7f5f0;
-  --reader-fg: #2a2a28;
-  --reader-muted: #7a7770;
-  --reader-border: #e2ddd2;
-  background: var(--reader-bg);
-  color: var(--reader-fg);
-}
-
-.theme-paper .reader-top,
-.theme-paper .toc,
-.theme-paper .settings,
-.theme-paper .search-panel {
-  background: #f0eee8;
-  color: var(--reader-fg);
-}
-
-.theme-paper .muted-xs,
-.theme-paper .muted {
-  color: var(--reader-muted);
-}
-
-.theme-warm {
-  --reader-bg: #f3e7d3;
-  --reader-fg: #3b2f22;
-  --reader-muted: #8a7460;
-  --reader-border: #e0cfae;
-  background: var(--reader-bg);
-  color: var(--reader-fg);
-}
-
-.theme-warm .reader-top,
-.theme-warm .toc,
-.theme-warm .settings,
-.theme-warm .search-panel {
-  background: #ead9bc;
-  color: var(--reader-fg);
-}
-
-.theme-night {
-  --reader-bg: #12161c;
-  --reader-fg: #c9d1d9;
-  --reader-muted: #7d8794;
-  --reader-border: #2a3240;
-  background: var(--reader-bg);
-  color: var(--reader-fg);
-}
-
-.theme-night .reader-top,
-.theme-night .toc,
-.theme-night .settings,
-.theme-night .search-panel {
-  background: #171c24;
-  color: var(--reader-fg);
-  border-color: #2a3240;
-}
-
-.set-block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.set-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: var(--text-xs);
-  color: var(--color-text-2);
-}
-
-.set-label .val {
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text);
-}
-
-.set-block input[type="range"] {
-  width: 100%;
-  accent-color: var(--color-accent);
-}
-
-.font-row {
-  display: flex;
-  gap: 6px;
-}
-
-.font-btn {
-  flex: 1;
-  height: 30px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-text-2);
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-
-.font-btn.is-active {
-  border-color: var(--color-accent);
+/* 书内搜索命中高亮 */
+.search-mark {
   background: var(--color-accent-soft);
   color: var(--color-accent);
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
-.autohide-row {
+/* ---- 整体进度与页码 ---- */
+.reader-progress {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  z-index: 60;
+  pointer-events: none;
+  background: transparent;
+}
+
+.reader-progress-bar {
+  height: 100%;
+  background: var(--color-accent);
+  transition: width 120ms linear;
+}
+
+.reader-page-indicator {
+  position: fixed;
+  right: 12px;
+  bottom: 10px;
+  z-index: 60;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+.paged-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 70;
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: var(--text-xs);
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 12px;
+  border: 1px solid var(--reader-border, var(--color-border));
+  border-radius: var(--radius-full);
+  background: var(--reader-panel-bg, var(--color-surface));
   color: var(--color-text-2);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--text-xs);
+}
+
+.paged-hint button {
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 2px 10px;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: var(--text-xs);
+  font-family: inherit;
   cursor: pointer;
-}
-
-.autohide-row input {
-  accent-color: var(--color-accent);
-}
-
-.theme-row {
-  display: flex;
-  gap: 8px;
-}
-
-.theme-swatch {
-  width: 36px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  border: 2px solid transparent;
-  cursor: pointer;
-}
-
-.theme-swatch.paper {
-  background: #f7f5f0;
-  border-color: var(--color-border);
-}
-
-.theme-swatch.warm {
-  background: #f3e7d3;
-  border-color: var(--color-border);
-}
-
-.theme-swatch.night {
-  background: #12161c;
-  border-color: var(--color-border);
-}
-
-.theme-swatch.is-active {
-  border-color: var(--color-accent);
 }
 
 /* 章末导航：贴在正文末尾，随内容滚动 */
@@ -2077,28 +1611,49 @@ onUnmounted(() => {
   opacity: 0.55;
 }
 
-@media (max-width: 900px) {
-  /* 中窄屏隐藏居中章节名，避免与左右工具重叠 */
-  .top-center {
-    display: none;
-  }
+/* 阅读主题 */
+.theme-paper {
+  --reader-bg: #f7f5f0;
+  --reader-fg: #2a2a28;
+  --reader-muted: #7a7770;
+  --reader-border: #e2ddd2;
+  --reader-panel-bg: #f0eee8;
+  background: var(--reader-bg);
+  color: var(--reader-fg);
 }
 
-@media (max-width: 900px) {
-  /* 窄屏：正文占满；目录/排版为浮层 */
-  .toc {
-    display: none;
-  }
+.theme-warm {
+  --reader-bg: #f3e7d3;
+  --reader-fg: #3b2f22;
+  --reader-muted: #8a7460;
+  --reader-border: #e0cfae;
+  --reader-panel-bg: #ead9bc;
+  background: var(--reader-bg);
+  color: var(--reader-fg);
+}
 
-  .settings {
-    position: fixed;
-    top: 52px;
-    right: 0;
-    bottom: 40px;
-    width: min(280px, 86vw);
-    z-index: 30;
-    box-shadow: var(--shadow-lg);
-    border-left: 1px solid var(--color-border);
-  }
+.theme-night {
+  --reader-bg: #12161c;
+  --reader-fg: #c9d1d9;
+  --reader-muted: #7d8794;
+  --reader-border: #2a3240;
+  --reader-panel-bg: #171c24;
+  background: var(--reader-bg);
+  color: var(--reader-fg);
+}
+
+.theme-paper .muted-xs,
+.theme-paper .muted {
+  color: var(--reader-muted);
+}
+
+.theme-warm .muted-xs,
+.theme-warm .muted {
+  color: var(--reader-muted);
+}
+
+.theme-night .muted-xs,
+.theme-night .muted {
+  color: var(--reader-muted);
 }
 </style>

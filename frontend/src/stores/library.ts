@@ -18,6 +18,8 @@ interface LibraryState {
   /** true=仅未刮削 */
   onlyUnscraped: boolean;
   loading: boolean;
+  /** 最近一次列表加载失败信息 */
+  error: string;
   /** 请求序号：丢弃过期响应 */
   reqSeq: number;
 }
@@ -35,6 +37,7 @@ export const useLibraryStore = defineStore("library", {
     category: "",
     onlyUnscraped: false,
     loading: false,
+    error: "",
     reqSeq: 0,
   }),
   getters: {
@@ -55,6 +58,7 @@ export const useLibraryStore = defineStore("library", {
     async loadBooks() {
       const seq = ++this.reqSeq;
       this.loading = true;
+      this.error = "";
       try {
         // 整型兜底：避免 NaN/小数进入 query 导致 422
         const page = Math.max(1, Math.floor(Number(this.page) || 1));
@@ -75,6 +79,11 @@ export const useLibraryStore = defineStore("library", {
         this.total = data.total || 0;
         const pages = Math.max(1, Math.ceil(this.total / this.pageSize));
         if (this.page > pages) this.page = pages;
+      } catch (e) {
+        // 保留旧列表，同时把错误交给页面展示，避免骨架屏一直挂着
+        if (seq === this.reqSeq) {
+          this.error = e instanceof Error ? e.message : "书库加载失败";
+        }
       } finally {
         if (seq === this.reqSeq) this.loading = false;
       }

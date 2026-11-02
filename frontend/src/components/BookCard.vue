@@ -3,7 +3,7 @@
  * 书卡：网格 / 列表两种密度。
  * 刮削状态以后端绑定的站外 ID 为准（detail_url 每条都有，不能作为依据）。
  */
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import type { BookListItem } from "@/api/types";
 
 const props = withDefaults(
@@ -20,6 +20,19 @@ const props = withDefaults(
     selectable: false,
     selected: false,
     coverWidth: 150,
+  },
+);
+
+/** 封面加载失败后显示书名占位，避免卡片留白 */
+const coverBroken = ref(false);
+const coverSrc = computed(
+  () => props.book.cover_thumb_path || props.book.cover_path || props.book.cover_url || "",
+);
+
+watch(
+  () => [props.book.cover_thumb_path, props.book.cover_path, props.book.cover_url],
+  () => {
+    coverBroken.value = false;
   },
 );
 
@@ -65,14 +78,14 @@ function progressLabel(b: BookListItem) {
 
 function onCoverError(e: Event) {
   const img = e.target as HTMLImageElement;
-  // 缩略图失败先回退原图，原图也失败才隐藏，避免整块留白
+  // 缩略图失败先回退原图；原图也失败则切换为书名占位
   const fallback = props.book.cover_url || props.book.cover_path || "";
   if (fallback && img.dataset.fallback !== "1") {
     img.dataset.fallback = "1";
     img.src = fallback;
     return;
   }
-  img.style.visibility = "hidden";
+  coverBroken.value = true;
 }
 
 function onClick() {
@@ -104,8 +117,8 @@ function statusClass(status: string) {
     <div class="cover-wrap">
       <div class="cover">
         <img
-          v-if="book.cover_thumb_path || book.cover_path || book.cover_url"
-          :src="book.cover_thumb_path || book.cover_path || book.cover_url || ''"
+          v-if="coverSrc && !coverBroken"
+          :src="coverSrc"
           :alt="book.name"
           loading="lazy"
           decoding="async"

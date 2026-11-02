@@ -28,6 +28,7 @@ const viewMode = ref<"grid" | "list">(
 const selectedIds = ref<Set<number>>(new Set());
 const showSkeleton = ref(true);
 const batchBusy = ref(false);
+const loadError = ref("");
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** 继续阅读：最近在读、且未读完的书（最多 8 本） */
@@ -392,13 +393,23 @@ async function submitBatchEdit() {
   }
 }
 
-onMounted(async () => {
+async function loadAll() {
+  showSkeleton.value = true;
+  loadError.value = "";
+  try {
+    await Promise.all([lib.loadStats(), lib.loadBooks(), loadContinue()]);
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : "加载失败，请稍后重试";
+  } finally {
+    showSkeleton.value = false;
+  }
+}
+
+onMounted(() => {
   // 先按视口确定每页数量，再从 URL 恢复页码/筛选，最后统一拉取一次
   applyPageSize(false);
   readQueryToStore();
-  showSkeleton.value = true;
-  await Promise.all([lib.loadStats(), lib.loadBooks(), loadContinue()]);
-  showSkeleton.value = false;
+  void loadAll();
   window.addEventListener("resize", onResize);
 });
 
@@ -480,6 +491,11 @@ function onResize() {
         </div>
       </div>
     </header>
+
+    <div v-if="loadError || lib.error" class="load-error" role="alert">
+      <span>{{ loadError || lib.error }}</span>
+      <button type="button" class="ghost-btn" @click="loadAll">重试</button>
+    </div>
 
     <!-- 继续阅读：无筛选时展示最近在读的书，点击直接续读 -->
     <section
@@ -882,6 +898,29 @@ function onResize() {
   border: 1px solid var(--color-accent);
   color: var(--color-accent);
   font-size: var(--text-sm);
+  /* 滚动到书库下方勾选后，操作条仍然可见 */
+  position: sticky;
+  top: 0;
+  z-index: 25;
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-md);
+}
+
+.load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 10px 14px;
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+}
+
+.load-error .ghost-btn {
+  flex-shrink: 0;
 }
 
 .batch-actions {

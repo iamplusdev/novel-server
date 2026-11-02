@@ -78,6 +78,21 @@ const tagList = computed(() =>
     .filter(Boolean),
 );
 
+/** 当前阅读进度摘要 */
+const readLabel = computed(() => {
+  const b = book.value;
+  if (!b?.read_at) return "未读";
+  const percent = Number(b.read_percent ?? 0);
+  const chapter = Number(b.read_chapter_index ?? -1);
+  return [
+    percent >= 100 ? "已读完" : `已读 ${percent}%`,
+    chapter >= 0 ? `第 ${chapter + 1} 章` : "",
+    b.read_at,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+});
+
 /** 完整目录（下方栏） */
 const tocItems = ref<TocChapter[]>([]);
 const tocTotal = ref(0);
@@ -86,6 +101,7 @@ const tocLoading = ref(false);
 /** 目录分页：每 200 章一段；'all' 为全部滚动 */
 const TOC_PAGE_SIZE = 200;
 const tocPage = ref<number | "all">("all");
+const tocFilter = ref("");
 
 /** 目录展示项：过滤伪占位行后附带 1 基顺序序号 */
 type TocDisplayItem = TocChapter & { no: number };
@@ -96,7 +112,19 @@ const displayTocItems = computed<TocDisplayItem[]>(() => {
   return named.map((c, i) => ({ ...c, no: i + 1 }));
 });
 
+const filterActive = computed(() => tocFilter.value.trim().length > 0);
+
+/** 目录筛选结果：标题或章节序号 */
+const filteredTocItems = computed(() => {
+  const kw = tocFilter.value.trim().toLowerCase();
+  if (!kw) return displayTocItems.value;
+  return displayTocItems.value.filter(
+    (c) => c.title.toLowerCase().includes(kw) || String(c.no) === kw,
+  );
+});
+
 const tocPageRanges = computed(() => {
+  if (filterActive.value) return [];
   const total = displayTocItems.value.length || tocTotal.value;
   const pages: { key: number; label: string }[] = [];
   if (total <= TOC_PAGE_SIZE) return pages;
@@ -167,6 +195,7 @@ onBeforeUnmount(() => {
 });
 
 const visibleTocItems = computed(() => {
+  if (filterActive.value) return filteredTocItems.value;
   if (tocPage.value === "all") return displayTocItems.value;
   const start = Number(tocPage.value);
   const end = start + TOC_PAGE_SIZE - 1;
@@ -224,6 +253,7 @@ async function load() {
     ElMessage.error("无效的书籍 ID");
     return;
   }
+  tocFilter.value = "";
   loading.value = true;
   try {
     const [detail, st] = await Promise.all([fetchBook(bookId.value), fetchStats()]);
@@ -405,6 +435,27 @@ async function pushSync() {
   }
 }
 
+/** 远程文件名解码后展示；复制时仍使用原始编码名 */
+function displayFilename(name?: string): string {
+  if (!name) return "—";
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
+}
+
+async function copyFilename() {
+  const name = syncInfo.value?.filename;
+  if (!name) return;
+  try {
+    await navigator.clipboard.writeText(name);
+    ElMessage.success("原始文件名已复制");
+  } catch {
+    ElMessage.warning("复制失败");
+  }
+}
+
 function formatSyncTime(ms?: number): string {
   if (!ms) return "—";
   const d = new Date(ms);
@@ -457,7 +508,7 @@ watch(bookId, () => void load());
       <div class="page-actions">
         <button type="button" class="ghost-btn" @click="openReader">
           <AppIcon name="book" :size="16" />
-          阅读
+          {{ book?.read_at ? "继续阅读" : "阅读" }}
         </button>
         <button type="button" class="ghost-btn danger" :disabled="deleting" @click="remove">
           <AppIcon name="trash" :size="16" />
@@ -512,6 +563,10 @@ watch(bookId, () => void load());
             <div class="meta-row">
               <span class="label">章节</span>
               <span class="value">{{ book?.chapter_count ?? "—" }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="label">阅读</span>
+              <span class="value">{{ readLabel }}</span>
             </div>
             <div v-if="book?.source_path" class="path-block">
               <div class="path-head">
@@ -587,7 +642,7 @@ watch(bookId, () => void load());
       <aside class="toc-side page-card">
         <div class="toc-side-head">
           <h2 class="section-title">目录</h2>
-          <div class="toc-pages">
+          <div v-if="!filterActive" class="toc-pages">
             <button
               type="button"
               class="page-chip"
@@ -633,6 +688,19 @@ watch(bookId, () => void load());
           </div>
           <span class="muted-xs toc-count">共 {{ tocTotal || book?.chapter_count || 0 }} 章</span>
         </div>
+        <div class="toc-filter">
+          <input v-model="tocFilter" class="toc-filter-input" placeholder="筛选章节…" />
+          <button
+            v-if="tocFilter"
+            type="button"
+            class="toc-clear"
+            title="清除筛选"
+            @click="tocFilter = ''"
+          >
+            ×
+          </button>
+          <span v-if="filterActive" class="muted-xs">{{ filteredTocItems.length }} 章</span>
+        </div>
         <div v-loading="tocLoading" class="toc-side-list">
           <button
             v-for="ch in visibleTocItems"
@@ -644,7 +712,9 @@ watch(bookId, () => void load());
             <span class="idx muted-xs">{{ ch.no }}</span>
             <span class="ch-title">{{ ch.title }}</span>
           </button>
-          <p v-if="!visibleTocItems.length && !tocLoading" class="muted">暂无章节。</p>
+          <p v-if="!visibleTocItems.length && !tocLoading" class="muted">
+            {{ filterActive ? "没有匹配章节。" : "暂无章节。" }}
+          </p>
         </div>
       </aside>
     </div>
@@ -666,7 +736,17 @@ watch(bookId, () => void load());
         </div>
         <div class="sync-row">
           <span class="sync-label">远程文件名</span>
-          <span class="sync-value mono">{{ syncInfo?.filename || "—" }}</span>
+          <span class="sync-value mono" :title="syncInfo?.filename || ''">
+            {{ displayFilename(syncInfo?.filename) }}
+          </span>
+          <button
+            v-if="syncInfo?.filename"
+            type="button"
+            class="link-btn sync-copy"
+            @click="copyFilename"
+          >
+            复制
+          </button>
         </div>
         <div class="sync-row">
           <span class="sync-label">远端状态</span>
@@ -883,6 +963,51 @@ watch(bookId, () => void load());
 
 .toc-side-head .section-title {
   margin: 0;
+}
+
+.toc-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.toc-filter-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-xs);
+  font-family: inherit;
+  outline: none;
+}
+
+.toc-filter-input:focus {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+  background: var(--color-surface);
+}
+
+.toc-clear {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toc-clear:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
 }
 
 .toc-pages {
@@ -1370,6 +1495,11 @@ watch(bookId, () => void load());
 .sync-value.mono {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: var(--text-xs);
+}
+
+.sync-copy {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .sync-error {

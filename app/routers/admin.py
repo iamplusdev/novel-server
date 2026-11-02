@@ -274,6 +274,8 @@ def admin_search_book(
                         "chapter_id": row.id,
                         "index": row.index,
                         "title": row.title,
+                        # 章内字符偏移：阅读器据此滚动到匹配位置
+                        "offset": pos,
                         "snippet": snippet,
                     }
                 )

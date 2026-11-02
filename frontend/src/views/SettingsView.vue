@@ -89,7 +89,7 @@ async function loadWebdav() {
   }
 }
 
-async function saveWebdav() {
+async function saveWebdav(): Promise<boolean> {
   webdavSaving.value = true;
   try {
     const body: WebDavSettingsBody = {
@@ -107,11 +107,18 @@ async function saveWebdav() {
     webdav.value.password = "";
     webdav.value.clear_password = false;
     ElMessage.success("WebDAV 配置已保存");
+    return true;
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "保存失败");
+    return false;
   } finally {
     webdavSaving.value = false;
   }
+}
+
+async function saveAndTestWebdav() {
+  if (!(await saveWebdav())) return;
+  await runWebdavTest();
 }
 
 async function runWebdavTest() {
@@ -354,11 +361,16 @@ onMounted(async () => {
         清除已保存的密码
       </label>
       <div class="btn-row">
-        <button type="button" class="primary-btn" :disabled="webdavSaving" @click="saveWebdav">
-          {{ webdavSaving ? "保存中…" : "保存 WebDAV 配置" }}
+        <button
+          type="button"
+          class="primary-btn"
+          :disabled="webdavSaving || webdavTesting"
+          @click="saveAndTestWebdav"
+        >
+          {{ webdavSaving ? "保存中…" : webdavTesting ? "测试中…" : "保存并测试" }}
         </button>
-        <button type="button" class="ghost-btn" :disabled="webdavTesting" @click="runWebdavTest">
-          {{ webdavTesting ? "测试中…" : "测试已保存的配置" }}
+        <button type="button" class="ghost-btn" :disabled="webdavSaving" @click="saveWebdav">
+          仅保存
         </button>
       </div>
       <p class="scrape-hint muted-xs">
