@@ -16,4 +16,17 @@ frontend/.vite/
 # Docker 镜像导出包与小说运行数据不入库
 *.tar
 novels/
-frontend/*.tsbuildinfo
+*.tsbuildinfo
+
+# 工具、测试与编辑器缓存
+.commandcode/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+*.log
+Thumbs.db
+desktop.ini
