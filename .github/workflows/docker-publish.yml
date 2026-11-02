@@ -1,9 +1,10 @@
 name: Build and Push Docker Image
 
-# push main -> 更新 latest；推 v* 标签 -> 额外产出固定版本镜像；也可在 Actions 手动触发
+# 只由发布标签触发：推 main 只推代码，不构建镜像。
+# 发布：python scripts/release.py 1.2.3（脚本创建并推送 v1.2.3）
+# 也可在 Actions 页手动触发（手动触发同样会更新 latest）。
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -72,8 +73,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=branch
+            type=raw,value=latest
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

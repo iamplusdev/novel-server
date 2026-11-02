@@ -1,374 +1,192 @@
 # 爱小说（novel-server）
 
-个人 **TXT 小说存储库**：服务端负责导入、刮削、管理与 API。
-
-**阅读路径（双端）**：
-- **网页阅读器**（`/books/:id/read`）：管理后台内置，目录 / 正文 / 字号行距 / 主题 / 进度记忆
-- **手机 Legado**：开源阅读 + 本项目书源（发现 / 搜索 / 目录 / 正文）
-
-目标：极简、零多余依赖，可长期跑在个人服务器 / NAS 上。
-
-## 仓库地址
+个人 **TXT 小说库**：导入、刮削、体检、网页阅读，并通过 Legado（开源阅读）书源在手机上阅读。
+目标是依赖少、部署简单，可长期跑在个人服务器 / NAS 上。
 
 - **GitHub**：<https://github.com/iamplusdev/novel-server>（主仓，CI 自动构建镜像）
 - **Gitee**：<https://gitee.com/iamplus/novel-server>
-- **Docker 镜像**：`iamplusdev/novel-server`（Docker Hub）
+- **Docker Hub**：`iamplusdev/novel-server`
 
-## 功能
+## 目录
 
-- 扫描 `novels/<书源>/<分类>/*.txt`，解析章节写入 SQLite（内容哈希未变则跳过）
-- 管理后台：账号登录、封面墙、书源/分类筛选、元数据编辑、刮削、体检、网页阅读
-- **两级分类**：书源（起点 / 番茄 / 纵横 / 本地）+ 统一分类（以起点 15 类为准），与 TXT 目录层级一致
-- **刮削**：起点 / 番茄 / 纵横元数据（书名、作者、简介、状态、分类、标签、封面）
-- **刮削方式**：**默认 API 直连**；`自动` = API 优先、失败用 Chrome 兜底；`Chrome` = 强制浏览器。API 侧带按域限速与 429/403/503 退避重试，降低被风控概率
-- **后台任务互斥**：导入 / 体检 / 批量刮削同一时刻只允许一个运行，前端会禁用并提示
-- **网页阅读器** + **Legado 书源**
-- 封面本地 `covers/` 由服务直接提供；章节正文存 `data/contents/` 正文包
+- [功能一览](#功能一览)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [Legado 接入](#legado-接入)
+- [WebDAV 进度同步](#webdav-进度同步)
+- [管理后台](#管理后台)
+- [配置](#配置)
+- [API](#api)
+- [目录与数据](#目录与数据)
+- [开发与测试](#开发与测试)
+  - [发布流程](#发布流程)
+- [维护与备份](#维护与备份)
+- [安全建议](#安全建议)
+- [常见问题](#常见问题)
+- [License](#license)
+
+## 功能一览
+
+| 模块 | 能力 |
+|------|------|
+| 书库 | 封面墙、书源/分类筛选、搜索、排序、分页；筛选状态写入 URL；「继续阅读」入口 |
+| 批量操作 | 多选批量编辑分类/标签/状态、批量刮削、批量删除 |
+| 导入 | 扫描 `novels/`，流式解析、编码自动择优、内容哈希去重、SSE 进度、可取消 |
+| 分类 | 两级分类：书源（起点/番茄/纵横/本地）+ 起点 15 类标准分类 |
+| 刮削 | 起点 / 番茄 / 纵横；默认 API 直连，可选 Chrome 兜底；按域限速与退避重试 |
+| 网页阅读器 | 目录筛选与定位、书内搜索、上下滚动/左右翻页、字体字号行距、内容宽度、三种主题、沉浸顶栏、章内位置记忆、下一章预取 |
+| Legado | 发现 / 搜索 / 详情 / 目录 / 正文 / 书源 JSON |
+| 进度同步 | 与 Legado 共用 WebDAV `bookProgress`：打开拉取、关闭推送、详情页手动诊断 |
+| 体检 | 重复合并、损坏修复、按分类归位；深度体检后台执行、带进度 |
+| 封面 | 本地上传 / 刮削下载；可选 Pillow 生成 webp 缩略图 |
+| 其他 | 单账号登录 + 恢复码、长任务互斥、可选 API Key 读鉴权 |
+
+**阅读路径**：
+
+- 网页阅读器：`/books/:id/read`
+- 手机：Legado + 本项目书源
 
 ## 技术栈
 
 | 组件 | 选型 |
 |------|------|
 | Web API | FastAPI + Uvicorn（默认 `:7312`） |
+| 前端 | Vue 3 + Vite + TypeScript + Element Plus + Pinia |
 | 前端入口 | 同一 ASGI 应用：静态 + `/api` 同源（默认 `:7311`） |
-| 管理前端 | Vue 3 + Vite + TypeScript + Element Plus + Pinia |
-| 数据库 | SQLite + SQLAlchemy 2.x |
-| 阅读端 | 网页阅读器 + Legado（开源阅读）书源 |
-| 依赖 | `fastapi` `uvicorn` `sqlalchemy` `python-multipart` |
+| 数据库 | SQLite + SQLAlchemy 2.x（WAL） |
+| 正文存储 | `data/contents/{book_id}.bin` 正文包，按字节偏移读取 |
+| 必装依赖 | `fastapi` `uvicorn` `sqlalchemy` `python-multipart` |
+| 可选依赖 | `playwright`（Chrome 刮削）、`Pillow`（封面缩略图） |
+
+要求 Python **3.10+**（Docker 镜像使用 3.12）。
 
 ---
 
-## 快速开始（推荐 Docker）
+## 快速开始
 
-### 1. 准备目录
+### 方式一：Docker（推荐）
+
+#### 1. 准备目录与 TXT
 
 ```bash
 mkdir -p novel-server && cd novel-server
-# 将本仓库代码放到当前目录（或 git clone 后进入）
+git clone https://github.com/iamplusdev/novel-server.git .
 mkdir -p novels data covers
 ```
 
-把 TXT 放到 **`novels/<书源>/<分类>/`** 或 **`novels/未分类/`**——导入器**只扫描这两处**，其余目录（含 `novels/` 根目录散落的 txt）一律不导入：
+导入器只扫描以下位置：
 
 ```text
 novels/
-├── 起点/都市/书名.txt          # 书源（起点 / 番茄 / 纵横）+ 分类 两级
+├── 起点/都市/书名.txt       # 书源（起点 / 番茄 / 纵横）+ 分类
 ├── 番茄/奇幻/书名.txt
 ├── 纵横/仙侠/书名.txt
-└── 未分类/书名.txt             # 未分类：递归扫描该目录下所有 txt
+└── 未分类/书名.txt          # 递归扫描该目录
 ```
 
-- 「分类」需是起点 15 类之一（玄幻 / 都市 / 仙侠 …）；未知分类归入「未分类」。
+- 分类需为起点 15 类之一，未知分类归入「未分类」。
+- `novels/` 根目录散落的 txt、其他目录不会导入。
 - 文件名建议：`书名.txt`、`书名(作者).txt`、`作者-书名.txt`。
 
-### 2. 修改对外地址（必做）
+#### 2. 必改配置
 
-书源里的 `bookSourceUrl`、封面/章节绝对链接都以后端“对外基址”为准，它取自 **`PUBLIC_BASE_URL`**。请改成手机/域名能访问到的地址：
+完整示例见仓库 `docker-compose.yml`，最关键的两项：
 
 ```yaml
 environment:
-  PUBLIC_BASE_URL: "https://novel.example.com"   # 域名，或 http://192.168.1.100:7311
+  PUBLIC_BASE_URL: "https://novel.example.com"   # 或 http://192.168.1.100:7311
+  READ_API_KEY: "please-change-me"               # 公网/Legado 必填
 ```
 
-- 也可改用 `TRUSTED_HOSTS=novel.example.com`：命中白名单时按请求 Host 自动推导基址，无需写死域名（需反代透传 `Host`/`X-Forwarded-*`）。
-- **注意**：`docker-compose.yml` 的 `environment:` 值会**覆盖** `.env`。改了 `.env` 却仍显示 `127.0.0.1`，多半是 compose 里写死了 `PUBLIC_BASE_URL`。
-- 改完 `docker compose up -d` 重建容器；**Legado 里删除旧书源再重新导入**（旧书源内嵌的是旧地址）。
-- 本地源码运行时，复制 `.env.example` 为 `.env` 后修改即可。
+- `PUBLIC_BASE_URL` 决定书源里的 `bookSourceUrl`、封面与章节绝对链接。
+- 也可设 `TRUSTED_HOSTS=novel.example.com`，命中白名单时按请求 Host 推导基址（反代需透传 `Host` / `X-Forwarded-*`）。
+- `docker-compose.yml` 的 `environment:` 会**覆盖** `.env`；改了 `.env` 不生效时先检查 compose。
+- 改完地址后需 `docker compose up -d` 重建，并在 Legado 中**删除旧书源重新导入**。
 
-### 3. 构建镜像
-
-> 也可直接用预构建镜像（push 到 `main` 会自动构建发布到 Docker Hub）：
-> `docker pull iamplusdev/novel-server:latest`。
-> 使用镜像时把 `docker-compose.yml` 里的 `build:` 段删掉、改为 `image: iamplusdev/novel-server:latest` 即可。
+#### 3. 构建与启动
 
 ```bash
-# 在仓库根目录（含 Dockerfile）
+# 方式 A：本地构建
 docker compose build
-
-# 或单独构建并打标签
-docker build -t novel-server:latest .
-
-# 可选：导出镜像拷到 NAS
-docker save -o novel-server-latest.tar novel-server:latest
-# NAS 上：docker load -i novel-server-latest.tar
-```
-
-### 4. 启动服务
-
-```bash
 docker compose up -d
+
+# 方式 B：使用预构建镜像
+docker pull iamplusdev/novel-server:latest
+# 将 compose 中的 build: 段删除，改为 image: iamplusdev/novel-server:latest
+docker compose up -d
+
 docker compose ps
 curl -s http://127.0.0.1:7312/health
 ```
 
-数据卷（务必持久化，勿打进镜像）：
+数据卷（务必持久化）：
 
 | 宿主机 | 容器 | 内容 |
 |--------|------|------|
 | `./novels` | `/app/novels` | 源 TXT |
-| `./data` | `/app/data` | SQLite、正文包、日志、账号 |
-| `./covers` | `/app/covers` | 封面 |
+| `./data` | `/app/data` | SQLite、正文包、账号、配置、日志 |
+| `./covers` | `/app/covers` | 封面（含派生缩略图） |
 
-### 5. 初始化
+#### 4. 初始化
 
 ```bash
-# 首次导入 TXT
+# 首次导入
 docker compose exec novel-server python import_novels.py
 
-# 浏览器打开管理后台（SPA 入口，无 /admin 后缀）
+# 打开管理后台（SPA 入口，无 /admin 后缀）
 # http://<host>:7311/
-# 首次进入创建账号，保存恢复码
+# 首次进入创建账号并保存恢复码
 # 忘记密码：docker compose exec novel-server python reset_auth.py admin 新密码
 ```
 
-### 6. 手机 Legado 接入
-
-1. 手机与服务器同一局域网（或已穿透），能打开 `http://<域名或IP>:7312/health`
-2. 获取书源 JSON（三选一）：
-   - 浏览器打开 `http://<域名或IP>:7311/legado_book_source.json`（需管理会话登录）
-   - 管理后台 →「API / 书源」→「下载 / 复制书源 JSON」（已填好 `PUBLIC_BASE_URL` 与 `X-Api-Key`）
-   - `GET /api/legado/book-source`
-3. Legado → **我的 → 书源管理 → 本地导入 / 网络导入**
-4. 发现页浏览分类；搜索书名；点进详情 → 目录 → 正文
-
-> 公网部署：读接口（`/api/books*`、`/api/search`、`/api/legado/*`）需鉴权。请在 `.env` 设置 `READ_API_KEY`，
-> 书源 JSON 会自动把该 Key 注入 `header.X-Api-Key`；未配置时读接口只认管理会话，Legado 将无法访问。
-
-书源 JSON 根节点必须是数组 `[{...}]`，且规则含 `bookUrl`（换源需要）。
-
-### 7. 日常操作
-
-| 操作 | 方式 |
-|------|------|
-| 改元数据 / 封面 / 分类 | 管理后台书库，点封面卡片 |
-| 网页阅读 | 书库/详情 →「阅读」 |
-| 再次导入 | 管理后台「导入」或 `docker compose exec novel-server python import_novels.py` |
-| 刮削补全 | 详情「刮削…」或体检页「一键刮削」；方式 **默认 API**，`自动`=API 优先→Chrome 兜底 |
-| 体检 | 重复合并、损坏修复、按分类归位 |
-| 升级 | `docker compose build && docker compose up -d`（卷数据保留） |
-
----
-
-## 刮削方式（默认 API）
-
-单本刮削弹窗与「体检 → 刮削」均可选择取数方式：
-
-| 方式 | 说明 |
-|------|------|
-| **API 直连**（默认） | 只走 HTTP，轻量、速度快；不与浏览器互兜底 |
-| **自动** | 唯一的两段式：先 API，失败后再用 Chrome 兜底 |
-| **Chrome 浏览器** | 强制走浏览器（fnOS CDP / Playwright）；不与 API 互兜底 |
-
-相关环境变量：
-
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `SCRAPER_BROWSER_FALLBACK` | `1` | 浏览器通道开关：`1`/留空=允许；`0`=彻底禁用（`自动` 也不再兜底） |
-| `CDP_URL` | `http://127.0.0.1:16002` | fnOS Chrome / CDP 网关 |
-| `CDP_READY_WAIT` | `20` | 唤醒/等待 Chrome ready 超时（秒） |
-| `SCRAPER_HOST_MIN_INTERVAL` | `2.0` | 同域名两次请求最小间隔（秒），较保守防封 |
-| `SCRAPER_HOST_JITTER_MAX` | `0.6` | 域名间隔随机抖动上限（秒） |
-| `SCRAPER_RETRY_MAX` | `3` | 收到 429/403/503 时的退避重试次数 |
-| `SCRAPER_RETRY_BASE` | `2` | 退避基数（秒），指数增长，单次上限 30s |
-| `SCRAPER_RESPECT_RETRY_AFTER` | `1` | 是否尊重响应的 `Retry-After` |
-
-启用 Chrome（仅 `自动` / `Chrome` 方式需要）：
-
-1. 安装 Playwright Python 包（`connect_over_cdp` 连宿主机 Chrome，无需 `playwright install` 内核）
-   - 本机/虚机：`pip install -r requirements-optional.txt`
-   - Docker：`docker compose build --build-arg INSTALL_BROWSER_DEPS=1 && docker compose up -d`
-2. `docker-compose.yml` 已用 `network_mode: host`，容器内 `127.0.0.1:16002` 即宿主机 CDP
-3. 缺 Playwright / CDP 时：`自动` 的 Chrome 兜底失败会返回 502 提示；默认 `API` 不受影响
-
-**防风控**：API 请求按域名限速（默认 2s + 抖动）、命中 429/403/503 指数退避重试并（可）尊重 `Retry-After`，且复用连接会话；批量刮削另有书间间隔、长休息、单源冷却与连续被拦熔断。日志中可见「取数通道 / 浏览器兜底恢复」等字样。
-
-> 上表中的批量节奏、限速与重试参数，均可在**管理后台 →「设置 → 刮削参数」**内调节，保存后**立即生效**（写入 `data/scraper_settings.json`）；环境变量为未保存时的默认值。
-
----
-
-## Docker 部署说明
-
-### compose 文件要点
-
-当前仓库 `docker-compose.yml` 使用 **host 网络**（便于直达宿主机 Chrome CDP）：
-
-```yaml
-services:
-  novel-server:
-    build: .
-    image: novel-server:latest
-    container_name: novel-server
-    restart: unless-stopped
-    network_mode: host   # host 模式下 ports 不生效，服务监听 HOST:PORT
-    environment:
-      PUBLIC_BASE_URL: "http://192.168.1.100:7311"  # 必改
-      READ_API_KEY: "please-change-me"              # 公网必备：Legado 读接口密钥
-      TRUSTED_HOSTS: "192.168.1.100"                # 反代可信 Host（可选）
-      HOST: "0.0.0.0"
-      PORT: "7312"
-      FRONTEND_PORT: "7311"
-      NOVELS_DIR: "/app/novels"
-      DATABASE_PATH: "/app/data/novels.db"
-      COVERS_DIR: "/app/covers"
-      SCRAPER_BROWSER_FALLBACK: "1"
-      CDP_URL: "http://127.0.0.1:16002"
-      CDP_READY_WAIT: "20"
-    volumes:
-      - ./novels:/app/novels
-      - ./data:/app/data
-      - ./covers:/app/covers
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7312/health', timeout=3)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-```
-
-若不需要浏览器刮削、希望显式端口映射，可去掉 `network_mode: host`，改用：
-
-```yaml
-    ports:
-      - "7311:7311"  # 前端入口
-      - "7312:7312"  # 后端 API
-```
-
-### 常用命令
-
-```bash
-docker compose up -d              # 启动
-docker compose logs -f            # 日志
-docker compose exec novel-server python import_novels.py
-docker compose restart
-docker compose down               # 停止（保留卷数据）
-
-# 只构建不启动
-docker compose build --no-cache
-
-# 备份：打包宿主机数据目录即可保全书库（SQLite、正文包、封面、账号、日志）
-tar czf novel-data-$(date +%F).tar.gz data covers novels
-
-# 恢复：先停服、解包覆盖、再启动
-docker compose down && tar xzf novel-data-YYYY-MM-DD.tar.gz && docker compose up -d
-```
-
-### 镜像说明
-
-- 基础镜像：`python:3.12-slim`（前端多阶段构建 `node` → 拷贝 `frontend/dist`）
-- 只包含运行代码与依赖；**用户数据一律 volume 挂载**
-- 构建上下文通过 `.dockerignore` 排除 `data/` `covers/` `novels/` `scripts/` 等
-
-### 镜像与自动构建（GitHub Actions → Docker Hub）
-
-- 镜像仓库：`iamplusdev/novel-server`；架构 `linux/amd64`。
-- 标签：`latest`（main 分支）、分支名、`sha-<短哈希>`；推送 `v*` 标签时额外产出 `1.2.3` / `1.2` 等版本标签。
-- 触发：push 到 `main` 或推送 `v*` 标签即**自动构建并推送**；也可在 Actions 页手动运行。
-- **先测后构建**：构建前会先跑后端 `pytest` 与前端 `npm run build`，任一失败则不推送镜像。
-- **README 变更会自动同步为 Docker Hub 仓库说明**。
-- 需要配置的 GitHub Secrets：`DOCKERHUB_USERNAME`（`iamplusdev`）、`DOCKERHUB_TOKEN`（Docker Hub Access Token）。
-- 工作流文件：`.github/workflows/docker-publish.yml`、`.github/workflows/update-dockerhub-description.yml`。
-
-使用预构建镜像：把 `docker-compose.yml` 的 `build:` 段删除、改为 `image: iamplusdev/novel-server:latest`，`docker compose pull && docker compose up -d` 即可升级。
-
-### 网络与安全
-
-| 场景 | 建议 |
-|------|------|
-| 纯局域网 | `PUBLIC_BASE_URL=http://<内网IP>:7311`，防火墙放行 7311（前端）、7312（API） |
-| 外网 / 穿透 | 用 HTTPS 域名；设 `COOKIE_SECURE=1`；**必须设 `READ_API_KEY`**（否则读接口匿名 401）；可按需设 `TRUSTED_HOSTS`；交互式文档与通配 CORS 已关闭 |
-| Legado 外网 | 书源 JSON 会自动注入 `header.X-Api-Key`；或走 Tailscale 等私有网 |
-
----
-
-## 配置项
-
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `PUBLIC_BASE_URL` | `http://127.0.0.1:7311` | **必改**，手机可访问的完整根地址（书源/封面绝对链） |
-| `HOST` / `PORT` / `FRONTEND_PORT` | `0.0.0.0` / `7312` / `7311` | 后端 API / 前端入口 |
-| `NOVELS_DIR` | `./novels` | TXT 根目录 |
-| `DATABASE_PATH` | `./data/novels.db` | SQLite 路径 |
-| `CONTENTS_DIR` | `./data/contents` | 章节正文包目录 |
-| `COVERS_DIR` | `./covers` | 封面目录 |
-| `COOKIE_SECURE` | `0` | HTTPS/反代设 `1`（会话 Cookie 带 Secure） |
-| `READ_API_KEY` | （空） | 读接口密钥（Legado 以 `X-Api-Key` 携带）；未设则读接口只认管理会话 |
-| `TRUSTED_HOSTS` | （空） | 反代可信 Host 白名单（逗号分隔）；留空则基址固定用 `PUBLIC_BASE_URL` |
-| `MAX_TXT_BYTES` | `0` | 单本 TXT 导入大小上限（字节）；`0` 不限，超限跳过并计入失败 |
-| `LOG_LEVEL` | `INFO` | 日志级别（`DEBUG` / `INFO` / `WARNING`） |
-| `LOG_FILE` | 空 | 设为 `1` 写入 `data/novel-server.log`，或指定文件名 |
-| `SCRAPER_PROXY` | （空） | 刮削代理，默认直连（不读系统代理） |
-| `SCRAPER_DELAY` | `2.0` | 批量刮削书与书基础间隔（秒） |
-| `SCRAPER_JITTER_MAX` | `1.5` | 基础间隔随机抖动上限（秒） |
-| `SCRAPER_LONG_PAUSE_EVERY` | `5` | 每多少本插入一次长休息；`0` 关闭 |
-| `SCRAPER_LONG_PAUSE_MIN` / `MAX` | `5` / `15` | 长休息随机秒数范围 |
-| `SCRAPER_BLOCK_BREAK_AT` | `3` | 连续被拦截多少次后熔断冷却 |
-| `SCRAPER_BLOCK_BREAK_SECONDS` | `180` | 熔断冷却时长（秒） |
-| `SCRAPER_HOST_MIN_INTERVAL` | `2.0` | 同一域名两次请求最小间隔（秒）；`0` 关闭（较保守，防封） |
-| `SCRAPER_HOST_JITTER_MAX` | `0.6` | 域名间隔随机抖动上限（秒） |
-| `SCRAPER_RETRY_MAX` | `3` | 429/403/503 退避重试次数 |
-| `SCRAPER_RETRY_BASE` | `2` | 退避基数（秒），指数增长，单次上限 30s |
-| `SCRAPER_RESPECT_RETRY_AFTER` | `1` | 是否尊重响应 `Retry-After` |
-| `SCRAPER_SEARCH_CACHE_TTL` | `1800` | 搜索结果缓存秒数；`0` 关闭 |
-| `SCRAPER_SKIP_DETAIL` | `1` | 高置信命中跳过详情请求（省 1～3 次/本） |
-| `SCRAPER_SKIP_DETAIL_SCORE` | `0.95` | 跳过详情的最低匹配分 |
-| `SCRAPER_COVER` | `missing` | 封面：`missing` 已有则跳过 / `replace` 总是替换 / `skip` 从不下载 |
-| `SCRAPER_SOURCE_BREAK_AT` | `2` | 单源连续被拦多少次后进入冷却 |
-| `SCRAPER_SOURCE_COOLDOWN_SECONDS` | `180` | 单源冷却时长（秒），期间 `all` 跳过该源 |
-| `SCRAPER_FANQIE_BING` | `1` | 批量番茄无书号时用必应反查书名 |
-| `SCRAPER_FANQIE_BING_MAX` | `0` | 整批最多必应反查次数；`0` 不限 |
-| `SCRAPER_BROWSER_FALLBACK` | `1` | 浏览器通道开关：`1`/留空=允许；`0`=彻底禁用（含 `自动` 兜底） |
-| `CDP_URL` | `http://127.0.0.1:16002` | fnOS Chrome CDP 网关 |
-| `CDP_READY_WAIT` | `20` | 唤醒/等待 Chrome ready 超时（秒） |
-
----
-
-## 本地源码运行（开发）
-
-### 后端
+### 方式二：本地源码
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-# 可选（Chrome 刮削）：pip install -r requirements-optional.txt
-# Docker 则构建时带上：docker compose build --build-arg INSTALL_BROWSER_DEPS=1
+# 可选：Chrome 刮削 + 封面缩略图
+# pip install -r requirements-optional.txt
 
-export PUBLIC_BASE_URL="http://192.168.1.100:7311"   # Windows: $env:PUBLIC_BASE_URL="..."
+export PUBLIC_BASE_URL="http://192.168.1.100:7311"
 python import_novels.py
 python run.py
 ```
 
-### 前端（Vite 热更新）
+前端开发模式：
 
 ```bash
 cd frontend
 npm install
-npm run dev        # 默认 :5173，代理 /api → 127.0.0.1:7312
-# 生产构建（run.py 托管 frontend/dist）
-npm run build
-npm run typecheck
+npm run dev        # :5173，代理 /api → 127.0.0.1:7312
+npm run build      # 生产构建到 frontend/dist，由 run.py 托管
 ```
 
-### 入口与测试
+### 入口
 
 | 入口 | 地址 |
 |------|------|
 | 管理后台 | `http://<host>:7311/`（登录 `/login`） |
 | 后端 API | `http://<host>:7312/` |
-| OpenAPI | 生产默认关闭（`/docs`、`/redoc`、`/openapi.json` 均 404） |
 | 健康检查 | `http://<host>:7312/health` |
-| 测试 | `python -m pytest tests/ -q` 或 `python -m unittest tests.test_core` |
+| OpenAPI | 生产默认关闭（`/docs`、`/redoc`、`/openapi.json` 均 404） |
 
 ---
 
-## 阅读端说明
+## Legado 接入
 
-### 网页阅读器
+1. 手机与服务器同一局域网（或已穿透），能打开 `http://<域名或IP>:7312/health`。
+2. 获取书源 JSON（三选一）：
+   - 浏览器打开 `http://<域名或IP>:7311/legado_book_source.json`（需管理会话登录）
+   - 管理后台 →「API / 书源」→「下载 / 复制书源 JSON」
+   - `GET /api/legado/book-source`
+3. Legado → **我的 → 书源管理 → 本地导入 / 网络导入**。
+4. 发现页浏览分类；搜索书名；进入详情 → 目录 → 正文。
 
-- 入口：书库卡片 / 详情页 →「阅读」（路由 `/books/:id/read`）
-- 能力：完整目录、章节正文、字号/行距、纸白/暖黄/夜间、全屏、进度写回
+> 公网部署必须设置 `READ_API_KEY`。书源 JSON 会自动注入 `header.X-Api-Key`；
+> 未配置时读接口只认管理会话，Legado 将无法访问。
 
-### Legado
+书源 JSON 根节点必须是数组 `[{...}]`，且规则含 `bookUrl`（换源需要）。
 
 | Legado 功能 | 本服务 API |
 |-------------|------------|
@@ -379,35 +197,164 @@ npm run typecheck
 | 正文 | `GET /api/legado/content/{book_id}/{chapter_id}` |
 | 书源文件 | `GET /api/legado/book-source` 或 `/legado_book_source.json` |
 
-### 公开 JSON（需读鉴权：会话 Cookie 或 `X-Api-Key`）
+---
 
-| 方法 | 路径 |
+## WebDAV 进度同步
+
+与 Legado 共用同一个 WebDAV 的 `bookProgress/书名_作者.json`，实现跨端进度同步。
+配置入口：**设置 → WebDAV 进度同步**。
+
+| 字段 | 说明 |
 |------|------|
-| GET | `/api/categories` |
-| GET | `/api/books`（`source` `category` `q` `status` `sort` `page`） |
-| GET | `/api/search?q=` |
-| GET | `/api/books/{id}` |
-| GET | `/api/books/{id}/chapters` |
-| GET | `/api/books/{id}/chapters/{chapter_id}` |
+| WebDAV 地址 | 如 `https://dav.jianguoyun.com/dav/` |
+| 账号 / 密码 | WebDAV 账号与应用密码；密码只写不读 |
+| 目录 | Legado 的 WebDAV 目录，默认 `legado`；Legado 未勾选「创建 Legado 文件夹」时留空 |
+| 校验证书 | 自签名 NAS 证书可关闭校验 |
+| 超时 | 单次 WebDAV 请求超时（2–20 秒） |
 
-> 上述接口与 `/api/legado/*` 均需读鉴权：网页阅读器带会话 Cookie（同源自动），
-> 其它客户端带 `X-Api-Key: <READ_API_KEY>`；匿名访问返回 401。
+**同步行为**
+
+- **打开阅读页**：拉取远端进度，按 `durChapterTime` 最新者优先；章节标题优先匹配、序号兜底，然后定位到对应章节。
+- **关闭 / 切后台**：`pagehide` / `visibilitychange` 时推送当前章节与估算的章内位置。
+- **防覆盖**：推送前先读远端，若另一台设备刚写入更新进度则跳过本次写入。
+- **详情页诊断**：书籍详情 →「进度同步」可查看本地/远端进度、实际远程文件名、章节匹配结果，并手动拉取或推送。
+- **Legado 侧**：需在「备份与恢复」中开启「同步阅读进度」，并填写同一个 WebDAV 地址、账号与目录。
+
+**限制**
+
+- Legado 只在 App 启动或打开书籍时下载进度，无法实时接收推送。
+- 文件名由「书名_作者」决定，两端书名、作者必须完全一致。
+- 拉取按章节标题优先纠正；推送使用本地章节序号。若 Legado 通过本服务书源阅读同一本书，章节顺序一致可直接对应。
+- 章内位置为滚动/翻页进度换算的估算值，章节定位准确。
+- 密码以 0600 权限明文保存在 `data/webdav_settings.json`（接口不回传），请保护数据目录并优先使用 HTTPS。
+
+> WebDAV 使用 Basic Auth，公网访问请使用 HTTPS。
 
 ---
 
 ## 管理后台
 
-1. 首次打开 `http://<host>:7311/` 创建用户名/密码，**保存恢复码**
-2. **书库**：书源/分类筛选、封面墙、点卡片编辑；可多选批量刮削/删除
-3. **详情**：书源/分类两级下拉、刮削（默认 API）、封面、删除、进入阅读
-4. **导入**：扫描本地 `NOVELS_DIR`（流式解析、编码择优），SSE 进度、可中途取消；同名同作者默认跳过
-5. **体检**：重复合并、损坏修复（需显式选中）、一键刮削、按分类归位；深度体检为后台任务（带进度/停止）
-6. **API / 书源**：查看接口、复制 Legado JSON
-7. **设置**：主题、改密、**刮削参数**、退出、运行环境
+1. **首次使用**：打开 `http://<host>:7311/` 创建账号，保存恢复码。
+2. **书库**：书源/分类筛选、搜索、封面墙、排序、分页；筛选状态写入 URL（刷新/返回可恢复）；顶部「继续阅读」。
+3. **详情**：编辑书名/作者/分类/状态/标签/简介、上传或刮削封面、进入阅读、WebDAV 进度诊断。
+4. **导入**：扫描 `NOVELS_DIR`，SSE 进度，可中途取消；同名同作者默认跳过。
+5. **体检**：重复合并、损坏修复（需显式选择）、一键刮削、按分类归位；深度体检在后台执行。
+6. **API / 书源**：查看接口、复制 Legado JSON。
+7. **设置**：主题、改密、刮削参数、WebDAV 进度同步、运行环境。
 
-> **任务互斥**：导入 / 体检 / 批量刮削同一时刻只允许一个运行，运行中其它入口会禁用并提示。
+> **任务互斥**：导入 / 体检 / 批量刮削同一时刻只允许一个运行，其它入口会禁用并提示。
 
-忘记密码：登录页「忘记密码」+ 恢复码，或容器内 `python reset_auth.py`。
+忘记密码：登录页「忘记密码」+ 恢复码，或容器内执行 `python reset_auth.py`。
+
+---
+
+## 配置
+
+### 基础配置
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `PUBLIC_BASE_URL` | `http://127.0.0.1:7311` | **必改**，手机可访问的完整根地址 |
+| `HOST` / `PORT` / `FRONTEND_PORT` | `0.0.0.0` / `7312` / `7311` | 后端 API / 前端入口 |
+| `NOVELS_DIR` | `./novels` | TXT 根目录 |
+| `DATABASE_PATH` | `./data/novels.db` | SQLite 路径 |
+| `CONTENTS_DIR` | `./data/contents` | 章节正文包目录 |
+| `COVERS_DIR` | `./covers` | 封面目录 |
+| `COOKIE_SECURE` | `0` | HTTPS/反代设 `1` |
+| `READ_API_KEY` | （空） | 读接口密钥（`X-Api-Key`）；未设则只认管理会话 |
+| `TRUSTED_HOSTS` | （空） | 反代可信 Host 白名单（逗号分隔） |
+| `MAX_TXT_BYTES` | `0` | 单本 TXT 大小上限（字节）；`0` 不限 |
+| `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` |
+| `LOG_FILE` | 空 | `1` 写入 `data/novel-server.log`，或指定文件名 |
+
+### 刮削
+
+单本刮削与批量刮削均可选择取数方式：
+
+| 方式 | 说明 |
+|------|------|
+| **API 直连**（默认） | 只走 HTTP，速度快，不与浏览器互兜底 |
+| **自动** | 先 API，失败后再用 Chrome 兜底 |
+| **Chrome 浏览器** | 强制走浏览器（fnOS CDP / Playwright） |
+
+启用 Chrome（仅 `自动` / `Chrome` 需要）：
+
+1. 安装 Playwright：`pip install -r requirements-optional.txt`
+   - Docker：`docker compose build --build-arg INSTALL_BROWSER_DEPS=1 && docker compose up -d`
+2. `docker-compose.yml` 使用 `network_mode: host`，容器内 `127.0.0.1:16002` 即宿主机 CDP。
+3. 缺 Playwright / CDP 时，`自动` 的兜底会返回 502；默认 `API` 不受影响。
+
+`requirements-optional.txt` 同时包含可选的 **Pillow**：安装后书库列表按需生成 webp 缩略图；
+未安装时 `/thumbs` 自动回退原封面，不影响其它功能。
+
+以下参数可在**设置 → 刮削参数**中调整，保存后立即生效（写入 `data/scraper_settings.json`）；
+环境变量仅作为未保存时的默认值。
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `SCRAPER_PROXY` | （空） | 刮削代理，默认直连 |
+| `SCRAPER_DELAY` | `2.0` | 批量刮削书与书基础间隔（秒） |
+| `SCRAPER_JITTER_MAX` | `1.5` | 基础间隔随机抖动上限（秒） |
+| `SCRAPER_LONG_PAUSE_EVERY` | `5` | 每多少本插入长休息；`0` 关闭 |
+| `SCRAPER_LONG_PAUSE_MIN` / `MAX` | `5` / `15` | 长休息随机秒数范围 |
+| `SCRAPER_BLOCK_BREAK_AT` | `3` | 连续被拦截多少次后熔断 |
+| `SCRAPER_BLOCK_BREAK_SECONDS` | `180` | 熔断冷却时长（秒） |
+| `SCRAPER_HOST_MIN_INTERVAL` | `2.0` | 同域名请求最小间隔（秒） |
+| `SCRAPER_HOST_JITTER_MAX` | `0.6` | 域名间隔随机抖动上限（秒） |
+| `SCRAPER_RETRY_MAX` | `3` | 429/403/503 退避重试次数 |
+| `SCRAPER_RETRY_BASE` | `2` | 退避基数（秒），指数增长，单次上限 30s |
+| `SCRAPER_RESPECT_RETRY_AFTER` | `1` | 是否尊重响应 `Retry-After` |
+| `SCRAPER_SEARCH_CACHE_TTL` | `1800` | 搜索结果缓存秒数；`0` 关闭 |
+| `SCRAPER_SKIP_DETAIL` | `1` | 高置信命中跳过详情请求 |
+| `SCRAPER_SKIP_DETAIL_SCORE` | `0.95` | 跳过详情的最低匹配分 |
+| `SCRAPER_COVER` | `missing` | `missing` / `replace` / `skip` |
+| `SCRAPER_SOURCE_BREAK_AT` | `2` | 单源连续被拦多少次后冷却 |
+| `SCRAPER_SOURCE_COOLDOWN_SECONDS` | `180` | 单源冷却时长（秒） |
+| `SCRAPER_FANQIE_BING` | `1` | 番茄无书号时用必应反查书名 |
+| `SCRAPER_FANQIE_BING_MAX` | `0` | 整批最多必应反查次数；`0` 不限 |
+| `SCRAPER_BROWSER_FALLBACK` | `1` | 浏览器通道开关；`0` 彻底禁用 |
+| `CDP_URL` | `http://127.0.0.1:16002` | fnOS Chrome / CDP 网关 |
+| `CDP_READY_WAIT` | `20` | 唤醒/等待 Chrome ready 超时（秒） |
+
+### 反向代理
+
+- host 网络下服务直接监听 `HOST:PORT`（默认 7311 前端、7312 API）。
+- 反代请透传 `Host` 与 `X-Forwarded-Proto`；HTTPS 下设 `COOKIE_SECURE=1`。
+- 交互式文档与通配 CORS 默认关闭。
+
+---
+
+## API
+
+公开读接口需要读鉴权：网页阅读器使用会话 Cookie，其它客户端带 `X-Api-Key: <READ_API_KEY>`。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/categories` | 分类及数量 |
+| GET | `/api/tags` | 标签云 |
+| GET | `/api/books` | 列表；`source` `category` `q` `status` `tag` `sort` `page` |
+| GET | `/api/search?q=` | 搜索 |
+| GET | `/api/books/{id}` | 详情 |
+| GET | `/api/books/{id}/chapters` | 目录（分页） |
+| GET | `/api/books/{id}/chapters/{chapter_id}` | 正文 |
+
+管理端（需管理员会话）常用接口：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET/PATCH | `/api/admin/books`、`/api/admin/books/{id}` | 列表 / 编辑 |
+| POST | `/api/admin/books/batch/update` | 批量编辑分类/标签/状态 |
+| POST | `/api/admin/import`、`/api/admin/import/cancel` | 导入 |
+| GET | `/api/admin/import/stream` | 导入进度 SSE |
+| GET/POST | `/api/admin/library/report`、`/scan` | 体检 |
+| POST | `/api/admin/scrape/search`、`/books/{id}/apply` | 单本刮削 |
+| POST | `/api/admin/scrape/batch/start` | 批量刮削 |
+| GET/PUT | `/api/admin/settings/webdav` | WebDAV 配置 |
+| POST | `/api/admin/settings/webdav/test` | 测试连接 |
+| GET | `/api/admin/books/{id}/sync/info` | 进度诊断 |
+| POST | `/api/admin/books/{id}/sync/pull` | 拉取远端进度 |
+| POST | `/api/admin/books/{id}/sync/push` | 后台推送进度 |
+| POST | `/api/admin/books/{id}/sync/push-now` | 手动推送进度 |
 
 ---
 
@@ -415,51 +362,166 @@ npm run typecheck
 
 ```text
 novel-server/
-├── app/                     # FastAPI 应用
-│   ├── routers/             # auth / admin / scrape / library / public / legado / batch_scrape
-│   ├── scrapers/            # 起点 / 番茄 / 纵横 + mode + http_util + browser_fallback
-│   ├── content_store.py     # 章节正文包（按偏移存取）
-│   ├── parsers.py           # TXT 流式解析 + 编码识别
-│   ├── scraper_settings.py  # 刮削参数运行时配置（设置页可调）
-│   ├── task_guard.py        # 长任务互斥（导入 / 体检 / 刮削）
-│   └── ...
-├── frontend/                # Vue3 + Vite（构建产物 frontend/dist）
+├── app/
+│   ├── routers/             # auth / admin / public / legado / scrape / library / batch_scrape / sync
+│   ├── scrapers/            # 起点 / 番茄 / 纵横 + 限速重试 + 浏览器兜底
+│   ├── content_store.py     # 正文包（按偏移存取）
+│   ├── parsers.py           # TXT 解析 + 编码识别
+│   ├── sync_progress.py     # Legado 进度同步
+│   ├── webdav.py            # 标准库 WebDAV 客户端
+│   ├── webdav_settings.py   # WebDAV 配置
+│   ├── scraper_settings.py  # 刮削参数运行时配置
+│   └── task_guard.py        # 长任务互斥
+├── frontend/                # Vue3 + Vite
 ├── tests/                   # pytest / unittest
 ├── .github/workflows/       # CI：构建推送镜像 + 同步 Docker Hub 说明
+├── scripts/release.py       # 发布脚本：打 tag 并推送（不推 main）
 ├── import_novels.py         # CLI 导入
 ├── run.py                   # 同时拉起前端入口 + 后端 API
 ├── legado_book_source.json
-├── Dockerfile  docker-compose.yml  .env.example
-├── novels/                  # 源 TXT（书源/分类 子目录）
-├── covers/                  # 封面
-└── data/                    # novels.db、contents/、scraper_settings.json、日志（volume）
+├── novels/                  # 源 TXT（书源/分类）
+├── covers/                  # 封面（thumbs/ 为派生缩略图）
+└── data/                    # novels.db、contents/、配置、日志（volume）
 ```
 
-**books 表**：title / author / category（`起点-都市` 形式）/ intro / status / tags / cover_file / source_path / source_hash / word_count / chapter_count / latest_chapter / source / source_id / read_percent / read_chapter_index / read_at / created_at / updated_at
+**books 表**：`title` `author` `category`（`起点-都市`）`intro` `status` `tags` `cover_file`
+`source_path` `source_hash` `word_count` `chapter_count` `latest_chapter` `source` `source_id`
+`read_percent` `read_chapter_index` `read_at` `created_at` `updated_at`
 
-**chapters 表**：book_id / index / title / content_offset / content_length / content_chars（正文在 `data/contents/{book_id}.bin`，遗留 `content` 列仅作兼容）
+**chapters 表**：`book_id` `index` `title` `content_offset` `content_length` `content_chars`
+（正文在 `data/contents/{book_id}.bin`，遗留 `content` 列仅作兼容）
 
----
-
-## 维护
-
-- 源 TXT 内容未变时重复导入几乎无开销（SHA256 跳过）
-- 导入：编码自动择优（UTF-8 / GBK / Big5 / UTF-16 等），异常编码会兜底解码；同名同作者默认跳过
-- 正文包采用「先写临时包、DB 提交成功后再切换」，避免中断导致正文错乱
-- 升级：重新 `docker compose build && up -d`，卷数据保留
-- 排查问题：看容器日志；或设 `LOG_FILE=1` 落盘 `data/novel-server.log`
-- 勿将密码、恢复码提交进仓库
+**运行时配置文件**：`data/auth.json`、`data/scraper_settings.json`、`data/webdav_settings.json`。
 
 ---
 
-## 常见问题（FAQ）
+## 开发与测试
 
-- **书源 / API 页地址显示 `127.0.0.1:7311`**：后端“对外基址”取自 `PUBLIC_BASE_URL`，且 `docker-compose.yml` 的 `environment:` 会覆盖 `.env`。改成域名或设 `TRUSTED_HOSTS`，`docker compose up -d` 重建，Legado 删旧源重导。见「修改对外地址」。
-- **导入后没有章节 / 无法分章**：确认 TXT 放在 `novels/<书源>/<分类>/` 或 `novels/未分类/`（**根目录不扫描**）；编码会自动择优（UTF-8 / GBK / Big5 / UTF-16 等）。已入库但分章错误的书，用「体检 → 修复 → 重新解析」。
-- **Legado 提示 401 / 读不到**：公网需设 `READ_API_KEY`；请使用后台下载的书源（已自动注入 `header.X-Api-Key`）。
-- **改了 `.env` 不生效**：compose 的 `environment:` 优先级高于 `.env`；优先改 compose，或把 compose 改成引用 `${VAR}`。
-- **端口 / 反向代理**：host 网络下服务直接监听 `HOST:PORT`（默认 7311 前端、7312 API）；反代请透传 `Host` 与 `X-Forwarded-Proto`，HTTPS 下设 `COOKIE_SECURE=1`。
-- **大批量刮削被拒**：在「设置 → 刮削参数」调大书间间隔/长休息，或减小「每 N 本长休息」；API 侧已内置限速与 429/403/503 退避重试。
+```bash
+# 后端测试
+python -m pytest tests/ -q
+python -m unittest tests.test_core
+
+# 前端类型检查与构建
+cd frontend
+npm run typecheck
+npm run build
+```
+
+CI（推送 `v*` 发布标签或手动触发）会先跑后端 `pytest` 与前端构建，任一失败则不推送镜像。
+
+### 发布流程
+
+代码推送与镜像发布已解耦：推 `main` **只推代码**，不触发镜像构建。
+
+```bash
+# 日常：只推代码
+git add -A
+git commit -m "feat: ..."
+git push origin main
+
+# 发布：创建并推送 tag，触发镜像构建 + README 同步
+python scripts/release.py 1.2.3                    # 指定版本
+python scripts/release.py                          # 默认 patch 递增并发布
+python scripts/release.py --bump minor --dry-run   # 预览 minor；去掉 --dry-run 即发布
+```
+
+脚本会：
+
+1. 检查 tracked 改动已提交、当前在 `main`、`HEAD` 已推送到 `origin/main`
+2. 创建 annotated tag `v1.2.3`（可用 `--message` 自定义说明）
+3. **只推送该 tag，不推送 main**
+4. 由 CI 运行测试、构建推送镜像（`latest` / `1.2.3` / `1.2` / `v1.2.3` / `sha-...`），并同步 README 到 Docker Hub
+
+补充参数：`--run-tests` 在打 tag 前本地跑 pytest；`--force` 跳过安全检查（紧急发布用）；
+`--dry-run` 只检查并打印命令。
+
+### Docker 部署要点
+
+- 基础镜像 `python:3.12-slim`，前端多阶段构建（Node → `frontend/dist`）。
+- 用户数据一律 volume 挂载，不打进镜像。
+- 默认使用 `network_mode: host`，便于直达宿主机 Chrome CDP；不需要浏览器刮削时可改为端口映射：
+
+```yaml
+    ports:
+      - "7311:7311"
+      - "7312:7312"
+```
+
+### 镜像与自动构建
+
+- 镜像：`iamplusdev/novel-server`，架构 `linux/amd64`。
+- 标签：`latest`、`v1.2.3`、`1.2.3`、`1.2`、`sha-<短哈希>`。
+- 触发：**仅推送 `v*` 发布标签**或手动运行；推 `main` 只推代码，不构建镜像。
+- **README 随发布 tag 同步为 Docker Hub 仓库说明**（不再由 main 的 README 变更触发）。
+- Secrets：`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。
+- 工作流：`.github/workflows/docker-publish.yml`、`update-dockerhub-description.yml`。
+
+---
+
+## 维护与备份
+
+```bash
+# 备份（SQLite、正文包、封面、账号、配置）
+tar czf novel-data-$(date +%F).tar.gz data covers novels
+
+# 恢复：先停服、解包覆盖、再启动
+docker compose down
+tar xzf novel-data-YYYY-MM-DD.tar.gz
+docker compose up -d
+```
+
+- 源 TXT 未变化时重复导入几乎无开销（SHA256 跳过）。
+- 正文包采用「临时包写入 → DB 提交 → 原子替换」，中断不会错乱。
+- 升级：`docker compose build && docker compose up -d`，卷数据保留；或 `docker compose pull` 使用预构建镜像。
+- 离线部署到 NAS：
+  ```bash
+  docker save -o novel-server-latest.tar novel-server:latest
+  # NAS 上：docker load -i novel-server-latest.tar
+  ```
+- 排查：`docker compose logs -f`，或设 `LOG_FILE=1` 落盘 `data/novel-server.log`。
+- 勿将密码、恢复码、WebDAV 凭据提交进仓库。
+
+---
+
+## 安全建议
+
+- 公网部署使用 HTTPS，并设 `COOKIE_SECURE=1`。
+- 设置 `READ_API_KEY`，否则 Legado 无法通过读鉴权访问。
+- 需要按域名生成绝对链接时配置 `TRUSTED_HOSTS`，避免 Host 头注入。
+- 管理员账号仅单用户；请保存恢复码，泄露后尽快改密。
+- WebDAV 密码保存在 `data/webdav_settings.json`（0600），请保护数据目录。
+
+---
+
+## 常见问题
+
+- **书源 / API 页地址显示 `127.0.0.1:7311`**
+  后端基址取自 `PUBLIC_BASE_URL`，且 compose 的 `environment:` 会覆盖 `.env`。改成域名或设 `TRUSTED_HOSTS`，重建后到 Legado 删除旧书源重新导入。
+
+- **导入后没有章节 / 无法分章**
+  确认 TXT 在 `novels/<书源>/<分类>/` 或 `novels/未分类/`（根目录不扫描）；编码会自动择优。已入库但分章错误时，用「体检 → 修复 → 重新解析」。
+
+- **Legado 提示 401 / 读不到**
+  公网需设 `READ_API_KEY`；使用后台下载的书源（已自动注入 `header.X-Api-Key`）。
+
+- **改了 `.env` 不生效**
+  compose 的 `environment:` 优先级更高，优先改 compose，或改成引用 `${VAR}`。
+
+- **WebDAV 同步找不到远程文件**
+  在书库详情 →「进度同步」查看实际文件名。文件名由「书名_作者」决定，需与 Legado 完全一致；同时确认 Legado 已开启「同步阅读进度」。
+
+- **详情页显示远端未更新**
+  Legado 只在启动或打开书籍时拉取。若两端都刚读过，按 `durChapterTime` 最新者优先；可在详情页手动拉取查看结果。
+
+- **封面缩略图 404 / 显示原图**
+  未安装 Pillow 时 `/thumbs` 自动回退原封面。安装后重启即可：`pip install Pillow`。
+
+- **批量刮削被拒 / 频繁 403**
+  在「设置 → 刮削参数」调大书间间隔或长休息，减小「每 N 本长休息」；API 侧已内置限速与退避重试。
+
+- **端口 / 反向代理**
+  host 网络下服务直接监听 `HOST:PORT`；反代透传 `Host` 与 `X-Forwarded-Proto`，HTTPS 下设 `COOKIE_SECURE=1`。
 
 ## License
 

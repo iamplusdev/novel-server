@@ -1,12 +1,10 @@
 name: Update Docker Hub Description
 
-# README.md 变更时，把 README 同步为 Docker Hub 仓库说明（令牌走 GitHub Secrets，勿写死）
+# 发布标签（v*）时同步 README 到 Docker Hub，与镜像发布保持同一版本。
+# 令牌走 GitHub Secrets，勿写死；也可在 Actions 页手动触发。
 on:
   push:
-    branches: [main]
-    paths:
-      - "README.md"
-      - ".github/workflows/update-dockerhub-description.yml"
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
