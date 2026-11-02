@@ -3,8 +3,7 @@
 个人 **TXT 小说库**：导入、刮削、体检、网页阅读，并通过 Legado（开源阅读）书源在手机上阅读。
 目标是依赖少、部署简单，可长期跑在个人服务器 / NAS 上。
 
-- **GitHub**：<https://github.com/iamplusdev/novel-server>（主仓，CI 自动构建镜像）
-- **Gitee**：<https://gitee.com/iamplus/novel-server>
+- **GitHub**：<https://github.com/iamplusdev/novel-server>
 - **Docker Hub**：`iamplusdev/novel-server`
 
 ## 目录
