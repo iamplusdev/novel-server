@@ -17,7 +17,7 @@ from .auth import require_read_dep
 from .config import settings
 from .database import init_db
 from .logging_setup import setup_logging
-from .routers import admin, auth, batch_scrape, legado, library, public, scrape
+from .routers import admin, auth, batch_scrape, legado, library, public, scrape, sync
 from .importer import ensure_category_dirs
 
 setup_logging()
@@ -59,6 +59,7 @@ app.include_router(admin.router)
 app.include_router(scrape.router)
 app.include_router(library.router)
 app.include_router(batch_scrape.router)
+app.include_router(sync.router)
 
 settings.ensure_dirs()
 ensure_category_dirs()
@@ -89,6 +90,18 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.get("/thumbs/{name}", include_in_schema=False)
+def cover_thumb(name: str, w: int = 320) -> FileResponse:
+    """封面缩略图：按需生成并缓存；Pillow 缺失或生成失败时回退原图。"""
+    from .thumbs import ensure_thumb, safe_cover_path
+
+    path = ensure_thumb(name, w) or safe_cover_path(name)
+    if path is None or not path.is_file():
+        raise HTTPException(404, "封面不存在")
+    # 封面文件名带时间戳，替换后 URL 会变化，可安全缓存
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=604800"})
+
+
 # ---- 前端 SPA（history 路由回退；注册在 API 路由之后，不会抢 /api）----
 if DIST_DIR.is_dir():
     app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
@@ -112,7 +125,8 @@ def spa_fallback(full_path: str) -> FileResponse:
             return FileResponse(candidate)
     if not index.is_file():
         raise HTTPException(503, "frontend not built: cd frontend && npm run build")
-    return FileResponse(index)
+    # index.html 引用带哈希的 assets，自身必须每次回源校验，否则升级后仍加载旧入口
+    return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 def create_app() -> FastAPI:

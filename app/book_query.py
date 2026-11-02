@@ -106,6 +106,9 @@ def apply_sort(stmt, sort: str):
         return stmt.order_by(Book.word_count.desc(), Book.title.asc())
     if sort == "chapters":
         return stmt.order_by(Book.chapter_count.desc(), Book.title.asc())
+    if sort == "read":
+        # 最近阅读优先（read_at 为空串的已由 only_read 过滤）
+        return stmt.order_by(Book.read_at.desc(), Book.id.desc())
     return stmt.order_by(Book.updated_at.desc(), Book.id.desc())
 
 
@@ -118,12 +121,14 @@ def build_books_stmt(
     tag: str | None = None,
     source: str | None = None,
     scraped: str | None = None,
+    only_read: bool = False,
     sort: str = "updated",
     with_intro_search: bool = True,
 ):
     """组装筛选后的 select(Book)，不含分页。
 
     scraped=unscraped：仅未刮削（无 source 或无 source_id）
+    only_read：仅读过的书（read_at 非空），配合 sort=read 做「继续阅读」
     """
     stmt = select(Book)
     stmt = apply_source_category(stmt, source=source, category=category)
@@ -134,6 +139,8 @@ def build_books_stmt(
         stmt = stmt.where(
             (Book.source == "") | (Book.source.is_(None)) | (Book.source_id == "")
         )
+    if only_read:
+        stmt = stmt.where(Book.read_at != "")
     stmt = apply_tag(stmt, tag)
     stmt = apply_search(stmt, db, q, with_intro=with_intro_search)
     return apply_sort(stmt, sort)

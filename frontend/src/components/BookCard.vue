@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 书卡：网格 / 列表两种密度。
- * 刮削状态由 source_id / detail_url 派生；阅读进度仅 UI 位（暂无数据）。
+ * 刮削状态以后端绑定的站外 ID 为准（detail_url 每条都有，不能作为依据）。
  */
 import { computed } from "vue";
 import type { BookListItem } from "@/api/types";
@@ -44,9 +44,9 @@ function fmtWords(n?: number) {
   return String(n);
 }
 
-/** 有站外 ID 或详情链接视为已刮削 */
+/** 仅以站外 ID 判定已刮削：detail_url 是公共字段，不能作为刮削依据 */
 function isScraped(b: BookListItem) {
-  return Boolean(b.source_id || b.detail_url);
+  return Boolean(b.source_id);
 }
 
 /** 阅读进度百分比（0–100），缺省视为 0 */
@@ -58,13 +58,20 @@ function readPercent(b: BookListItem) {
 
 function progressLabel(b: BookListItem) {
   const p = readPercent(b);
-  if (p <= 0) return "未读";
+  if (p <= 0) return b.read_at ? "已开始" : "未读";
   if (p >= 100) return "已读完";
   return `已读 ${p}%`;
 }
 
 function onCoverError(e: Event) {
   const img = e.target as HTMLImageElement;
+  // 缩略图失败先回退原图，原图也失败才隐藏，避免整块留白
+  const fallback = props.book.cover_url || props.book.cover_path || "";
+  if (fallback && img.dataset.fallback !== "1") {
+    img.dataset.fallback = "1";
+    img.src = fallback;
+    return;
+  }
   img.style.visibility = "hidden";
 }
 
@@ -97,8 +104,8 @@ function statusClass(status: string) {
     <div class="cover-wrap">
       <div class="cover">
         <img
-          v-if="book.cover_url || book.cover_path"
-          :src="book.cover_url || book.cover_path || ''"
+          v-if="book.cover_thumb_path || book.cover_path || book.cover_url"
+          :src="book.cover_thumb_path || book.cover_path || book.cover_url || ''"
           :alt="book.name"
           loading="lazy"
           decoding="async"

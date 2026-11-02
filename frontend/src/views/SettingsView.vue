@@ -10,9 +10,13 @@ import { useThemeStore, type ThemeMode } from "@/stores/theme";
 import { useLibraryStore } from "@/stores/library";
 import {
   fetchScrapeSettings,
+  fetchWebDavSettings,
   saveScrapeSettings,
+  saveWebDavSettings,
+  testWebDav,
   type ScrapeSettingSpec,
   type ScrapeSettingsValues,
+  type WebDavSettingsBody,
 } from "@/api/admin";
 import AppIcon from "@/components/AppIcon.vue";
 
@@ -48,6 +52,78 @@ async function saveScrape() {
     ElMessage.error(e instanceof Error ? e.message : "保存失败");
   } finally {
     scrapeSaving.value = false;
+  }
+}
+
+// WebDAV 进度同步（与 Legado 共用 bookProgress 目录）
+const webdav = ref({
+  enabled: false,
+  url: "",
+  username: "",
+  password: "",
+  dir: "legado",
+  timeout: 6,
+  verify_tls: true,
+  clear_password: false,
+});
+const webdavHasPassword = ref(false);
+const webdavSaving = ref(false);
+const webdavTesting = ref(false);
+
+async function loadWebdav() {
+  try {
+    const r = await fetchWebDavSettings();
+    webdav.value = {
+      enabled: r.enabled,
+      url: r.url,
+      username: r.username,
+      password: "",
+      dir: r.dir,
+      timeout: r.timeout,
+      verify_tls: r.verify_tls,
+      clear_password: false,
+    };
+    webdavHasPassword.value = r.has_password;
+  } catch {
+    /* 忽略：加载失败不阻断页面 */
+  }
+}
+
+async function saveWebdav() {
+  webdavSaving.value = true;
+  try {
+    const body: WebDavSettingsBody = {
+      enabled: webdav.value.enabled,
+      url: webdav.value.url,
+      username: webdav.value.username,
+      dir: webdav.value.dir,
+      timeout: webdav.value.timeout,
+      verify_tls: webdav.value.verify_tls,
+      clear_password: webdav.value.clear_password,
+    };
+    if (webdav.value.password) body.password = webdav.value.password;
+    const r = await saveWebDavSettings(body);
+    webdavHasPassword.value = r.has_password;
+    webdav.value.password = "";
+    webdav.value.clear_password = false;
+    ElMessage.success("WebDAV 配置已保存");
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "保存失败");
+  } finally {
+    webdavSaving.value = false;
+  }
+}
+
+async function runWebdavTest() {
+  webdavTesting.value = true;
+  try {
+    const r = await testWebDav();
+    if (r.ok) ElMessage.success(r.message || "连接成功");
+    else ElMessage.error(r.error || "连接失败");
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "连接失败");
+  } finally {
+    webdavTesting.value = false;
   }
 }
 
@@ -96,6 +172,7 @@ async function savePw() {
 onMounted(async () => {
   theme.init();
   void loadScrape();
+  void loadWebdav();
   try {
     await lib.loadStats();
   } catch {
@@ -214,6 +291,79 @@ onMounted(async () => {
       >
         {{ scrapeSaving ? "保存中…" : "保存刮削参数" }}
       </button>
+    </section>
+
+    <section class="page-card">
+      <div class="section-head">
+        <AppIcon name="api" :size="16" />
+        <h2 class="section-title">WebDAV 进度同步</h2>
+      </div>
+      <p class="muted">
+        与 Legado 共用同一个 WebDAV 的 <code>bookProgress</code> 目录：打开阅读页拉取最新进度，关闭页面时推送。
+        需在 Legado 中开启「同步阅读进度」。
+      </p>
+      <div class="scrape-form">
+        <label class="scrape-field">
+          <span class="scrape-label">启用同步</span>
+          <el-switch v-model="webdav.enabled" />
+        </label>
+        <label class="scrape-field">
+          <span class="scrape-label">WebDAV 地址</span>
+          <input
+            v-model="webdav.url"
+            class="field-input"
+            placeholder="https://dav.example.com/dav/"
+          />
+        </label>
+        <label class="scrape-field">
+          <span class="scrape-label">账号</span>
+          <input v-model="webdav.username" class="field-input" autocomplete="username" />
+        </label>
+        <label class="scrape-field">
+          <span class="scrape-label">密码</span>
+          <input
+            v-model="webdav.password"
+            type="password"
+            class="field-input"
+            autocomplete="current-password"
+            :placeholder="webdavHasPassword ? '已保存，留空不修改' : ''"
+          />
+        </label>
+        <label class="scrape-field">
+          <span class="scrape-label">目录</span>
+          <input v-model="webdav.dir" class="field-input" placeholder="legado" />
+        </label>
+        <label class="scrape-field">
+          <span class="scrape-label">超时（秒）</span>
+          <input
+            v-model.number="webdav.timeout"
+            type="number"
+            min="2"
+            max="20"
+            class="field-input"
+          />
+        </label>
+        <label class="scrape-field">
+          <span class="scrape-label">校验证书</span>
+          <el-switch v-model="webdav.verify_tls" />
+          <span class="scrape-hint muted-xs">自签名 NAS 证书可关闭</span>
+        </label>
+      </div>
+      <label v-if="webdavHasPassword" class="muted-xs webdav-clear">
+        <input v-model="webdav.clear_password" type="checkbox" />
+        清除已保存的密码
+      </label>
+      <div class="btn-row">
+        <button type="button" class="primary-btn" :disabled="webdavSaving" @click="saveWebdav">
+          {{ webdavSaving ? "保存中…" : "保存 WebDAV 配置" }}
+        </button>
+        <button type="button" class="ghost-btn" :disabled="webdavTesting" @click="runWebdavTest">
+          {{ webdavTesting ? "测试中…" : "测试已保存的配置" }}
+        </button>
+      </div>
+      <p class="scrape-hint muted-xs">
+        文件名由「书名_作者」决定，需与 Legado 中的书名、作者完全一致。
+      </p>
     </section>
 
     <section class="page-card">
@@ -338,6 +488,42 @@ onMounted(async () => {
 
 .env {
   max-height: none;
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+
+.ghost-btn {
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.ghost-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.webdav-clear {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 /* 刮削参数表单：自适应多列；label 在上、输入框撑满单元格 → 各行对齐 */

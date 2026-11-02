@@ -10,11 +10,14 @@ import {
   fetchAllBookChapters,
   fetchBook,
   fetchStats,
+  fetchSyncInfo,
   isTocPlaceholder,
+  pullBookProgress,
+  pushBookProgressNow,
   updateBook,
   uploadCover,
 } from "@/api/admin";
-import type { TocChapter } from "@/api/admin";
+import type { SyncInfo, TocChapter } from "@/api/admin";
 import ScrapeDialog from "@/components/ScrapeDialog.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import type { AdminStats, BookDetail } from "@/api/types";
@@ -43,6 +46,13 @@ const coverPreview = ref("");
 const coverFile = ref<File | null>(null);
 const scrapeOpen = ref(false);
 const pathExpanded = ref(false);
+
+// WebDAV 进度同步：详情页诊断 + 手动拉取/推送
+const syncOpen = ref(false);
+const syncLoading = ref(false);
+const syncInfo = ref<SyncInfo | null>(null);
+const syncPulling = ref(false);
+const syncPushing = ref(false);
 
 const bookId = computed(() => {
   const raw = Array.isArray(route.params.id) ? route.params.id[0] : route.params.id;
@@ -327,6 +337,87 @@ async function remove() {
   }
 }
 
+async function loadSyncInfo() {
+  if (!bookId.value) return;
+  syncLoading.value = true;
+  try {
+    syncInfo.value = await fetchSyncInfo(bookId.value);
+  } catch (e) {
+    syncInfo.value = null;
+    ElMessage.error(e instanceof Error ? e.message : "读取同步状态失败");
+  } finally {
+    syncLoading.value = false;
+  }
+}
+
+async function openSync() {
+  syncOpen.value = true;
+  await loadSyncInfo();
+}
+
+async function pullSync() {
+  if (!bookId.value || syncPulling.value) return;
+  syncPulling.value = true;
+  try {
+    const r = await pullBookProgress(bookId.value);
+    if (r.updated) {
+      ElMessage.success(`已拉取远端进度：第 ${(r.chapter_index ?? 0) + 1} 章`);
+      try {
+        // 只刷新书籍元信息，不覆盖表单里尚未保存的编辑
+        book.value = await fetchBook(bookId.value);
+      } catch {
+        /* ignore */
+      }
+    } else if (!r.enabled) {
+      ElMessage.warning("WebDAV 同步未启用");
+    } else if (r.error) {
+      ElMessage.error(r.error);
+    } else if (r.found) {
+      ElMessage.info(r.reason ? `未更新：${r.reason}` : "远端进度未更新");
+    } else {
+      ElMessage.info(`未找到远程文件：${r.filename || ""}`);
+    }
+    await loadSyncInfo();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "拉取失败");
+  } finally {
+    syncPulling.value = false;
+  }
+}
+
+async function pushSync() {
+  if (!bookId.value || syncPushing.value) return;
+  syncPushing.value = true;
+  try {
+    const r = await pushBookProgressNow(bookId.value);
+    if (r.pushed) {
+      ElMessage.success("已推送本地进度到 WebDAV");
+    } else if (r.skipped === "remote_newer") {
+      ElMessage.warning("远端进度更新，已跳过本次推送");
+    } else {
+      ElMessage.error(r.error || "推送失败（本地可能还没有阅读进度）");
+    }
+    await loadSyncInfo();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "推送失败");
+  } finally {
+    syncPushing.value = false;
+  }
+}
+
+function formatSyncTime(ms?: number): string {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
+function localProgressText(info: SyncInfo | null): string {
+  if (!info) return "—";
+  const idx = info.local.read_chapter_index;
+  const base = idx >= 0 ? `第 ${idx + 1} 章 · ${info.local.read_percent}%` : "未读";
+  return info.local.read_at ? `${base} · ${info.local.read_at}` : base;
+}
+
 function fmtWords(n?: number) {
   if (n === undefined || n === null) return "—";
   if (n >= 100000000) return (n / 100000000).toFixed(1) + " 亿";
@@ -400,6 +491,10 @@ watch(bookId, () => void load());
           <button type="button" class="ghost-btn block" @click="scrapeOpen = true">
             <AppIcon name="search" :size="14" />
             刮削元数据
+          </button>
+          <button type="button" class="ghost-btn block" @click="openSync">
+            <AppIcon name="api" :size="14" />
+            进度同步
           </button>
 
           <div class="meta-block">
@@ -561,6 +656,60 @@ watch(bookId, () => void load());
       :local-author="form.author || book?.author || ''"
       @applied="applyBook"
     />
+
+    <!-- WebDAV 进度同步诊断与手动操作 -->
+    <el-dialog v-model="syncOpen" title="WebDAV 进度同步" width="560px" append-to-body>
+      <div v-loading="syncLoading" class="sync-panel">
+        <div class="sync-row">
+          <span class="sync-label">本地进度</span>
+          <span class="sync-value">{{ localProgressText(syncInfo) }}</span>
+        </div>
+        <div class="sync-row">
+          <span class="sync-label">远程文件名</span>
+          <span class="sync-value mono">{{ syncInfo?.filename || "—" }}</span>
+        </div>
+        <div class="sync-row">
+          <span class="sync-label">远端状态</span>
+          <span class="sync-value">
+            <template v-if="!syncInfo?.configured">未启用 WebDAV</template>
+            <template v-else-if="!syncInfo?.remote_exists">
+              文件不存在（Legado 尚未上传该书）
+            </template>
+            <template v-else-if="syncInfo?.remote">
+              第 {{ syncInfo.remote.durChapterIndex + 1 }} 章 ·
+              {{ syncInfo.remote.durChapterTitle || "—" }} ·
+              {{ formatSyncTime(syncInfo.remote.durChapterTime) }}
+            </template>
+            <template v-else>无法解析</template>
+          </span>
+        </div>
+        <div class="sync-row">
+          <span class="sync-label">匹配章节</span>
+          <span class="sync-value">
+            {{
+              syncInfo?.matched
+                ? `第 ${syncInfo.matched.index + 1} 章 · ${syncInfo.matched.title}`
+                : "—"
+            }}
+          </span>
+        </div>
+        <p v-if="syncInfo?.error" class="sync-error">{{ syncInfo.error }}</p>
+        <p class="muted-xs">
+          拉取按 durChapterTime 最新者优先，章节标题优先匹配；推送使用本地章节序号。
+        </p>
+        <div class="sync-actions">
+          <button type="button" class="ghost-btn" :disabled="syncLoading" @click="loadSyncInfo">
+            刷新
+          </button>
+          <button type="button" class="primary-btn" :disabled="syncPulling" @click="pullSync">
+            {{ syncPulling ? "拉取中…" : "拉取远端" }}
+          </button>
+          <button type="button" class="ghost-btn" :disabled="syncPushing" @click="pushSync">
+            {{ syncPushing ? "推送中…" : "推送本地" }}
+          </button>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -1191,5 +1340,48 @@ watch(bookId, () => void load());
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---- WebDAV 进度同步弹窗 ---- */
+.sync-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 120px;
+}
+
+.sync-row {
+  display: flex;
+  gap: 12px;
+  font-size: var(--text-sm);
+}
+
+.sync-label {
+  width: 84px;
+  flex-shrink: 0;
+  color: var(--color-text-3);
+}
+
+.sync-value {
+  color: var(--color-text);
+  word-break: break-all;
+}
+
+.sync-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: var(--text-xs);
+}
+
+.sync-error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-xs);
+}
+
+.sync-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
 }
 </style>

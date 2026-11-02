@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
@@ -50,6 +52,24 @@ def cover_abs(book: Book, base: str | None = None) -> str:
     return f"{root}/covers/{book.cover_file}"
 
 
+# 列表卡片使用的缩略图宽度（服务端按需生成，磁盘缓存）
+THUMB_WIDTH = 320
+
+
+def cover_thumb_rel(book: Book) -> str:
+    if not book.cover_file:
+        return ""
+    return f"/thumbs/{quote(book.cover_file, safe='')}?w={THUMB_WIDTH}"
+
+
+def cover_thumb_abs(book: Book, base: str | None = None) -> str:
+    rel = cover_thumb_rel(book)
+    if not rel:
+        return ""
+    root = (base or settings.public_base_url).rstrip("/")
+    return f"{root}{rel}"
+
+
 def book_list_item(book: Book, base: str | None = None) -> dict:
     root = (base or settings.public_base_url).rstrip("/")
     return {
@@ -65,6 +85,9 @@ def book_list_item(book: Book, base: str | None = None) -> dict:
         "source_id": getattr(book, "source_id", "") or "",
         "cover_path": cover_rel(book),
         "cover_url": cover_abs(book, root),
+        # 列表卡片优先用缩略图，减少原图流量（服务端按需生成）
+        "cover_thumb_path": cover_thumb_rel(book),
+        "cover_thumb_url": cover_thumb_abs(book, root),
         "intro": (book.intro or "")[:160],
         "word_count": book.word_count,
         "chapter_count": book.chapter_count,
@@ -74,6 +97,8 @@ def book_list_item(book: Book, base: str | None = None) -> dict:
         "updated_at": book.updated_at,
         # 阅读进度百分比（0–100），列表卡片展示用
         "read_percent": int(getattr(book, "read_percent", 0) or 0),
+        # 最近阅读时间（ISO8601，空串=未读），「继续阅读」排序用
+        "read_at": getattr(book, "read_at", "") or "",
     }
 
 

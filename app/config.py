@@ -72,6 +72,13 @@ def safe_delete_cover(cover_file: str) -> bool:
     # 必须落在 covers 目录内
     if path.parent != covers_dir:
         return False
+    # 顺带清理派生缩略图（原图可能已不在，按文件名前缀删除）
+    try:
+        from .thumbs import delete_thumbs_for
+
+        delete_thumbs_for(name)
+    except Exception:  # noqa: BLE001
+        pass
     if not path.is_file():
         return False
     try:

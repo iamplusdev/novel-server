@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import threading
@@ -31,10 +32,34 @@ LOGIN_LOCK_SEC = 300
 _fail_lock = threading.Lock()
 _fail_map: dict[str, dict] = {}
 
+# 凭据文件缓存：每个请求只 stat 一次，避免重复「读文件 + JSON 解析 + mkdir」
+_AUTH_CACHE: dict | None = None
+_AUTH_SIG: tuple[str, int, int] | None = None  # (路径, mtime_ns, 文件大小)
+_AUTH_LOCK = threading.Lock()
+_DIR_READY: set[str] = set()
+
+
+def _ensure_auth_dir(parent: Path) -> None:
+    """鉴权目录只创建一次，避免每个请求都触发 mkdir 系统调用。"""
+    key = str(parent)
+    if key in _DIR_READY:
+        return
+    parent.mkdir(parents=True, exist_ok=True)
+    _DIR_READY.add(key)
+
+
+def reset_auth_cache() -> None:
+    """清空凭据缓存（测试或需要强制重新读盘时使用）。"""
+    global _AUTH_CACHE, _AUTH_SIG
+    with _AUTH_LOCK:
+        _AUTH_CACHE = None
+        _AUTH_SIG = None
+
 
 def auth_path() -> Path:
-    settings.ensure_dirs()
-    return settings.database_path.parent / AUTH_FILE_NAME
+    parent = settings.database_path.parent
+    _ensure_auth_dir(parent)
+    return parent / AUTH_FILE_NAME
 
 
 def login_client_key(client_host: str | None, username: str = "") -> str:
@@ -87,25 +112,69 @@ def note_login_success(key: str) -> None:
 
 
 def load_auth() -> dict | None:
+    """读取凭据；命中缓存（路径 + mtime + 大小未变）时不再读盘。"""
+    global _AUTH_CACHE, _AUTH_SIG
     path = auth_path()
-    if not path.is_file():
+    try:
+        st = path.stat()
+    except OSError:
+        reset_auth_cache()
         return None
+    sig = (str(path), st.st_mtime_ns, st.st_size)
+    with _AUTH_LOCK:
+        if _AUTH_SIG == sig and _AUTH_CACHE is not None:
+            # 返回浅拷贝，避免调用方修改缓存中的凭据
+            return dict(_AUTH_CACHE)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        reset_auth_cache()
         return None
-    if not data.get("username") or not data.get("password_hash") or not data.get("secret"):
+    if (
+        not isinstance(data, dict)
+        or not data.get("username")
+        or not data.get("password_hash")
+        or not data.get("secret")
+    ):
+        reset_auth_cache()
         return None
-    return data
+    with _AUTH_LOCK:
+        _AUTH_CACHE, _AUTH_SIG = data, sig
+    return dict(data)
 
 
 def save_auth(data: dict) -> None:
+    """原子写入凭据：先写临时文件再替换，避免中途崩溃留下半截 JSON。"""
+    global _AUTH_CACHE, _AUTH_SIG
     path = auth_path()
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        # 失败时清理临时文件，正式文件保持原样
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     try:
         path.chmod(0o600)
     except OSError:
         pass
+    # 写入成功后直接刷新缓存；stat 失败则退回下次请求重新读盘
+    try:
+        st = path.stat()
+        sig = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        reset_auth_cache()
+        return
+    with _AUTH_LOCK:
+        _AUTH_CACHE, _AUTH_SIG = dict(data), sig
 
 
 def is_setup_required() -> bool:

@@ -28,6 +28,9 @@ export interface BookListItem {
   source_id: string;
   cover_path?: string | null;
   cover_url?: string | null;
+  /** 列表卡片优先使用的缩略图（服务端按需生成） */
+  cover_thumb_path?: string | null;
+  cover_thumb_url?: string | null;
   intro?: string;
   word_count?: number;
   chapter_count?: number;
@@ -37,6 +40,8 @@ export interface BookListItem {
   updated_at?: string;
   /** 阅读进度百分比 0–100 */
   read_percent?: number;
+  /** 最近阅读时间（ISO8601，空串=未读） */
+  read_at?: string;
 }
 
 export interface BookListResponse {

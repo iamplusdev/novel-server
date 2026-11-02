@@ -43,7 +43,23 @@ def init_db() -> None:
     _migrate_books()
     _migrate_read_progress()
     _migrate_chapters_storage()
+    _migrate_indexes()
     _init_fts()
+
+
+def _migrate_indexes() -> None:
+    """为列表排序字段补索引；旧库 create_all 不会自动补，需显式建。"""
+    try:
+        with engine.begin() as conn:
+            for name, column in (
+                ("ix_books_updated_at", "updated_at"),
+                ("ix_books_word_count", "word_count"),
+                ("ix_books_chapter_count", "chapter_count"),
+            ):
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON books({column})"))
+    except Exception:  # noqa: BLE001
+        # 索引只影响查询性能，失败不阻断启动
+        pass
 
 
 def _migrate_books() -> None:
@@ -143,21 +159,60 @@ _FTS_AD_TRIGGER_SQL = (
 )
 
 
-def _init_fts() -> None:
-    """书籍全文检索（A9）：FTS5 外部内容表 + 触发器同步；失败则仅用 LIKE。"""
-    with engine.connect() as conn:
+# FTS5 外部内容表列定义（建表/触发器/重建共用）
+_FTS_COLUMNS = "title, author, tags, intro"
+# 中文子串检索依赖 trigram 分词；探测结果进程内缓存
+_trigram_supported: bool | None = None
+
+
+def _fts_tokenizer() -> str:
+    """选择分词器：优先 trigram（CJK 子串可检索），不支持则回退 unicode61。"""
+    global _trigram_supported
+    if _trigram_supported is None:
         try:
-            conn.execute(
-                text(
-                    """
-                    CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
-                        title, author, tags, intro,
-                        content='books', content_rowid='id',
-                        tokenize='unicode61'
-                    )
-                    """
+            with engine.connect() as conn:
+                conn.execute(
+                    text("CREATE VIRTUAL TABLE temp._fts_probe USING fts5(x, tokenize='trigram')")
                 )
-            )
+                conn.execute(text("DROP TABLE temp._fts_probe"))
+            _trigram_supported = True
+        except Exception:  # noqa: BLE001
+            _trigram_supported = False
+    return "trigram" if _trigram_supported else "unicode61"
+
+
+def _fts_ddl(tokenizer: str) -> str:
+    return (
+        "CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5("
+        f"{_FTS_COLUMNS}, content='books', content_rowid='id', "
+        f"tokenize='{tokenizer}'"
+        ")"
+    )
+
+
+def _fts_ddl_tokenizer(ddl: str) -> str:
+    """从建表语句识别分词器（仅区分 trigram / unicode61）。"""
+    return "trigram" if "trigram" in (ddl or "").lower() else "unicode61"
+
+
+def _init_fts() -> None:
+    """书籍全文检索（A9）：FTS5 外部内容表 + 触发器同步；失败则仅用 LIKE。
+
+    - 中文子串需要 trigram 分词（unicode61 会把整串汉字当成一个 token）
+    - 旧库若为 unicode61，删除索引表后重建（只重建索引，不涉及书籍/章节数据）
+    """
+    tokenizer = _fts_tokenizer()
+    try:
+        with engine.begin() as conn:
+            ddl = conn.execute(
+                text("SELECT sql FROM sqlite_master WHERE type='table' AND name='books_fts'")
+            ).scalar()
+            if ddl and _fts_ddl_tokenizer(ddl) != tokenizer:
+                # 外部内容表不存正文，DROP 只丢索引，重建后再回填
+                conn.execute(text("DROP TABLE books_fts"))
+                ddl = None
+            if not ddl:
+                conn.execute(text(_fts_ddl(tokenizer)))
             # 增量同步触发器
             for name, sql in (
                 (
@@ -182,10 +237,9 @@ def _init_fts() -> None:
             n_books = conn.execute(text("SELECT count(*) FROM books")).scalar() or 0
             if n_books != n_fts:
                 conn.execute(text("INSERT INTO books_fts(books_fts) VALUES('rebuild')"))
-            conn.commit()
-        except Exception:  # noqa: BLE001
-            # 无 FTS5 的构建则自动降级为 LIKE
-            conn.rollback()
+    except Exception:  # noqa: BLE001
+        # 无 FTS5 的构建则自动降级为 LIKE
+        pass
 
 
 def rebuild_fts() -> None:

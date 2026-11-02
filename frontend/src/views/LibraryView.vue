@@ -2,17 +2,20 @@
 /**
  * 书库封面墙：书源/分类筛选、搜索、排序、视图切换、多选批量、分页。
  */
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { SOURCE_OPTS, useLibraryStore } from "@/stores/library";
-import { batchDeleteBooks } from "@/api/admin";
+import { batchDeleteBooks, batchUpdateBooks, fetchBooks } from "@/api/admin";
+import type { BatchUpdateBody } from "@/api/admin";
 import { startBatchScrape } from "@/api/progress";
+import type { BookListItem } from "@/api/types";
 import BookCard from "@/components/BookCard.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import BaseEmpty from "@/components/BaseEmpty.vue";
 
 const router = useRouter();
+const route = useRoute();
 const lib = useLibraryStore();
 
 const searchInput = ref(lib.q);
@@ -26,6 +29,36 @@ const selectedIds = ref<Set<number>>(new Set());
 const showSkeleton = ref(true);
 const batchBusy = ref(false);
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** 继续阅读：最近在读、且未读完的书（最多 8 本） */
+const continueItems = ref<BookListItem[]>([]);
+/** 有筛选/搜索时隐藏继续阅读，避免与筛选结果混淆 */
+const showContinueRow = computed(
+  () => lib.page === 1 && !lib.q && !lib.source && !lib.category && !lib.onlyUnscraped,
+);
+
+/** 批量编辑弹窗 */
+const batchEditOpen = ref(false);
+const editCategory = ref(false);
+const editSource = ref("");
+const editCategoryName = ref("");
+const editTagsMode = ref<"append" | "remove" | "replace">("append");
+const editTags = ref("");
+const editStatus = ref("");
+
+/** 当前所选书源下的分类选项（与编辑页共用统计里的分类树） */
+const editCategoryOptions = computed(() => {
+  const tree = lib.stats?.category_tree || [];
+  const node = tree.find((n) => n.key === editSource.value);
+  return node?.categories || [];
+});
+
+// 切换书源后，分类不在新列表中则清空
+watch(editSource, () => {
+  if (!editCategoryOptions.value.includes(editCategoryName.value)) {
+    editCategoryName.value = "";
+  }
+});
 
 const sourceLabels: Record<string, string> = {
   "": "全部",
@@ -81,13 +114,13 @@ function computePageSize(): number {
 
 const gridWrapRef = ref<HTMLElement | null>(null);
 
-function applyPageSize() {
+function applyPageSize(load = true) {
   const next = computePageSize();
   if (next === lib.pageSize) return;
   const firstIndex = (lib.page - 1) * lib.pageSize;
   lib.pageSize = next;
   lib.page = Math.floor(firstIndex / next) + 1;
-  void lib.loadBooks();
+  if (load) void lib.loadBooks();
 }
 
 function onGridSize() {
@@ -125,8 +158,109 @@ function onToggleUnscraped() {
   void lib.applyFilter({ onlyUnscraped: !lib.onlyUnscraped });
 }
 
+/** query 值可能是数组（重复参数），统一取第一个字符串 */
+function queryStr(v: unknown): string {
+  if (Array.isArray(v)) return typeof v[0] === "string" ? v[0] : "";
+  return typeof v === "string" ? v : "";
+}
+
+/** 从 URL query 恢复筛选状态；返回是否发生变化 */
+function readQueryToStore(): boolean {
+  const q = route.query;
+  const nextQ = queryStr(q.q);
+  const rawSource = queryStr(q.source);
+  const nextSource = (SOURCE_OPTS as readonly string[]).includes(rawSource) ? rawSource : "";
+  const nextCategory = queryStr(q.category);
+  const rawSort = queryStr(q.sort);
+  const nextSort = sortOptions.some((o) => o.value === rawSort) ? rawSort : "updated";
+  const nextUnscraped = queryStr(q.unscraped) === "1";
+  const rawPage = Number.parseInt(queryStr(q.page), 10);
+  const nextPage = Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
+
+  const changed =
+    lib.q !== nextQ ||
+    lib.source !== nextSource ||
+    lib.category !== nextCategory ||
+    lib.sort !== nextSort ||
+    lib.onlyUnscraped !== nextUnscraped ||
+    lib.page !== nextPage;
+  if (!changed) return false;
+
+  lib.q = nextQ;
+  lib.source = nextSource;
+  lib.category = nextCategory;
+  lib.sort = nextSort;
+  lib.onlyUnscraped = nextUnscraped;
+  lib.page = nextPage;
+  searchInput.value = nextQ;
+  localStorage.setItem("novel_sort", nextSort);
+  return true;
+}
+
+/** 当前筛选对应的 URL query */
+function desiredQuery(): Record<string, string> {
+  const next: Record<string, string> = {};
+  if (lib.q) next.q = lib.q;
+  if (lib.source) next.source = lib.source;
+  if (lib.category) next.category = lib.category;
+  if (lib.sort && lib.sort !== "updated") next.sort = lib.sort;
+  if (lib.onlyUnscraped) next.unscraped = "1";
+  if (lib.page > 1) next.page = String(lib.page);
+  return next;
+}
+
+/** 把筛选写回 URL；query 未变化时不做无谓导航 */
+function syncQuery() {
+  const next = desiredQuery();
+  const cur: Record<string, string> = {};
+  for (const [k, v] of Object.entries(route.query)) {
+    const s = queryStr(v);
+    if (s) cur[k] = s;
+  }
+  for (const k of new Set([...Object.keys(next), ...Object.keys(cur)])) {
+    if ((next[k] || "") !== (cur[k] || "")) {
+      void router.replace({ query: next });
+      return;
+    }
+  }
+}
+
+// 筛选变化 → 写回 URL（replace，不污染返回历史）
+watch(
+  () => [lib.q, lib.source, lib.category, lib.sort, lib.onlyUnscraped, lib.page] as const,
+  syncQuery,
+);
+// URL 变化（刷新/浏览器返回/前进）→ 恢复筛选并重新拉取
+watch(
+  () => route.query,
+  () => {
+    if (readQueryToStore()) void lib.loadBooks();
+  },
+);
+
 function openBook(id: number) {
   router.push({ name: "book-detail", params: { id: String(id) } });
+}
+
+/** 继续阅读直接进阅读器（阅读器会按 read_chapter_index 续读） */
+function openReader(id: number) {
+  void router.push({ name: "book-read", params: { id: String(id) } });
+}
+
+async function loadContinue() {
+  try {
+    const data = await fetchBooks({ sort: "read", read: true, page: 1, page_size: 12 });
+    continueItems.value = (data.items || [])
+      .filter((b) => {
+        // 已读完的不再提示续读；刚开读（0%）仍保留
+        const p = Number(b.read_percent ?? 0);
+        return Number.isFinite(p) && p < 100;
+      })
+      .slice(0, 8);
+  } catch {
+    // 继续阅读只是增强区块，失败不影响书库主列表
+    continueItems.value = [];
+  }
 }
 
 function toggleSelect(id: number) {
@@ -164,7 +298,7 @@ async function onBatchDelete() {
     const res = await batchDeleteBooks(ids);
     ElMessage.success(`已删除 ${res.deleted_count} 本`);
     clearSelection();
-    await Promise.all([lib.loadBooks(), lib.loadStats()]);
+    await Promise.all([lib.loadBooks(), lib.loadStats(), loadContinue()]);
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "批量删除失败");
   } finally {
@@ -207,10 +341,63 @@ async function onBatchScrape() {
   }
 }
 
+/** 打开批量编辑：每次重置表单 */
+function openBatchEdit() {
+  if (!selectedCount.value) return;
+  editCategory.value = false;
+  editSource.value = "";
+  editCategoryName.value = "";
+  editTagsMode.value = "append";
+  editTags.value = "";
+  editStatus.value = "";
+  batchEditOpen.value = true;
+}
+
+async function submitBatchEdit() {
+  const ids = [...selectedIds.value];
+  if (!ids.length || batchBusy.value) return;
+  if (editCategory.value && !editCategoryName.value) {
+    ElMessage.warning("请选择分类");
+    return;
+  }
+  const tags = editTags.value.trim();
+  // 替换模式允许空串（清空标签）；追加/移除空串视为不修改
+  const withTags = tags.length > 0 || editTagsMode.value === "replace";
+  if (!editCategory.value && !withTags && !editStatus.value) {
+    ElMessage.warning("没有需要修改的内容");
+    return;
+  }
+  const body: BatchUpdateBody = { ids };
+  if (editCategory.value) {
+    body.category_source = editSource.value;
+    body.category_name = editCategoryName.value;
+  }
+  if (withTags) {
+    body.tags = tags;
+    body.tags_mode = editTagsMode.value;
+  }
+  if (editStatus.value) body.status = editStatus.value;
+
+  batchBusy.value = true;
+  try {
+    const res = await batchUpdateBooks(body);
+    ElMessage.success(`已更新 ${res.updated_count} 本`);
+    batchEditOpen.value = false;
+    clearSelection();
+    await Promise.all([lib.loadBooks(), lib.loadStats(), loadContinue()]);
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "批量更新失败");
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
 onMounted(async () => {
-  applyPageSize();
+  // 先按视口确定每页数量，再从 URL 恢复页码/筛选，最后统一拉取一次
+  applyPageSize(false);
+  readQueryToStore();
   showSkeleton.value = true;
-  await Promise.all([lib.loadStats(), lib.loadBooks()]);
+  await Promise.all([lib.loadStats(), lib.loadBooks(), loadContinue()]);
   showSkeleton.value = false;
   window.addEventListener("resize", onResize);
 });
@@ -294,6 +481,23 @@ function onResize() {
       </div>
     </header>
 
+    <!-- 继续阅读：无筛选时展示最近在读的书，点击直接续读 -->
+    <section
+      v-if="showContinueRow && continueItems.length"
+      class="continue-row"
+      aria-label="继续阅读"
+    >
+      <div class="continue-head">
+        <h2 class="continue-title">继续阅读</h2>
+        <span class="muted-xs">最近在读</span>
+      </div>
+      <div class="continue-scroll">
+        <div v-for="b in continueItems" :key="b.id" class="continue-item">
+          <BookCard :book="b" :cover-width="140" @open="openReader" />
+        </div>
+      </div>
+    </section>
+
     <div class="filter-bar">
       <div class="chip-row" role="tablist" aria-label="书源筛选">
         <button
@@ -345,6 +549,14 @@ function onResize() {
       <div class="batch-actions">
         <button type="button" class="ghost-btn" @click="selectAllOnPage">全选本页</button>
         <button type="button" class="ghost-btn" @click="clearSelection">取消选择</button>
+        <button
+          type="button"
+          class="primary-btn"
+          :disabled="batchBusy"
+          @click="openBatchEdit"
+        >
+          批量编辑
+        </button>
         <button
           type="button"
           class="primary-btn"
@@ -427,6 +639,64 @@ function onResize() {
         下一页
       </button>
     </div>
+
+    <!-- 批量编辑弹窗：只提交勾选项 -->
+    <el-dialog v-model="batchEditOpen" title="批量编辑" width="460px" append-to-body>
+      <div class="batch-form">
+        <div class="batch-form-row">
+          <el-checkbox v-model="editCategory">修改分类</el-checkbox>
+        </div>
+        <div v-if="editCategory" class="batch-form-row">
+          <span class="batch-form-label">书源</span>
+          <el-select v-model="editSource" size="small" style="width: 110px">
+            <el-option label="本地" value="" />
+            <el-option
+              v-for="src in ['起点', '番茄', '纵横']"
+              :key="src"
+              :label="src"
+              :value="src"
+            />
+          </el-select>
+          <span class="batch-form-label">分类</span>
+          <el-select
+            v-model="editCategoryName"
+            size="small"
+            placeholder="选择分类"
+            style="width: 150px"
+          >
+            <el-option v-for="cat in editCategoryOptions" :key="cat" :label="cat" :value="cat" />
+          </el-select>
+        </div>
+        <div class="batch-form-row">
+          <span class="batch-form-label">标签</span>
+          <el-select v-model="editTagsMode" size="small" style="width: 92px">
+            <el-option label="追加" value="append" />
+            <el-option label="移除" value="remove" />
+            <el-option label="替换" value="replace" />
+          </el-select>
+          <el-input
+            v-model="editTags"
+            size="small"
+            placeholder="逗号分隔，留空不修改"
+            style="flex: 1; min-width: 140px"
+          />
+        </div>
+        <div class="batch-form-row">
+          <span class="batch-form-label">状态</span>
+          <el-select v-model="editStatus" size="small" style="width: 110px">
+            <el-option label="不修改" value="" />
+            <el-option label="连载" value="连载" />
+            <el-option label="完结" value="完结" />
+            <el-option label="未知" value="未知" />
+          </el-select>
+        </div>
+        <p class="muted-xs">已选 {{ selectedCount }} 本，只修改勾选的项。</p>
+      </div>
+      <template #footer>
+        <el-button @click="batchEditOpen = false">取消</el-button>
+        <el-button type="primary" :loading="batchBusy" @click="submitBatchEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -529,6 +799,56 @@ function onResize() {
 .size-slider {
   width: 96px;
   accent-color: var(--color-accent);
+}
+
+.batch-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.batch-form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-form-label {
+  min-width: 32px;
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+}
+
+.continue-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.continue-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.continue-title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+/* 横向滚动，避免继续阅读占用过多纵向空间 */
+.continue-scroll {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.continue-item {
+  width: 140px;
+  flex: 0 0 140px;
 }
 
 .filter-bar {

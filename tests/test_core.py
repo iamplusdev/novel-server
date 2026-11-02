@@ -20,6 +20,10 @@ class CoreTests(unittest.TestCase):
 
         from app import config as cfg
         from app import database as dbmod
+        from app.auth import reset_auth_cache
+
+        # 每个用例使用独立临时目录，清空凭据缓存避免串数据
+        reset_auth_cache()
 
         # 直接改 settings 并重建引擎，避免 reload 造成表重复定义
         cfg.settings.database_path = self._tmp / "t.db"
@@ -48,6 +52,66 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(_detect_image_ext(b"GIF89a"), ".gif")
         self.assertEqual(_detect_image_ext(b"RIFF....WEBP"), ".webp")
         self.assertIsNone(_detect_image_ext(b"nope"))
+
+    def test_cover_thumb_generation(self) -> None:
+        """Pillow 可用时按需生成 webp 缩略图，宽度受限且可复用缓存。"""
+        from app import thumbs
+
+        if thumbs.Image is None or thumbs.ImageOps is None:
+            self.skipTest("未安装 Pillow")
+
+        from PIL import Image as PILImage
+
+        covers = self.cfg.settings.covers_dir
+        name = "1_generated.jpg"
+        PILImage.new("RGB", (600, 900), (200, 30, 30)).save(covers / name, format="JPEG")
+
+        out = thumbs.ensure_thumb(name, 200)
+        self.assertIsNotNone(out)
+        self.assertTrue(out.is_file())
+        with PILImage.open(out) as im:
+            self.assertEqual(im.format, "WEBP")
+            self.assertLessEqual(im.width, 200)
+        # 再次调用命中缓存，路径一致
+        self.assertEqual(thumbs.ensure_thumb(name, 200), out)
+
+    def test_cover_thumb_rejects_unsafe_names(self) -> None:
+        """路径穿越/非图片扩展名一律拒绝。"""
+        from app import thumbs
+
+        for bad in ("../evil.jpg", "a/b.jpg", "..\\x.jpg", ".hidden.jpg", "x.txt", ""):
+            self.assertIsNone(thumbs.safe_cover_path(bad))
+            self.assertIsNone(thumbs.ensure_thumb(bad))
+
+    def test_cover_thumb_falls_back_without_pillow(self) -> None:
+        """未安装 Pillow 时接口返回原图，不报错。"""
+        from unittest import mock
+
+        from app import main as main_mod
+        from app import thumbs
+
+        name = "2_nopillow.jpg"
+        (self.cfg.settings.covers_dir / name).write_bytes(b"\xff\xd8\xff\xe0not-a-real-jpeg")
+        with mock.patch.object(thumbs, "Image", None), mock.patch.object(thumbs, "ImageOps", None):
+            self.assertIsNone(thumbs.ensure_thumb(name, 320))
+            resp = main_mod.cover_thumb(name, 320)
+        self.assertEqual(Path(resp.path).name, name)
+        self.assertIn("max-age=604800", resp.headers.get("cache-control", ""))
+
+    def test_safe_delete_cover_removes_thumbs(self) -> None:
+        """删除/更换封面时同步清理派生缩略图。"""
+        from app.config import safe_delete_cover
+
+        covers = self.cfg.settings.covers_dir
+        name = "3_del.jpg"
+        (covers / name).write_bytes(b"\xff\xd8\xff")
+        tdir = covers / "thumbs"
+        tdir.mkdir(exist_ok=True)
+        thumb = tdir / "3_del_320.webp"
+        thumb.write_bytes(b"x")
+
+        self.assertTrue(safe_delete_cover(name))
+        self.assertFalse(thumb.exists())
 
     def test_login_rate_limit(self) -> None:
         from app import auth as auth_mod
@@ -80,29 +144,164 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(any("Secure" in c for c in cookies))
         self.assertTrue(any("HttpOnly" in c for c in cookies))
 
+    def test_auth_cache_avoids_disk_read(self) -> None:
+        """凭据缓存命中后不再读文件（每请求只 stat 一次）。"""
+        from unittest import mock
+
+        from app import auth as auth_mod
+
+        auth_mod.reset_auth_cache()
+        auth_mod.create_account("cacheuser", "secret123")
+        auth_mod.reset_auth_cache()
+
+        real_read = Path.read_text
+        calls = {"n": 0}
+
+        def _counting(path_self, *args, **kwargs):
+            calls["n"] += 1
+            return real_read(path_self, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", _counting):
+            self.assertIsNotNone(auth_mod.load_auth())
+            self.assertIsNotNone(auth_mod.load_auth())
+        self.assertEqual(calls["n"], 1)
+
+    def test_auth_cache_invalidates_on_external_change(self) -> None:
+        """外部修改 auth.json 后缓存立即失效，旧 token 不再通过。"""
+        import json as _json
+        import time as _time
+
+        from app import auth as auth_mod
+
+        auth_mod.reset_auth_cache()
+        auth_mod.create_account("cacheuser", "secret123")
+        token = auth_mod.login("cacheuser", "secret123")["token"]
+        self.assertEqual(auth_mod.verify_token(token), "cacheuser")
+
+        path = auth_mod.auth_path()
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        data["secret"] = "0" * 64
+        path.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 部分文件系统 mtime 精度较低，显式推进时间戳保证缓存签名变化
+        future = _time.time() + 2
+        os.utime(path, (future, future))
+
+        with self.assertRaises(Exception):
+            auth_mod.verify_token(token)
+
+    def test_save_auth_atomic(self) -> None:
+        """写入失败时原 auth.json 不变，且不残留临时文件。"""
+        from unittest import mock
+
+        from app import auth as auth_mod
+
+        auth_mod.reset_auth_cache()
+        auth_mod.create_account("atomic", "secret123")
+        path = auth_mod.auth_path()
+        before = path.read_bytes()
+
+        data = auth_mod.load_auth()
+        self.assertIsNotNone(data)
+        data["password_hash"] = "changed"
+        with mock.patch.object(auth_mod.os, "replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                auth_mod.save_auth(data)
+
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(path.with_name(path.name + ".tmp").exists())
+
     def test_import_and_fts_search(self) -> None:
+        """中文子串搜索必须命中（≥3 字走 FTS，2 字由 LIKE 兜底）。"""
         from sqlalchemy import select, text
 
+        from app.book_query import apply_search
         from app.database import SessionLocal, fts_available
         from app.importer import import_all
         from app.models import Book
 
         novels = self._tmp / "novels" / "起点" / "玄幻"
         novels.mkdir(parents=True)
-        (novels / "甲书.txt").write_text("第一章 开始\n内容甲", encoding="utf-8")
-        (novels / "乙书.txt").write_text("第一章 开始\n内容乙", encoding="utf-8")
+        (novels / "斗破苍穹.txt").write_text("第一章 开始\n内容甲", encoding="utf-8")
+        (novels / "凡人修仙传.txt").write_text("第一章 开始\n内容乙", encoding="utf-8")
         res = import_all()
         self.assertGreaterEqual(len(res.added), 2, res.summary)
 
         s = SessionLocal()
-        books = s.execute(select(Book)).scalars().all()
-        self.assertGreaterEqual(len(books), 2)
-        if fts_available():
-            rows = s.execute(
-                text("SELECT rowid FROM books_fts WHERE books_fts MATCH :q"), {"q": "甲书"}
-            ).all()
-            self.assertTrue(rows)
-        s.close()
+        try:
+            titles = [b.title for b in s.execute(select(Book)).scalars().all()]
+            self.assertGreaterEqual(len(titles), 2)
+            if fts_available():
+                rows = s.execute(
+                    text("SELECT rowid FROM books_fts WHERE books_fts MATCH :q"),
+                    {"q": '"斗破苍"'},
+                ).all()
+                self.assertTrue(rows)
+            # 端到端：3 字走 FTS、2 字走 LIKE，均应返回同一本书
+            for q in ("斗破苍", "斗破"):
+                hits = [
+                    b.title
+                    for b in s.execute(apply_search(select(Book), s, q)).scalars().all()
+                ]
+                self.assertIn("斗破苍穹", hits, q)
+        finally:
+            s.close()
+
+    def test_fts_migrates_unicode61_to_trigram(self) -> None:
+        """旧库的 unicode61 索引在 init_db 时自动迁移为 trigram。"""
+        from sqlalchemy import text
+
+        from app import database as dbmod
+
+        if dbmod._trigram_supported is False:
+            self.skipTest("当前 SQLite 不支持 trigram")
+
+        # 模拟旧库：手工建 unicode61 索引
+        with dbmod.engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS books_fts"))
+            conn.execute(
+                text(
+                    "CREATE VIRTUAL TABLE books_fts USING fts5("
+                    "title, author, tags, intro, content='books', "
+                    "content_rowid='id', tokenize='unicode61')"
+                )
+            )
+        dbmod.init_db()
+
+        with dbmod.engine.connect() as conn:
+            sql = conn.execute(
+                text("SELECT sql FROM sqlite_master WHERE type='table' AND name='books_fts'")
+            ).scalar()
+        self.assertIn("trigram", (sql or "").lower())
+
+    def test_sort_indexes_created(self) -> None:
+        """列表排序字段在初始化时补齐索引（旧库也能补）。"""
+        from sqlalchemy import text
+
+        from app import database as dbmod
+
+        dbmod.init_db()
+        with dbmod.engine.connect() as conn:
+            names = {
+                r[0]
+                for r in conn.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='books'")
+                ).all()
+            }
+        for name in ("ix_books_updated_at", "ix_books_word_count", "ix_books_chapter_count"):
+            self.assertIn(name, names)
+
+    def test_index_html_no_cache(self) -> None:
+        """SPA 入口 index.html 必须 no-cache，避免升级后仍加载旧入口。"""
+        from unittest import mock
+
+        from app import main as main_mod
+
+        dist = self._tmp / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+        with mock.patch.object(main_mod, "DIST_DIR", dist):
+            resp = main_mod.spa_fallback("")
+        self.assertEqual(resp.headers.get("cache-control"), "no-cache")
 
     def test_content_pack_offsets(self) -> None:
         """正文出库：导入后 content 为空，正文包偏移可读回原文。"""
@@ -381,6 +580,574 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(set(i["name"] for i in r2["items"]), {"甲", "丙"})
         db.close()
 
+    def test_book_content_search(self) -> None:
+        """书内搜索：跨章命中、上下文片段、大小写不敏感、limit 与 total 区分。"""
+        from app.database import SessionLocal, get_db
+        from app.models import Book, Chapter
+        from app.routers.admin import admin_search_book
+
+        s = SessionLocal()
+        b = Book(title="搜索书", author="A", category="都市", word_count=10, chapter_count=3)
+        s.add(b)
+        s.flush()
+        s.add_all(
+            [
+                Chapter(book_id=b.id, index=0, title="第一章", content="开篇普通内容，主角名叫林凡。"),
+                Chapter(book_id=b.id, index=1, title="第二章", content="林凡再次出现，林凡很强。"),
+                Chapter(book_id=b.id, index=2, title="第三章", content="Alpha 测试内容"),
+            ]
+        )
+        s.commit()
+        bid = b.id
+        s.close()
+
+        db = next(get_db())
+        try:
+            r = admin_search_book(bid, q="林凡", limit=10, db=db)
+            self.assertEqual(r["total"], 3)
+            self.assertEqual(len(r["items"]), 3)
+            self.assertIn("林凡", r["items"][0]["snippet"])
+            # 命中来自不同章节
+            self.assertNotEqual(r["items"][0]["chapter_id"], r["items"][2]["chapter_id"])
+            # 大小写不敏感
+            self.assertEqual(admin_search_book(bid, q="alpha", limit=10, db=db)["total"], 1)
+            # limit 只截断返回条数，total 仍为全书命中数
+            capped = admin_search_book(bid, q="林凡", limit=1, db=db)
+            self.assertEqual(capped["total"], 3)
+            self.assertEqual(len(capped["items"]), 1)
+            # 无命中
+            self.assertEqual(admin_search_book(bid, q="不存在", limit=10, db=db)["items"], [])
+        finally:
+            db.close()
+
+    def test_batch_update_books(self) -> None:
+        """批量编辑：分类同步书源、标签追加/移除/替换、状态更新。"""
+        from sqlalchemy import select
+
+        from app.database import SessionLocal, get_db
+        from app.models import Book
+        from app.routers.admin import BatchUpdateIn, admin_batch_update
+
+        s = SessionLocal()
+        b1 = Book(title="甲", author="A", category="未分类", tags="未分类,热血", status="未知")
+        b2 = Book(title="乙", author="B", category="都市", tags="都市", status="连载")
+        s.add_all([b1, b2])
+        s.commit()
+        ids = [b1.id, b2.id]
+        s.close()
+
+        db = next(get_db())
+        try:
+            # 分类 + 标签追加 + 状态
+            r = admin_batch_update(
+                BatchUpdateIn(
+                    ids=ids,
+                    category_source="起点",
+                    category_name="玄幻",
+                    tags="热血,玄幻",
+                    tags_mode="append",
+                    status="完结",
+                ),
+                db=db,
+            )
+            self.assertEqual(r["updated_count"], 2)
+            books = db.execute(select(Book).where(Book.id.in_(ids))).scalars().all()
+            for b in books:
+                self.assertEqual(b.category, "起点-玄幻")
+                self.assertEqual(b.source, "起点")
+                self.assertEqual(b.status, "完结")
+                tags = b.tags.split(",")
+                self.assertIn("热血", tags)
+                self.assertIn("玄幻", tags)
+                self.assertNotIn("未分类", tags)
+
+            # 移除标签
+            admin_batch_update(
+                BatchUpdateIn(ids=ids, tags="热血", tags_mode="remove"), db=db
+            )
+            books = db.execute(select(Book).where(Book.id.in_(ids))).scalars().all()
+            for b in books:
+                self.assertNotIn("热血", b.tags.split(","))
+
+            # 替换为空串 → 清空标签
+            admin_batch_update(BatchUpdateIn(ids=ids, tags="", tags_mode="replace"), db=db)
+            books = db.execute(select(Book).where(Book.id.in_(ids))).scalars().all()
+            for b in books:
+                self.assertEqual(b.tags, "")
+
+            # 本地分类：清空书源
+            admin_batch_update(
+                BatchUpdateIn(ids=[ids[0]], category_source="", category_name="都市"), db=db
+            )
+            b = db.get(Book, ids[0])
+            self.assertEqual(b.category, "都市")
+            self.assertEqual(b.source, "")
+        finally:
+            db.close()
+
+    def test_sort_books_by_read_at(self) -> None:
+        """read=true + sort=read：只返回读过的书，按最近阅读倒序。"""
+        from app.database import SessionLocal, get_db
+        from app.models import Book
+        from app.routers.admin import admin_list_books
+
+        s = SessionLocal()
+        s.add_all(
+            [
+                Book(
+                    title="旧读", author="A", category="都市", read_at="2026-01-01T10:00:00",
+                    read_percent=20, word_count=1, chapter_count=1,
+                ),
+                Book(
+                    title="新读", author="B", category="都市", read_at="2026-02-01T10:00:00",
+                    read_percent=50, word_count=1, chapter_count=1,
+                ),
+                Book(title="未读", author="C", category="都市", read_at="", word_count=1, chapter_count=1),
+            ]
+        )
+        s.commit()
+        s.close()
+
+        class Req:
+            headers = {}
+
+        db = next(get_db())
+        try:
+            r = admin_list_books(
+                Req(),
+                q=None,
+                category=None,
+                source=None,
+                status=None,
+                tag=None,
+                scraped=None,
+                read=True,
+                sort="read",
+                page=1,
+                page_size=20,
+                db=db,
+            )
+            self.assertEqual([i["name"] for i in r["items"]], ["新读", "旧读"])
+            self.assertTrue(r["items"][0]["read_at"].startswith("2026-02-01"))
+        finally:
+            db.close()
+
+    def test_progress_filename_matches_legado(self) -> None:
+        """文件名与 Legado 的 normalizeFileName + URL 编码保持一致。"""
+        from urllib.parse import quote
+
+        from app.sync_progress import progress_filename
+
+        self.assertEqual(
+            progress_filename("三体", "刘慈欣"),
+            quote("三体_刘慈欣", safe="") + ".json",
+        )
+        # 非法文件名字符先替换为下划线
+        self.assertEqual(
+            progress_filename("A:B?C", "D"),
+            quote("A_B_C_D", safe="") + ".json",
+        )
+        self.assertIn("%20", progress_filename("A B", "C"))
+
+    def test_sync_resolve_chapter_title_first(self) -> None:
+        """章节匹配标题优先：序号错位时仍能按标题命中。"""
+        from app.models import Chapter
+        from app.sync_progress import resolve_chapter
+
+        chapters = [
+            Chapter(id=1, book_id=1, index=0, title="第一章 开始", content=""),
+            Chapter(id=2, book_id=1, index=1, title="第二章 继续", content=""),
+        ]
+        ch = resolve_chapter(
+            chapters,
+            {"durChapterIndex": 0, "durChapterTitle": "第二章  继续"},
+        )
+        self.assertEqual(ch.id, 2)
+
+    def test_sync_pull_latest_wins(self) -> None:
+        """远端时间更新时写入本地进度，并返回目标章节。"""
+        import json
+        import time
+        from unittest import mock
+
+        from app import sync_progress
+        from app.database import SessionLocal
+        from app.models import Book, Chapter
+
+        s = SessionLocal()
+        book = Book(
+            title="同步书", author="作者", category="都市",
+            read_at="2026-01-01T00:00:00", read_chapter_index=0,
+            read_percent=10, word_count=10, chapter_count=2,
+        )
+        s.add(book)
+        s.flush()
+        c1 = Chapter(book_id=book.id, index=0, title="第一章", content="a")
+        c2 = Chapter(book_id=book.id, index=1, title="第二章", content="b")
+        s.add_all([c1, c2])
+        s.commit()
+        bid, c2id = book.id, c2.id
+        s.close()
+
+        remote = {
+            "name": "同步书",
+            "author": "作者",
+            "durChapterIndex": 1,
+            "durChapterPos": 120,
+            "durChapterTime": int(time.time() * 1000) + 1000,
+            "durChapterTitle": "第二章",
+        }
+        settings = {
+            "enabled": True,
+            "url": "https://dav.example.com/dav",
+            "username": "u",
+            "password": "p",
+            "dir": "legado",
+            "timeout": 6,
+            "verify_tls": True,
+        }
+
+        class FakeClient:
+            def get(self, url):
+                return json.dumps(remote).encode()
+
+            def mkcol(self, url):
+                pass
+
+            def put(self, url, data, content_type="application/json"):
+                pass
+
+        with mock.patch.object(
+            sync_progress.webdav_settings, "load", return_value=settings
+        ), mock.patch.object(sync_progress, "_client", return_value=FakeClient()):
+            db = SessionLocal()
+            result = sync_progress.pull_progress(db, bid)
+            db.close()
+
+        self.assertTrue(result["updated"])
+        self.assertEqual(result["chapter_id"], c2id)
+        self.assertEqual(result["chapter_pos"], 120)
+        db = SessionLocal()
+        saved = db.get(Book, bid)
+        self.assertEqual(saved.read_chapter_index, 1)
+        self.assertNotEqual(saved.read_at, "2026-01-01T00:00:00")
+        db.close()
+
+    def test_sync_pull_keeps_newer_local(self) -> None:
+        """远端时间更旧时不覆盖本地进度。"""
+        import json
+        from unittest import mock
+
+        from app import sync_progress
+        from app.database import SessionLocal
+        from app.models import Book, Chapter
+
+        s = SessionLocal()
+        book = Book(
+            title="本地新", author="作者", category="都市",
+            read_at="2099-01-01T00:00:00", read_chapter_index=1,
+            read_percent=100, word_count=10, chapter_count=2,
+        )
+        s.add(book)
+        s.flush()
+        s.add_all(
+            [
+                Chapter(book_id=book.id, index=0, title="第一章", content="a"),
+                Chapter(book_id=book.id, index=1, title="第二章", content="b"),
+            ]
+        )
+        s.commit()
+        bid = book.id
+        s.close()
+
+        remote = {
+            "name": "本地新", "author": "作者",
+            "durChapterIndex": 0, "durChapterPos": 0,
+            "durChapterTime": 1000, "durChapterTitle": "第一章",
+        }
+        settings = {
+            "enabled": True, "url": "https://dav.example.com/dav",
+            "username": "u", "password": "p", "dir": "legado",
+            "timeout": 6, "verify_tls": True,
+        }
+
+        class FakeClient:
+            def get(self, url):
+                return json.dumps(remote).encode()
+
+            def mkcol(self, url):
+                pass
+
+            def put(self, url, data, content_type="application/json"):
+                pass
+
+        with mock.patch.object(
+            sync_progress.webdav_settings, "load", return_value=settings
+        ), mock.patch.object(sync_progress, "_client", return_value=FakeClient()):
+            db = SessionLocal()
+            result = sync_progress.pull_progress(db, bid)
+            db.close()
+
+        self.assertFalse(result["updated"])
+        db = SessionLocal()
+        self.assertEqual(db.get(Book, bid).read_chapter_index, 1)
+        db.close()
+
+    def test_sync_push_payload(self) -> None:
+        """推送内容符合 Legado BookProgress 字段约定。"""
+        import json
+        import time
+        from unittest import mock
+
+        from app import sync_progress
+        from app.database import SessionLocal
+        from app.models import Book, Chapter
+
+        s = SessionLocal()
+        book = Book(title="推送书", author="作者", category="都市", word_count=1, chapter_count=1)
+        s.add(book)
+        s.flush()
+        ch = Chapter(book_id=book.id, index=0, title="第一章", content="a")
+        s.add(ch)
+        s.commit()
+        bid, cid = book.id, ch.id
+        s.close()
+
+        settings = {
+            "enabled": True, "url": "https://dav.example.com/dav",
+            "username": "u", "password": "p", "dir": "legado",
+            "timeout": 6, "verify_tls": True,
+        }
+        puts: list[tuple[str, bytes]] = []
+
+        class FakeClient:
+            def get(self, url):
+                return None
+
+            def mkcol(self, url):
+                pass
+
+            def put(self, url, data, content_type="application/json"):
+                puts.append((url, data))
+
+        with mock.patch.object(
+            sync_progress.webdav_settings, "load", return_value=settings
+        ), mock.patch.object(sync_progress, "_client", return_value=FakeClient()):
+            now_ms = int(time.time() * 1000)
+            db = SessionLocal()
+            result = sync_progress.push_progress(db, bid, cid, chapter_pos=42, time_ms=now_ms)
+            db.close()
+
+        self.assertTrue(result["pushed"])
+        self.assertTrue(puts)
+        payload = json.loads(puts[0][1].decode("utf-8"))
+        self.assertEqual(payload["name"], "推送书")
+        self.assertEqual(payload["author"], "作者")
+        self.assertEqual(payload["durChapterIndex"], 0)
+        self.assertEqual(payload["durChapterPos"], 42)
+        self.assertLessEqual(abs(payload["durChapterTime"] - now_ms), 5000)
+        self.assertEqual(payload["durChapterTitle"], "第一章")
+
+    def test_sync_info_diagnostic(self) -> None:
+        """详情页诊断：远程文件存在、章节匹配、文件名展示。"""
+        import json
+        from unittest import mock
+
+        from app import sync_progress
+        from app.database import SessionLocal
+        from app.models import Book, Chapter
+
+        s = SessionLocal()
+        book = Book(
+            title="诊断书", author="作者", category="都市",
+            read_at="2026-01-01T00:00:00", read_chapter_index=0,
+            word_count=1, chapter_count=2,
+        )
+        s.add(book)
+        s.flush()
+        s.add_all(
+            [
+                Chapter(book_id=book.id, index=0, title="第一章", content="a"),
+                Chapter(book_id=book.id, index=1, title="第二章", content="b"),
+            ]
+        )
+        s.commit()
+        bid = book.id
+        s.close()
+
+        remote = {
+            "name": "诊断书", "author": "作者",
+            "durChapterIndex": 1, "durChapterPos": 9,
+            "durChapterTime": 1700000000000, "durChapterTitle": "第二章",
+        }
+        settings = {
+            "enabled": True, "url": "https://dav.example.com/dav",
+            "username": "u", "password": "p", "dir": "legado",
+            "timeout": 6, "verify_tls": True,
+        }
+
+        class FakeClient:
+            def get(self, url):
+                return json.dumps(remote).encode()
+
+            def mkcol(self, url):
+                pass
+
+            def put(self, url, data, content_type="application/json"):
+                pass
+
+        with mock.patch.object(
+            sync_progress.webdav_settings, "load", return_value=settings
+        ), mock.patch.object(sync_progress, "_client", return_value=FakeClient()):
+            db = SessionLocal()
+            info = sync_progress.sync_info(db, bid)
+            db.close()
+
+        self.assertTrue(info["configured"])
+        self.assertTrue(info["remote_exists"])
+        self.assertEqual(info["matched"]["index"], 1)
+        self.assertEqual(info["filename"], sync_progress.progress_filename("诊断书", "作者"))
+        self.assertEqual(info["local"]["read_chapter_index"], 0)
+
+    def test_sync_push_now(self) -> None:
+        """详情页手动推送：使用本地 read_chapter_index 组装进度。"""
+        import json
+        from datetime import datetime
+        from unittest import mock
+
+        from app import sync_progress
+        from app.database import SessionLocal
+        from app.models import Book, Chapter
+
+        s = SessionLocal()
+        book = Book(
+            title="手动推送", author="作者", category="都市",
+            read_chapter_index=1, read_percent=50,
+            read_at=datetime.now().isoformat(timespec="seconds"),
+            word_count=1, chapter_count=2,
+        )
+        s.add(book)
+        s.flush()
+        s.add_all(
+            [
+                Chapter(book_id=book.id, index=0, title="第一章", content="a"),
+                Chapter(book_id=book.id, index=1, title="第二章", content="b"),
+            ]
+        )
+        s.commit()
+        bid = book.id
+        s.close()
+
+        settings = {
+            "enabled": True, "url": "https://dav.example.com/dav",
+            "username": "u", "password": "p", "dir": "legado",
+            "timeout": 6, "verify_tls": True,
+        }
+        puts: list[bytes] = []
+
+        class FakeClient:
+            def get(self, url):
+                return None
+
+            def mkcol(self, url):
+                pass
+
+            def put(self, url, data, content_type="application/json"):
+                puts.append(data)
+
+        with mock.patch.object(
+            sync_progress.webdav_settings, "load", return_value=settings
+        ), mock.patch.object(sync_progress, "_client", return_value=FakeClient()):
+            result = sync_progress.push_now(bid)
+
+        self.assertTrue(result["pushed"])
+        payload = json.loads(puts[0].decode("utf-8"))
+        self.assertEqual(payload["durChapterIndex"], 1)
+        self.assertEqual(payload["durChapterTitle"], "第二章")
+
+    def test_webdav_client_roundtrip(self) -> None:
+        """真实 HTTP 往返：MKCOL/PUT/GET/PROPFIND 与 404 处理。"""
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        from app.webdav import WebDavClient
+
+        files: dict[str, bytes] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):  # 静默测试服务日志
+                pass
+
+            def do_MKCOL(self):
+                self.send_response(201)
+                self.end_headers()
+
+            def do_PUT(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                files[self.path] = self.rfile.read(length)
+                self.send_response(201)
+                self.end_headers()
+
+            def do_GET(self):
+                data = files.get(self.path)
+                if data is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_PROPFIND(self):
+                self.send_response(207)
+                self.end_headers()
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{srv.server_port}/dav"
+            client = WebDavClient(base, "u", "p", timeout=3)
+            client.mkcol(f"{base}/legado")
+            client.mkcol(f"{base}/legado/bookProgress/")
+            target = f"{base}/legado/bookProgress/x.json"
+            client.put(target, b'{"a":1}')
+            self.assertEqual(client.get(target), b'{"a":1}')
+            self.assertIsNone(client.get(f"{base}/legado/bookProgress/none.json"))
+            self.assertTrue(client.propfind(base))
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_webdav_settings_masks_password(self) -> None:
+        """WebDAV 配置：接口不返回密码，空密码不覆盖，可显式清除。"""
+        from app import webdav_settings
+
+        webdav_settings.update(
+            {
+                "enabled": True,
+                "url": "https://dav.example.com/dav/",
+                "username": "u",
+                "password": "secret",
+                "dir": "legado",
+                "timeout": 6,
+                "verify_tls": True,
+            }
+        )
+        pub = webdav_settings.public_dict()
+        self.assertNotIn("password", pub)
+        self.assertTrue(pub["has_password"])
+        self.assertEqual(pub["url"], "https://dav.example.com/dav")
+
+        # 未提供密码时保留原密码
+        webdav_settings.update({"url": "https://dav2.example.com/dav"})
+        self.assertEqual(webdav_settings.load()["password"], "secret")
+
+        # 显式清除
+        webdav_settings.update({"clear_password": True})
+        self.assertEqual(webdav_settings.load()["password"], "")
+
     def test_fanqie_detail_state_parse(self) -> None:
         """番茄详情：creationStatus→连载状态，categoryV2→起点分类；忽略上架态 status。"""
         from app.scrapers.fanqie import (
@@ -488,6 +1255,16 @@ class CoreTests(unittest.TestCase):
         data = book_list_item(b)
         self.assertEqual(data["name"], "测试书")
         self.assertEqual(data["title"], "测试书")
+        # 有封面时同时给出原图与缩略图地址
+        b2 = Book(
+            id=2, title="有封面", author="作者", category="都市",
+            tags="", intro="", cover_file="1_1.jpg",
+        )
+        data2 = book_list_item(b2)
+        self.assertEqual(data2["cover_thumb_path"], "/thumbs/1_1.jpg?w=320")
+        self.assertTrue(data2["cover_thumb_url"].endswith("/thumbs/1_1.jpg?w=320"))
+        # 最近阅读时间随列表返回，供「继续阅读」使用
+        self.assertEqual(data["read_at"], "")
 
 
 if __name__ == "__main__":

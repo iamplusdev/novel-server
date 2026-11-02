@@ -2,3 +2,7 @@
 # 用法：pip install -r requirements-optional.txt
 # 启用：SCRAPER_BROWSER_FALLBACK=1 且 CDP_URL 指向 Chrome 网关
 playwright>=1.40,<2.0
+
+# 封面缩略图（可选）：安装后 /thumbs 接口按需生成 webp；未装则回退原图
+# 只需缩略图时可单独安装：pip install Pillow
+Pillow>=10.0,<13.0

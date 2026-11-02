@@ -17,6 +17,8 @@ export interface BookQuery {
   status?: string;
   /** unscraped=仅未刮削 */
   scraped?: string;
+  /** true=仅读过的书（配合 sort=read 做继续阅读） */
+  read?: boolean;
 }
 
 export function fetchBooks(query: BookQuery) {
@@ -41,6 +43,23 @@ export function batchDeleteBooks(ids: number[]) {
   return http.post<{ ok: boolean; deleted_count: number; deleted: string[]; ids: number[] }>(
     "/api/admin/books/batch/delete",
     { ids },
+  );
+}
+
+/** 批量编辑分类 / 标签 / 状态 */
+export interface BatchUpdateBody {
+  ids: number[];
+  category_source?: string;
+  category_name?: string;
+  tags?: string;
+  tags_mode?: "append" | "remove" | "replace";
+  status?: string;
+}
+
+export function batchUpdateBooks(body: BatchUpdateBody) {
+  return http.post<{ ok: boolean; updated_count: number; ids: number[] }>(
+    "/api/admin/books/batch/update",
+    body,
   );
 }
 
@@ -141,6 +160,22 @@ export async function fetchAllBookChapters(bookId: number | string): Promise<{
   return { items, total };
 }
 
+/** 书内搜索命中项 */
+export interface BookSearchHit {
+  chapter_id: number;
+  index: number;
+  title: string;
+  snippet: string;
+}
+
+/** 书内搜索：扫描本书正文，返回章节 + 上下文片段 */
+export function searchBookContent(bookId: number | string, q: string, limit = 100) {
+  return http.get<{ q: string; total: number; items: BookSearchHit[] }>(
+    `/api/admin/books/${bookId}/search`,
+    { q, limit },
+  );
+}
+
 /** 阅读器：章节正文 */
 export function fetchChapterContent(bookId: number | string, chapterId: number | string) {
   return http.get<{
@@ -150,6 +185,101 @@ export function fetchChapterContent(bookId: number | string, chapterId: number |
     title: string;
     content: string;
   }>(`/api/books/${bookId}/chapters/${chapterId}`);
+}
+
+/** WebDAV 进度同步配置（密码只写不读） */
+export interface WebDavSettings {
+  enabled: boolean;
+  url: string;
+  username: string;
+  dir: string;
+  timeout: number;
+  verify_tls: boolean;
+  has_password: boolean;
+}
+
+export interface WebDavSettingsBody {
+  enabled?: boolean;
+  url?: string;
+  username?: string;
+  password?: string;
+  dir?: string;
+  timeout?: number;
+  verify_tls?: boolean;
+  clear_password?: boolean;
+}
+
+export function fetchWebDavSettings() {
+  return http.get<WebDavSettings>("/api/admin/settings/webdav");
+}
+
+export function saveWebDavSettings(body: WebDavSettingsBody) {
+  return http.put<{ ok: boolean } & WebDavSettings>("/api/admin/settings/webdav", body);
+}
+
+export function testWebDav() {
+  return http.post<{ ok: boolean; message?: string; error?: string; root?: string }>(
+    "/api/admin/settings/webdav/test",
+  );
+}
+
+/** 打开阅读页时拉取 Legado 远端进度 */
+export interface PullProgressResult {
+  enabled: boolean;
+  found?: boolean;
+  updated: boolean;
+  chapter_id?: number;
+  chapter_index?: number;
+  chapter_title?: string;
+  chapter_pos?: number;
+  remote_time?: number;
+  filename?: string;
+  error?: string;
+  reason?: string;
+}
+
+export function pullBookProgress(bookId: number | string) {
+  return http.post<PullProgressResult>(`/api/admin/books/${bookId}/sync/pull`);
+}
+
+/** 详情页同步诊断 */
+export interface SyncInfo {
+  enabled: boolean;
+  configured: boolean;
+  filename: string;
+  url: string;
+  local: {
+    read_chapter_index: number;
+    read_percent: number;
+    read_at: string;
+  };
+  remote_exists: boolean;
+  remote: {
+    name: string;
+    author: string;
+    durChapterIndex: number;
+    durChapterPos: number;
+    durChapterTime: number;
+    durChapterTitle: string;
+  } | null;
+  matched: { chapter_id: number; index: number; title: string } | null;
+  error: string;
+}
+
+export function fetchSyncInfo(bookId: number | string) {
+  return http.get<SyncInfo>(`/api/admin/books/${bookId}/sync/info`);
+}
+
+/** 手动推送本地当前进度 */
+export function pushBookProgressNow(bookId: number | string) {
+  return http.post<{
+    enabled: boolean;
+    pushed: boolean;
+    skipped?: string;
+    filename?: string;
+    remote_time?: number;
+    error?: string;
+  }>(`/api/admin/books/${bookId}/sync/push-now`);
 }
 
 /** 刮削参数（设置页可调） */

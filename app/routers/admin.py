@@ -26,9 +26,15 @@ from ..config import (
     safe_delete_cover,
     settings,
 )
+from ..content_store import read_book_texts
 from ..database import delete_books_safe, get_db
-from ..importer import get_import_status, import_all_async, request_import_cancel
-from ..models import Book
+from ..importer import (
+    ensure_category_tag,
+    get_import_status,
+    import_all_async,
+    request_import_cancel,
+)
+from ..models import Book, Chapter
 from ..serializers import admin_book_detail, book_list_item, resolve_base_url
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_dep)])
@@ -165,7 +171,9 @@ def admin_list_books(
     status: str | None = Query(default=None),
     tag: str | None = Query(default=None),
     scraped: str | None = Query(default=None),  # unscraped=仅未刮削
-    sort: str = Query(default="updated"),  # updated|title|author|words|chapters
+    # read=true 仅读过的书（配合 sort=read 做「继续阅读」）
+    read: bool = False,
+    sort: str = Query(default="updated"),  # updated|title|author|words|chapters|read
     page: int = Query(default=1, ge=1),
     # 上限放宽到 200：宽屏多列时前端会请求 cols*rows，保证非末页行占满
     page_size: int = Query(default=20, ge=1, le=200),
@@ -182,6 +190,7 @@ def admin_list_books(
         tag=tag,
         source=source,
         scraped=scraped,
+        only_read=read,
         sort=sort,
         with_intro_search=False,
     )
@@ -203,6 +212,75 @@ def admin_get_book(request: Request, book_id: int, db: Session = Depends(get_db)
     if not book:
         raise HTTPException(404, "书籍不存在")
     return admin_book_detail(book, resolve_base_url(request))
+
+
+@router.get("/books/{book_id}/search")
+def admin_search_book(
+    book_id: int,
+    q: str = Query(..., min_length=1, max_length=50),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> dict:
+    """书内搜索：扫描本书章节正文，返回章节 + 上下文片段（大小写不敏感）。
+
+    正文优先读正文包，迁移前的旧数据回退 content 列；单章最多返回 3 条，
+    总条数受 limit 限制，total 为全书实际命中数。
+    """
+    book = db.get(Book, book_id)
+    if not book:
+        raise HTTPException(404, "书籍不存在")
+    needle = (q or "").strip()
+    if not needle:
+        return {"q": q, "total": 0, "items": []}
+
+    rows = db.execute(
+        select(
+            Chapter.id,
+            Chapter.index,
+            Chapter.title,
+            Chapter.content_offset,
+            Chapter.content_length,
+            Chapter.content,
+        )
+        .where(Chapter.book_id == book_id)
+        .order_by(Chapter.index)
+    ).all()
+    spans = [(r.content_offset or 0, r.content_length or 0) for r in rows]
+    texts = read_book_texts(book_id, spans)
+
+    lowered = needle.lower()
+    items: list[dict] = []
+    total = 0
+    for row, pack_text in zip(rows, texts):
+        text = pack_text or (row.content or "")
+        if not text:
+            continue
+        low = text.lower()
+        pos = low.find(lowered)
+        per_chapter = 0
+        while pos >= 0:
+            total += 1
+            # 单章最多 3 条，避免同一关键词刷屏
+            if per_chapter < 3 and len(items) < limit:
+                start = max(0, pos - 30)
+                end = min(len(text), pos + len(needle) + 40)
+                snippet = re.sub(r"\s+", " ", text[start:end]).strip()
+                if start > 0:
+                    snippet = "…" + snippet
+                if end < len(text):
+                    snippet += "…"
+                items.append(
+                    {
+                        "chapter_id": row.id,
+                        "index": row.index,
+                        "title": row.title,
+                        "snippet": snippet,
+                    }
+                )
+                per_chapter += 1
+            pos = low.find(lowered, pos + len(needle))
+
+    return {"q": needle, "total": total, "items": items}
 
 
 @router.patch("/books/{book_id}")
@@ -321,6 +399,19 @@ class BatchDeleteIn(BaseModel):
     ids: list[int] = Field(default_factory=list, min_length=1, max_length=500)
 
 
+class BatchUpdateIn(BaseModel):
+    """批量编辑：仅处理显式提供的字段。"""
+
+    ids: list[int] = Field(default_factory=list, min_length=1, max_length=500)
+    # 分类：两段式，category_name 非空才修改；source 为空表示本地
+    category_source: str | None = Field(default=None, max_length=20)
+    category_name: str | None = Field(default=None, max_length=50)
+    # 标签：追加/移除/替换，空串配合 replace 可清空标签
+    tags: str | None = Field(default=None, max_length=300)
+    tags_mode: str = Field(default="append", pattern="^(append|remove|replace)$")
+    status: str | None = Field(default=None, pattern="^(连载|完结|未知)$")
+
+
 @router.put("/books/{book_id}/progress")
 def admin_update_progress(
     request: Request, book_id: int, payload: BookProgressIn, db: Session = Depends(get_db)
@@ -370,6 +461,49 @@ def admin_batch_delete(payload: BatchDeleteIn, db: Session = Depends(get_db)) ->
         "ids": ids,
         "fts_repaired": repaired,
     }
+
+
+@router.post("/books/batch/update")
+def admin_batch_update(payload: BatchUpdateIn, db: Session = Depends(get_db)) -> dict:
+    """批量编辑书籍：分类 / 标签 / 状态，未提供的字段保持不变。"""
+    ids = sorted({int(i) for i in payload.ids if i and int(i) > 0})
+    if not ids:
+        raise HTTPException(400, "未选择书籍")
+    books = [b for bid in ids if (b := db.get(Book, bid)) is not None]
+    if not books:
+        return {"ok": True, "updated_count": 0, "ids": []}
+
+    tag_tokens: list[str] | None = None
+    if payload.tags is not None:
+        tag_tokens = [t for t in re.split(r"[,，;；\s]+", payload.tags.strip()) if t]
+
+    now = datetime.now().isoformat(timespec="seconds")
+    for book in books:
+        # 先改分类：标签里的「未分类」标记依赖新分类
+        if payload.category_name is not None:
+            src, cat = map_site_category(payload.category_source or "", payload.category_name)
+            book.category = make_category_label(src, cat or UNCATEGORIZED)
+            # 显式改分类时同步书源；本地分类清空书源
+            book.source = src
+        if tag_tokens is not None:
+            current = [t.strip() for t in (book.tags or "").split(",") if t.strip()]
+            if payload.tags_mode == "replace":
+                merged = list(dict.fromkeys(tag_tokens))
+            elif payload.tags_mode == "remove":
+                drop = set(tag_tokens)
+                merged = [t for t in current if t not in drop]
+            else:
+                merged = list(dict.fromkeys([*current, *tag_tokens]))
+            # 与导入/刮削一致：未分类补标记、已分类去标记
+            book.tags = ensure_category_tag(
+                ",".join(merged), book.category or UNCATEGORIZED
+            )[:300]
+        if payload.status:
+            book.status = payload.status
+        book.updated_at = now
+
+    db.commit()
+    return {"ok": True, "updated_count": len(books), "ids": [b.id for b in books]}
 
 
 @router.post("/import")
