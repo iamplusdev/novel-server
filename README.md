@@ -3,8 +3,7 @@
 个人 **TXT 小说库**：导入、刮削、体检、网页阅读，并通过 Legado（开源阅读）书源在手机上阅读。
 目标是依赖少、部署简单，可长期跑在个人服务器 / NAS 上。
 
-- **GitHub**：<https://github.com/iamplusdev/novel-server>
-- **Docker Hub**：`iamplusdev/novel-server`
+- **源码仓库（唯一）**：<https://github.com/iamplusdev/novel-server>
 
 ## 目录
 
@@ -28,16 +27,18 @@
 
 | 模块 | 能力 |
 |------|------|
-| 书库 | 封面墙、书源/分类筛选、搜索、排序、分页；筛选状态写入 URL；「继续阅读」入口 |
+| 书库 | 封面墙、书源/分类筛选、搜索高亮、排序、分页；筛选状态写入 URL；「继续阅读」入口 |
 | 批量操作 | 多选批量编辑分类/标签/状态、批量刮削、批量删除 |
-| 导入 | 扫描 `novels/`，流式解析、编码自动择优、内容哈希去重、SSE 进度、可取消 |
+| 导入 | 扫描 `novels/`，流式解析、编码自动择优、内容哈希去重、SSE 进度、可取消；失败项可单本/批量重试 |
 | 分类 | 两级分类：书源（起点/番茄/纵横/本地）+ 起点 15 类标准分类 |
-| 刮削 | 起点 / 番茄 / 纵横；默认 API 直连，可选 Chrome 兜底；按域限速与退避重试 |
-| 网页阅读器 | 目录筛选与定位、书内搜索、上下滚动/左右翻页、字体字号行距、内容宽度、三种主题、沉浸顶栏、章内位置记忆、下一章预取 |
+| 刮削 | 起点 / 番茄 / 纵横；默认 API 直连，可选 Chrome 兜底；按域限速与退避重试；批量结果可筛选/导出 CSV |
+| 网页阅读器 | 目录筛选与定位、书内搜索精确跳转、上下滚动/左右翻页、字体字号行距、内容宽度、三种主题、沉浸顶栏、章内位置记忆、下一章预取 |
 | Legado | 发现 / 搜索 / 详情 / 目录 / 正文 / 书源 JSON |
 | 进度同步 | 与 Legado 共用 WebDAV `bookProgress`：打开拉取、关闭推送、详情页手动诊断 |
-| 体检 | 重复合并、损坏修复、按分类归位；深度体检后台执行、带进度 |
-| 封面 | 本地上传 / 刮削下载；可选 Pillow 生成 webp 缩略图 |
+| 体检 | 重复合并、异常类型筛选、修复前只读预览、损坏修复、按分类归位；深度体检后台执行、带进度 |
+| 封面 | 本地上传 / 刮削下载；可选 Pillow 生成 webp 缩略图，支持批量回填 |
+| 阅读统计 | 已读/在读/读完/未读、估算已读字数、平均进度、最近阅读、已读分类分布 |
+| 自动化 | 可配置间隔的自动体检；导入/刮削进行中自动跳过 |
 | 其他 | 单账号登录 + 恢复码、长任务互斥、可选 API Key 读鉴权 |
 
 **阅读路径**：
@@ -50,10 +51,11 @@
 | 组件 | 选型 |
 |------|------|
 | Web API | FastAPI + Uvicorn（默认 `:7312`） |
-| 前端 | Vue 3 + Vite + TypeScript + Element Plus + Pinia |
+| 前端 | Vue 3 + Vite + TypeScript + Element Plus（样式按需加载）+ Pinia |
 | 前端入口 | 同一 ASGI 应用：静态 + `/api` 同源（默认 `:7311`） |
 | 数据库 | SQLite + SQLAlchemy 2.x（WAL） |
 | 正文存储 | `data/contents/{book_id}.bin` 正文包，按字节偏移读取 |
+| 统计缓存 | 进程内短 TTL 缓存，默认 30 秒，可用 `STATS_CACHE_TTL` 调整 |
 | 必装依赖 | `fastapi` `uvicorn` `sqlalchemy` `python-multipart` |
 | 可选依赖 | `playwright`（Chrome 刮削）、`Pillow`（封面缩略图） |
 
@@ -234,12 +236,13 @@ npm run build      # 生产构建到 frontend/dist，由 run.py 托管
 ## 管理后台
 
 1. **首次使用**：打开 `http://<host>:7311/` 创建账号，保存恢复码。
-2. **书库**：书源/分类筛选、搜索、封面墙、排序、分页；筛选状态写入 URL（刷新/返回可恢复）；顶部「继续阅读」。
+2. **书库**：书源/分类筛选、搜索高亮、封面墙、排序、分页；筛选状态写入 URL（刷新/返回可恢复）；顶部「继续阅读」；书卡显示进度、字数、章节、更新时间和书源。
 3. **详情**：编辑书名/作者/分类/状态/标签/简介、上传或刮削封面、进入阅读、WebDAV 进度诊断。
-4. **导入**：扫描 `NOVELS_DIR`，SSE 进度，可中途取消；同名同作者默认跳过。
-5. **体检**：重复合并、损坏修复（需显式选择）、一键刮削、按分类归位；深度体检在后台执行。
-6. **API / 书源**：查看接口、复制 Legado JSON。
-7. **设置**：主题、改密、刮削参数、WebDAV 进度同步、运行环境。
+4. **导入**：扫描 `NOVELS_DIR`，SSE 进度，可中途取消；同名同作者默认跳过；失败文件可单本或批量重试。
+5. **体检**：重复合并、异常类型筛选、修复前只读预览、损坏修复（需显式选择）、一键刮削、按分类归位；深度体检在后台执行。
+6. **统计**：已读/在读/读完/未读、估算已读字数、平均进度、最近阅读和分类分布。
+7. **API / 书源**：查看接口、复制 Legado JSON。
+8. **设置**：主题、改密、刮削参数、自动体检、WebDAV 进度同步、运行环境。
 
 > **任务互斥**：导入 / 体检 / 批量刮削同一时刻只允许一个运行，其它入口会禁用并提示。
 
@@ -263,8 +266,20 @@ npm run build      # 生产构建到 frontend/dist，由 run.py 托管
 | `READ_API_KEY` | （空） | 读接口密钥（`X-Api-Key`）；未设则只认管理会话 |
 | `TRUSTED_HOSTS` | （空） | 反代可信 Host 白名单（逗号分隔） |
 | `MAX_TXT_BYTES` | `0` | 单本 TXT 大小上限（字节）；`0` 不限 |
+| `STATS_CACHE_TTL` | `30` | 统计接口缓存秒数；`0` 关闭 |
+| `MAINTENANCE_SCHEDULER` | `1` | 是否启动自动体检调度器；`0` 关闭 |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` |
 | `LOG_FILE` | 空 | `1` 写入 `data/novel-server.log`，或指定文件名 |
+
+### 自动体检
+
+在 **设置 → 自动体检** 中启用并设置间隔（1–720 小时）、是否深度体检。配置保存在
+`data/maintenance_settings.json`，调度器随应用启动，每 60 秒检查一次。
+
+- 只执行书库体检（重复 / 异常），不会自动导入源 TXT。
+- 导入或刮削正在运行时跳过，下个周期重试。
+- 当前按单进程部署设计；多 uvicorn worker 会各自运行调度器。
+- 最近触发时间和启动错误会显示在设置页。
 
 ### 刮削
 
@@ -326,13 +341,14 @@ npm run build      # 生产构建到 frontend/dist，由 run.py 托管
 ## API
 
 公开读接口需要读鉴权：网页阅读器使用会话 Cookie，其它客户端带 `X-Api-Key: <READ_API_KEY>`。
+列表接口支持 `fields=id,name,author,cover_thumb_url` 裁剪返回字段；`id` 始终保留，未知字段忽略。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/categories` | 分类及数量 |
 | GET | `/api/tags` | 标签云 |
-| GET | `/api/books` | 列表；`source` `category` `q` `status` `tag` `sort` `page` |
-| GET | `/api/search?q=` | 搜索 |
+| GET | `/api/books` | 列表；`source` `category` `q` `status` `tag` `sort` `page` `fields` |
+| GET | `/api/search?q=` | 搜索；支持 `fields` 字段裁剪 |
 | GET | `/api/books/{id}` | 详情 |
 | GET | `/api/books/{id}/chapters` | 目录（分页） |
 | GET | `/api/books/{id}/chapters/{chapter_id}` | 正文 |
@@ -341,13 +357,19 @@ npm run build      # 生产构建到 frontend/dist，由 run.py 托管
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET/PATCH | `/api/admin/books`、`/api/admin/books/{id}` | 列表 / 编辑 |
+| GET/PATCH | `/api/admin/books`、`/api/admin/books/{id}` | 列表 / 编辑；列表支持 `fields` |
+| GET | `/api/admin/stats/reading` | 阅读统计概览 |
 | POST | `/api/admin/books/batch/update` | 批量编辑分类/标签/状态 |
 | POST | `/api/admin/import`、`/api/admin/import/cancel` | 导入 |
+| POST | `/api/admin/import/retry` | 仅重试失败文件 |
 | GET | `/api/admin/import/stream` | 导入进度 SSE |
 | GET/POST | `/api/admin/library/report`、`/scan` | 体检 |
+| POST | `/api/admin/library/repair/preview` | 修复前只读预览 |
 | POST | `/api/admin/scrape/search`、`/books/{id}/apply` | 单本刮削 |
 | POST | `/api/admin/scrape/batch/start` | 批量刮削 |
+| GET | `/api/admin/scrape/batch/stream` | 批量刮削进度 SSE |
+| POST | `/api/admin/books/thumbs/rebuild` | 批量回填封面缩略图 |
+| GET/PUT | `/api/admin/settings/maintenance` | 自动体检配置 |
 | GET/PUT | `/api/admin/settings/webdav` | WebDAV 配置 |
 | POST | `/api/admin/settings/webdav/test` | 测试连接 |
 | GET | `/api/admin/books/{id}/sync/info` | 进度诊断 |
@@ -367,13 +389,16 @@ novel-server/
 │   ├── content_store.py     # 正文包（按偏移存取）
 │   ├── parsers.py           # TXT 解析 + 编码识别
 │   ├── sync_progress.py     # Legado 进度同步
+│   ├── maintenance.py       # 自动体检调度器
+│   ├── maintenance_settings.py
+│   ├── stats_cache.py       # 统计接口短 TTL 缓存
 │   ├── webdav.py            # 标准库 WebDAV 客户端
 │   ├── webdav_settings.py   # WebDAV 配置
 │   ├── scraper_settings.py  # 刮削参数运行时配置
 │   └── task_guard.py        # 长任务互斥
 ├── frontend/                # Vue3 + Vite
 ├── tests/                   # pytest / unittest
-├── .github/workflows/       # CI：构建推送镜像 + 同步 Docker Hub 说明
+├── .github/workflows/       # CI：构建推送镜像 + 同步镜像说明
 ├── scripts/release.py       # 发布脚本：打 tag 并推送（不推 main）
 ├── import_novels.py         # CLI 导入
 ├── run.py                   # 同时拉起前端入口 + 后端 API
@@ -390,7 +415,8 @@ novel-server/
 **chapters 表**：`book_id` `index` `title` `content_offset` `content_length` `content_chars`
 （正文在 `data/contents/{book_id}.bin`，遗留 `content` 列仅作兼容）
 
-**运行时配置文件**：`data/auth.json`、`data/scraper_settings.json`、`data/webdav_settings.json`。
+**运行时配置文件**：`data/auth.json`、`data/scraper_settings.json`、
+`data/webdav_settings.json`、`data/maintenance_settings.json`。
 
 ---
 
@@ -430,7 +456,7 @@ python scripts/release.py --bump minor --dry-run   # 预览 minor；去掉 --dry
 1. 检查 tracked 改动已提交、当前在 `main`、`HEAD` 已推送到 `origin/main`
 2. 创建 annotated tag `v1.2.3`（可用 `--message` 自定义说明）
 3. **只推送该 tag，不推送 main**
-4. 由 CI 运行测试、构建推送镜像（`latest` / `1.2.3` / `1.2` / `v1.2.3` / `sha-...`），并同步 README 到 Docker Hub
+4. 由 CI 运行测试、构建推送镜像（`latest` / `1.2.3` / `1.2` / `v1.2.3` / `sha-...`），并同步 README 到镜像页
 
 补充参数：`--run-tests` 在打 tag 前本地跑 pytest；`--force` 跳过安全检查（紧急发布用）；
 `--dry-run` 只检查并打印命令。
@@ -452,13 +478,16 @@ python scripts/release.py --bump minor --dry-run   # 预览 minor；去掉 --dry
 - 镜像：`iamplusdev/novel-server`，架构 `linux/amd64`。
 - 标签：`latest`、`v1.2.3`、`1.2.3`、`1.2`、`sha-<短哈希>`。
 - 触发：**仅推送 `v*` 发布标签**或手动运行；推 `main` 只推代码，不构建镜像。
-- **README 随发布 tag 同步为 Docker Hub 仓库说明**（不再由 main 的 README 变更触发）。
+- **README 随发布 tag 同步为 Docker Hub 镜像说明**（不再由 main 的 README 变更触发）。
 - Secrets：`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。
 - 工作流：`.github/workflows/docker-publish.yml`、`update-dockerhub-description.yml`。
 
 ---
 
 ## 维护与备份
+
+应用内暂未提供备份 / 恢复 UI。数据目录已挂载到宿主机时，建议使用宿主机定时快照
+或异机备份；也可手动打包：
 
 ```bash
 # 备份（SQLite、正文包、封面、账号、配置）
@@ -469,6 +498,8 @@ docker compose down
 tar xzf novel-data-YYYY-MM-DD.tar.gz
 docker compose up -d
 ```
+
+> SQLite 运行中直接复制可能不一致，重要备份建议先停服，或使用宿主机文件系统快照。
 
 - 源 TXT 未变化时重复导入几乎无开销（SHA256 跳过）。
 - 正文包采用「临时包写入 → DB 提交 → 原子替换」，中断不会错乱。
@@ -514,7 +545,15 @@ docker compose up -d
   Legado 只在启动或打开书籍时拉取。若两端都刚读过，按 `durChapterTime` 最新者优先；可在详情页手动拉取查看结果。
 
 - **封面缩略图 404 / 显示原图**
-  未安装 Pillow 时 `/thumbs` 自动回退原封面。安装后重启即可：`pip install Pillow`。
+  未安装 Pillow 时 `/thumbs` 自动回退原封面。安装后重启即可：`pip install Pillow`；
+  也可在「体检 → 重建缩略图」批量回填。
+
+- **阅读统计没有日 / 周趋势**
+  当前只记录每本书最近一次阅读时间（`read_at`）和进度，不做逐日阅读历史；
+  统计页展示的是现有数据概览。
+
+- **自动体检没有自动导入**
+  自动体检只执行重复 / 异常检查，不会扫描导入源 TXT；需要新书时请手动运行导入。
 
 - **批量刮削被拒 / 频繁 403**
   在「设置 → 刮削参数」调大书间间隔或长休息，减小「每 N 本长休息」；API 侧已内置限速与退避重试。
