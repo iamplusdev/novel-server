@@ -57,6 +57,20 @@ export interface CategoryNode {
   categories: string[];
 }
 
+/** 阅读统计（基于每本书最近一次阅读进度） */
+export interface ReadingStats {
+  total_books: number;
+  read_books: number;
+  reading_books: number;
+  finished_books: number;
+  unread_books: number;
+  total_words: number;
+  read_words: number;
+  avg_progress: number;
+  recent: BookListItem[];
+  by_category: { name: string; count: number }[];
+}
+
 export interface AdminStats {
   total_books: number;
   total_words: number;

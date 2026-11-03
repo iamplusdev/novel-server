@@ -33,6 +33,7 @@ const navItems = [
   { path: "/", label: "书库", name: "library", icon: "library" },
   { path: "/import", label: "导入", name: "import", icon: "import" },
   { path: "/check", label: "体检", name: "check", icon: "check" },
+  { path: "/stats", label: "统计", name: "stats", icon: "stats" },
   { path: "/api-docs", label: "API", name: "api-docs", icon: "api" },
   { path: "/settings", label: "设置", name: "settings", icon: "settings" },
 ];

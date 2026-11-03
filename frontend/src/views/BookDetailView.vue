@@ -20,6 +20,7 @@ import {
 import type { SyncInfo, TocChapter } from "@/api/admin";
 import ScrapeDialog from "@/components/ScrapeDialog.vue";
 import AppIcon from "@/components/AppIcon.vue";
+import BaseEmpty from "@/components/BaseEmpty.vue";
 import type { AdminStats, BookDetail } from "@/api/types";
 
 const route = useRoute();
@@ -712,9 +713,12 @@ watch(bookId, () => void load());
             <span class="idx muted-xs">{{ ch.no }}</span>
             <span class="ch-title">{{ ch.title }}</span>
           </button>
-          <p v-if="!visibleTocItems.length && !tocLoading" class="muted">
-            {{ filterActive ? "没有匹配章节。" : "暂无章节。" }}
-          </p>
+          <BaseEmpty
+            v-if="!visibleTocItems.length && !tocLoading"
+            compact
+            icon="list"
+            :title="filterActive ? '没有匹配章节' : '暂无章节'"
+          />
         </div>
       </aside>
     </div>

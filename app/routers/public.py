@@ -18,6 +18,7 @@ from ..serializers import (
     book_list_item,
     chapter_content,
     chapter_item,
+    filter_book_fields,
     resolve_base_url,
 )
 
@@ -65,6 +66,7 @@ def _query_books(
     page: int = 1,
     page_size: int = 20,
     base: str | None = None,
+    fields: str | None = None,
 ) -> dict:
     offset, limit = _paginate(page, page_size)
     # 公开搜索带简介；筛选/排序统一走 book_query
@@ -84,7 +86,7 @@ def _query_books(
         "total": total,
         "page": page,
         "page_size": limit,
-        "items": [book_list_item(b, base) for b in books],
+        "items": [filter_book_fields(book_list_item(b, base), fields) for b in books],
     }
 
 
@@ -117,6 +119,7 @@ def list_books(
     sort: str = Query(default="updated"),  # updated | title | author
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    fields: str | None = Query(default=None, max_length=500),
     db: Session = Depends(get_db),
 ) -> dict:
     return _query_books(
@@ -130,6 +133,7 @@ def list_books(
         page=page,
         page_size=page_size,
         base=resolve_base_url(request),
+        fields=fields,
     )
 
 
@@ -139,9 +143,17 @@ def search_books(
     q: str = Query(..., min_length=1),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    fields: str | None = Query(default=None, max_length=500),
     db: Session = Depends(get_db),
 ) -> dict:
-    return _query_books(db, q=q, page=page, page_size=page_size, base=resolve_base_url(request))
+    return _query_books(
+        db,
+        q=q,
+        page=page,
+        page_size=page_size,
+        base=resolve_base_url(request),
+        fields=fields,
+    )
 
 
 @router.get("/books/{book_id}")

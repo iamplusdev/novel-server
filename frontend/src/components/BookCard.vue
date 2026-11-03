@@ -5,6 +5,7 @@
  */
 import { computed, ref, watch } from "vue";
 import type { BookListItem } from "@/api/types";
+import HighlightText from "@/components/HighlightText.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -14,12 +15,15 @@ const props = withDefaults(
     selected?: boolean;
     /** 网格封面宽度（px），用于小卡降级展示 */
     coverWidth?: number;
+    /** 书库搜索关键词，用于标题/作者/标签高亮 */
+    highlight?: string;
   }>(),
   {
     view: "grid",
     selectable: false,
     selected: false,
     coverWidth: 150,
+    highlight: "",
   },
 );
 
@@ -55,6 +59,10 @@ function fmtWords(n?: number) {
   if (n >= 100000000) return (n / 100000000).toFixed(1) + " 亿";
   if (n >= 10000) return (n / 10000).toFixed(1) + " 万";
   return String(n);
+}
+
+function fmtDate(value?: string) {
+  return value ? value.slice(0, 10) : "";
 }
 
 /** 仅以站外 ID 判定已刮削：detail_url 是公共字段，不能作为刮削依据 */
@@ -147,16 +155,22 @@ function statusClass(status: string) {
     </div>
 
     <div class="meta">
-      <div class="name" :title="book.name">{{ book.name }}</div>
+      <div class="name" :title="book.name">
+        <HighlightText :text="book.name" :query="highlight" />
+      </div>
       <div v-if="sizeTier !== 'sm'" class="sub">
-        <span class="author" :title="book.author">{{ book.author || "佚名" }}</span>
+        <span class="author" :title="book.author">
+          <HighlightText :text="book.author || '佚名'" :query="highlight" />
+        </span>
         <span v-if="book.status" class="tag-soft" :class="statusClass(book.status)">
           {{ book.status }}
         </span>
       </div>
 
       <div v-if="sizeTier === 'lg' && book.tags?.length" class="tags">
-        <span v-for="t in book.tags.slice(0, 3)" :key="t" class="tag-soft">{{ t }}</span>
+        <span v-for="t in book.tags.slice(0, 3)" :key="t" class="tag-soft">
+          <HighlightText :text="t" :query="highlight" />
+        </span>
         <span v-if="book.tags.length > 3" class="tag-soft">+{{ book.tags.length - 3 }}</span>
       </div>
 
@@ -175,6 +189,8 @@ function statusClass(status: string) {
       <div v-if="sizeTier === 'lg'" class="stats muted-xs">
         <span>{{ fmtWords(book.word_count) }}字</span>
         <span>{{ book.chapter_count ?? "—" }}章</span>
+        <span v-if="book.updated_at">{{ fmtDate(book.updated_at) }} 更新</span>
+        <span>{{ book.source || "本地" }}</span>
       </div>
     </div>
 
@@ -469,7 +485,8 @@ function statusClass(status: string) {
 
 .stats {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 2px 8px;
 }
 
 /* 触屏无 hover：多选框常显，保证移动端可选 */

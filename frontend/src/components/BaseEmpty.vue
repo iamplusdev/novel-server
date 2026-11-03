@@ -8,15 +8,17 @@ withDefaults(
     title: string;
     description?: string;
     actionText?: string;
+    /** 侧栏/小区域使用更紧凑的间距 */
+    compact?: boolean;
   }>(),
-  { icon: "book", description: "", actionText: "" },
+  { icon: "book", description: "", actionText: "", compact: false },
 );
 
 const emit = defineEmits<{ (e: "action"): void }>();
 </script>
 
 <template>
-  <div class="base-empty">
+  <div class="base-empty" :class="{ 'is-compact': compact }">
     <div class="base-empty__icon">
       <AppIcon :name="icon" :size="28" />
     </div>
@@ -65,5 +67,19 @@ const emit = defineEmits<{ (e: "action"): void }>();
   margin: 0;
   max-width: 360px;
   line-height: 1.6;
+}
+
+.base-empty.is-compact {
+  gap: 6px;
+  padding: 24px 12px;
+}
+
+.base-empty.is-compact .base-empty__icon {
+  width: 40px;
+  height: 40px;
+}
+
+.base-empty.is-compact .base-empty__title {
+  font-size: var(--text-sm);
 }
 </style>

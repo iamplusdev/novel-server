@@ -10,9 +10,9 @@ const API_TARGET = process.env.VITE_API_TARGET || "http://127.0.0.1:7312";
 export default defineConfig({
   plugins: [
     vue(),
-    // Element Plus 组件按需引入（样式仍用全局 index.css，避免重复注入）
+    // Element Plus 组件与样式均按需引入
     Components({
-      resolvers: [ElementPlusResolver({ importStyle: false })],
+      resolvers: [ElementPlusResolver({ importStyle: "css" })],
       dts: "src/components.d.ts",
     }),
   ],

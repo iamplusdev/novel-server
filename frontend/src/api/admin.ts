@@ -1,5 +1,10 @@
 import { http } from "./client";
-import type { AdminStats, BookDetail, BookListResponse } from "./types";
+import type {
+  AdminStats,
+  BookDetail,
+  BookListResponse,
+  ReadingStats,
+} from "./types";
 
 /** 管理端书库 / 统计 API */
 export function fetchStats() {
@@ -19,6 +24,8 @@ export interface BookQuery {
   scraped?: string;
   /** true=仅读过的书（配合 sort=read 做继续阅读） */
   read?: boolean;
+  /** 可选字段裁剪，如 id,name,author,cover_thumb_url */
+  fields?: string;
 }
 
 export function fetchBooks(query: BookQuery) {
@@ -28,6 +35,11 @@ export function fetchBooks(query: BookQuery) {
 
 export function fetchBook(id: number | string) {
   return http.get<BookDetail>(`/api/admin/books/${id}`);
+}
+
+/** 阅读统计概览 */
+export function fetchReadingStats() {
+  return http.get<ReadingStats>("/api/admin/stats/reading");
 }
 
 export function updateBook(id: number | string, body: Record<string, unknown>) {
@@ -282,6 +294,30 @@ export function pushBookProgressNow(bookId: number | string) {
     remote_time?: number;
     error?: string;
   }>(`/api/admin/books/${bookId}/sync/push-now`);
+}
+
+/** 自动体检设置（服务端调度器读取） */
+export interface MaintenanceSettings {
+  scan_enabled: boolean;
+  scan_interval_hours: number;
+  scan_deep: boolean;
+  last_scan_at: string;
+  last_scan_error: string;
+}
+
+export function fetchMaintenanceSettings() {
+  return http.get<MaintenanceSettings>("/api/admin/settings/maintenance");
+}
+
+export function saveMaintenanceSettings(payload: {
+  scan_enabled?: boolean;
+  scan_interval_hours?: number;
+  scan_deep?: boolean;
+}) {
+  return http.put<{ ok: boolean } & MaintenanceSettings>(
+    "/api/admin/settings/maintenance",
+    payload,
+  );
 }
 
 /** 刮削参数（设置页可调） */

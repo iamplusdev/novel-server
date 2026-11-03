@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -25,6 +26,19 @@ setup_logging()
 BASE_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = BASE_DIR / "frontend" / "dist"
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """启动/停止进程内自动体检调度器。"""
+    from .maintenance import start_scheduler, stop_scheduler
+
+    start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
+
+
 app = FastAPI(
     title="Personal Novel Library",
     description="爱小说：分类浏览 / 搜索 / 阅读 / Legado 书源 / 管理 API",
@@ -33,6 +47,7 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=lifespan,
 )
 
 # 反代场景：仅当配置了可信 Host 白名单时才校验 Host，防 Host 头注入
@@ -60,6 +75,7 @@ app.include_router(scrape.router)
 app.include_router(library.router)
 app.include_router(batch_scrape.router)
 app.include_router(sync.router)
+
 
 settings.ensure_dirs()
 ensure_category_dirs()

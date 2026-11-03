@@ -31,6 +31,7 @@ declare module 'vue' {
     ElTable: typeof import('element-plus/es')['ElTable']
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
+    HighlightText: typeof import('./components/HighlightText.vue')['default']
     ReaderHelpPanel: typeof import('./components/reader/ReaderHelpPanel.vue')['default']
     ReaderSearchPanel: typeof import('./components/reader/ReaderSearchPanel.vue')['default']
     ReaderSettingsPanel: typeof import('./components/reader/ReaderSettingsPanel.vue')['default']

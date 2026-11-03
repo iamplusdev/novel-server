@@ -33,6 +33,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: "体检" },
       },
       {
+        path: "stats",
+        name: "stats",
+        component: () => import("@/views/StatsView.vue"),
+        meta: { title: "阅读统计" },
+      },
+      {
         path: "api-docs",
         name: "api-docs",
         component: () => import("@/views/ApiView.vue"),

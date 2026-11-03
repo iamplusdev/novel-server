@@ -627,6 +627,7 @@ function onResize() {
         :book="b"
         :view="viewMode"
         :cover-width="coverWidth"
+        :highlight="lib.q"
         selectable
         :selected="selectedIds.has(b.id)"
         @open="openBook"

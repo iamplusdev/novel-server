@@ -36,6 +36,7 @@ import { openSse, pollStatus, type SseHandle } from "@/utils/sse";
 import { useLibraryStore } from "@/stores/library";
 import { useCheckStore } from "@/stores/check";
 import AppIcon from "@/components/AppIcon.vue";
+import BaseEmpty from "@/components/BaseEmpty.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -690,14 +691,18 @@ onUnmounted(() => {
         <p class="muted">
           合并规则：保留章节/字数最多的一本，删除其余重复项（章节与多余封面一并删，源 TXT 不动）。
         </p>
-        <div v-if="!scanned" class="empty">
-          <AppIcon name="check" :size="24" />
-          <span>尚未扫描，点右上角「开始扫描」检查重复书。</span>
-        </div>
-        <div v-else-if="!report?.duplicates?.length" class="empty">
-          <AppIcon name="check" :size="24" />
-          <span>没有发现重复书。</span>
-        </div>
+        <BaseEmpty
+          v-if="!scanned"
+          icon="check"
+          title="尚未扫描"
+          description="点右上角「开始扫描」检查重复书。"
+        />
+        <BaseEmpty
+          v-else-if="!report?.duplicates?.length"
+          icon="check"
+          title="没有发现重复书"
+          description="书库中没有重复项。"
+        />
         <div v-for="(g, gi) in report?.duplicates || []" :key="gi" class="check-item">
           <div class="body">
             <div class="title">
@@ -745,18 +750,23 @@ onUnmounted(() => {
         <p v-if="scanned && issueKindFilter !== 'all'" class="muted-xs filter-hint">
           筛选只影响列表展示，「修复全部」仍处理所有异常书。
         </p>
-        <div v-if="!scanned" class="empty">
-          <AppIcon name="check" :size="24" />
-          <span>尚未扫描，点右上角「开始扫描」检查异常书。</span>
-        </div>
-        <div v-else-if="!report?.issues?.length" class="empty">
-          <AppIcon name="check" :size="24" />
-          <span>没有发现异常，书库健康。</span>
-        </div>
-        <div v-else-if="!filteredIssues.length" class="empty">
-          <AppIcon name="check" :size="24" />
-          <span>当前筛选下没有异常。</span>
-        </div>
+        <BaseEmpty
+          v-if="!scanned"
+          icon="check"
+          title="尚未扫描"
+          description="点右上角「开始扫描」检查异常书。"
+        />
+        <BaseEmpty
+          v-else-if="!report?.issues?.length"
+          icon="check"
+          title="没有发现异常"
+          description="书库健康。"
+        />
+        <BaseEmpty
+          v-else-if="!filteredIssues.length"
+          icon="check"
+          title="当前筛选下没有异常"
+        />
         <div v-for="it in filteredIssues" :key="it.book_id + it.kind" class="check-item">
           <div class="body">
             <div class="title">
@@ -1108,17 +1118,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 28px;
-  color: var(--color-text-3);
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-md);
 }
 
 .filter-chips {

@@ -70,6 +70,18 @@ def cover_thumb_abs(book: Book, base: str | None = None) -> str:
     return f"{root}{rel}"
 
 
+def filter_book_fields(item: dict, fields: str | None) -> dict:
+    """按逗号分隔的字段裁剪列表项；id 始终保留，未知字段忽略。"""
+    raw = fields.strip() if isinstance(fields, str) else ""
+    if not raw:
+        return item
+    wanted = {part.strip() for part in raw.split(",") if part.strip()}
+    if not wanted:
+        return item
+    wanted.add("id")
+    return {key: value for key, value in item.items() if key in wanted}
+
+
 def book_list_item(book: Book, base: str | None = None) -> dict:
     root = (base or settings.public_base_url).rstrip("/")
     return {

@@ -11,9 +11,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
+from .. import stats_cache
 from ..auth import require_admin_dep
 from ..book_query import build_books_stmt, count_books
 from ..config import (
@@ -35,7 +36,12 @@ from ..importer import (
     request_import_cancel,
 )
 from ..models import Book, Chapter
-from ..serializers import admin_book_detail, book_list_item, resolve_base_url
+from ..serializers import (
+    admin_book_detail,
+    book_list_item,
+    filter_book_fields,
+    resolve_base_url,
+)
 from ..thumbs import rebuild_thumbs
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_dep)])
@@ -95,25 +101,113 @@ def admin_tags(db: Session = Depends(get_db)) -> dict:
 
 @router.get("/stats")
 def admin_stats(request: Request, db: Session = Depends(get_db)) -> dict:
-    total_books = db.execute(select(func.count(Book.id))).scalar_one()
-    total_words = db.execute(select(func.coalesce(func.sum(Book.word_count), 0))).scalar_one()
-    by_cat = db.execute(select(Book.category, func.count(Book.id)).group_by(Book.category)).all()
-    by_status = db.execute(select(Book.status, func.count(Book.id)).group_by(Book.status)).all()
+    cached = stats_cache.get("admin_stats")
+    if cached is None:
+        total_books = db.execute(select(func.count(Book.id))).scalar_one()
+        total_words = db.execute(
+            select(func.coalesce(func.sum(Book.word_count), 0))
+        ).scalar_one()
+        by_cat = db.execute(
+            select(Book.category, func.count(Book.id)).group_by(Book.category)
+        ).all()
+        by_status = db.execute(
+            select(Book.status, func.count(Book.id)).group_by(Book.status)
+        ).all()
+        cached = {
+            "total_books": total_books,
+            "total_words": total_words,
+            "by_category": [{"name": c, "count": n} for c, n in by_cat],
+            "by_status": [{"name": s, "count": n} for s, n in by_status],
+            "categories": CATEGORIES,
+            # 编辑页两级分类树
+            "category_tree": category_tree(),
+            # 设置页展示运行环境用
+            "novels_dir": str(settings.novels_dir),
+            "database_path": str(settings.database_path),
+            "covers_dir": str(settings.covers_dir),
+        }
+        stats_cache.set("admin_stats", cached)
     return {
-        "total_books": total_books,
-        "total_words": total_words,
-        "by_category": [{"name": c, "count": n} for c, n in by_cat],
-        "by_status": [{"name": s, "count": n} for s, n in by_status],
-        "categories": CATEGORIES,
-        # 编辑页两级分类树
-        "category_tree": category_tree(),
+        **cached,
         "import": get_import_status(),
         "public_base_url": resolve_base_url(request),
-        # 设置页展示运行环境用
-        "novels_dir": str(settings.novels_dir),
-        "database_path": str(settings.database_path),
-        "covers_dir": str(settings.covers_dir),
     }
+
+
+@router.get("/stats/reading")
+def admin_reading_stats(db: Session = Depends(get_db)) -> dict:
+    """阅读统计：基于现有 read_at/read_percent 字段的概览（无逐日历史）。"""
+    cached = stats_cache.get("reading_stats")
+    if cached is not None:
+        return cached
+    total_books = db.execute(select(func.count(Book.id))).scalar_one()
+    total_words = db.execute(
+        select(func.coalesce(func.sum(Book.word_count), 0))
+    ).scalar_one()
+
+    read_books = db.execute(
+        select(func.count(Book.id)).where(Book.read_at != "")
+    ).scalar_one()
+    finished_books = db.execute(
+        select(func.count(Book.id)).where(
+            and_(Book.read_at != "", Book.read_percent >= 100)
+        )
+    ).scalar_one()
+    reading_books = db.execute(
+        select(func.count(Book.id)).where(
+            and_(Book.read_at != "", Book.read_percent < 100)
+        )
+    ).scalar_one()
+    unread_books = max(0, total_books - read_books)
+
+    read_words_raw = db.execute(
+        select(func.coalesce(func.sum(Book.word_count * Book.read_percent), 0)).where(
+            Book.read_at != ""
+        )
+    ).scalar_one()
+    read_words = int(round((read_words_raw or 0) / 100))
+
+    avg_progress = db.execute(
+        select(func.coalesce(func.avg(Book.read_percent), 0)).where(Book.read_at != "")
+    ).scalar_one()
+
+    recent_books = (
+        db.execute(
+            select(Book)
+            .where(Book.read_at != "")
+            .order_by(Book.read_at.desc(), Book.id.desc())
+            .limit(8)
+        )
+        .scalars()
+        .all()
+    )
+    recent = [book_list_item(b) for b in recent_books]
+
+    category_rows = db.execute(
+        select(Book.category, func.count(Book.id))
+        .where(Book.read_at != "")
+        .group_by(Book.category)
+        .order_by(func.count(Book.id).desc(), Book.category)
+        .limit(12)
+    ).all()
+
+    result = {
+        "total_books": total_books,
+        "read_books": read_books,
+        "reading_books": reading_books,
+        "finished_books": finished_books,
+        "unread_books": unread_books,
+        "total_words": int(total_words or 0),
+        "read_words": read_words,
+        "avg_progress": round(float(avg_progress or 0), 1),
+        "recent": recent,
+        "by_category": [
+            {"name": name or UNCATEGORIZED, "count": count}
+            for name, count in category_rows
+        ],
+    }
+    stats_cache.set("reading_stats", result)
+    return result
 
 
 class ScrapeSettingsIn(BaseModel):
@@ -144,6 +238,27 @@ def admin_put_scrape_settings(payload: ScrapeSettingsIn) -> dict:
 
     values = scraper_settings.update(payload.model_dump(exclude_none=True))
     return {"ok": True, "values": values}
+
+
+class MaintenanceSettingsIn(BaseModel):
+    scan_enabled: bool | None = None
+    scan_interval_hours: int | None = Field(default=None, ge=1, le=720)
+    scan_deep: bool | None = None
+
+
+@router.get("/settings/maintenance")
+def admin_get_maintenance_settings() -> dict:
+    from .. import maintenance_settings
+
+    return maintenance_settings.load()
+
+
+@router.put("/settings/maintenance")
+def admin_put_maintenance_settings(payload: MaintenanceSettingsIn) -> dict:
+    from .. import maintenance_settings
+
+    data = maintenance_settings.update(payload.model_dump(exclude_none=True))
+    return {"ok": True, **data}
 
 
 @router.get("/tasks/status")
@@ -178,6 +293,8 @@ def admin_list_books(
     page: int = Query(default=1, ge=1),
     # 上限放宽到 200：宽屏多列时前端会请求 cols*rows，保证非末页行占满
     page_size: int = Query(default=20, ge=1, le=200),
+    # 可选字段裁剪：fields=id,name,author,cover_thumb_url
+    fields: str | None = Query(default=None, max_length=500),
     db: Session = Depends(get_db),
 ) -> dict:
     base = resolve_base_url(request)
@@ -203,7 +320,7 @@ def admin_list_books(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [book_list_item(b, base) for b in books],
+        "items": [filter_book_fields(book_list_item(b, base), fields) for b in books],
     }
 
 

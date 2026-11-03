@@ -20,10 +20,12 @@ class CoreTests(unittest.TestCase):
 
         from app import config as cfg
         from app import database as dbmod
+        from app import stats_cache
         from app.auth import reset_auth_cache
 
-        # 每个用例使用独立临时目录，清空凭据缓存避免串数据
+        # 每个用例使用独立临时目录，清空缓存避免串数据
         reset_auth_cache()
+        stats_cache.clear()
 
         # 直接改 settings 并重建引擎，避免 reload 造成表重复定义
         cfg.settings.database_path = self._tmp / "t.db"
@@ -917,6 +919,116 @@ class CoreTests(unittest.TestCase):
         finally:
             with bs._results_lock:
                 bs._status["results"] = []
+
+    def test_stats_cache_ttl_and_fields_filter(self) -> None:
+        """统计缓存短 TTL 生效；fields 裁剪始终保留 id。"""
+        from unittest import mock
+
+        from app import stats_cache
+        from app.serializers import filter_book_fields
+
+        item = {"id": 1, "name": "书", "author": "A", "intro": "简介"}
+        self.assertEqual(
+            filter_book_fields(item, "name,unknown"), {"id": 1, "name": "书"}
+        )
+        self.assertEqual(filter_book_fields(item, None), item)
+
+        stats_cache.clear()
+        with mock.patch.object(stats_cache, "_now", return_value=100.0):
+            stats_cache.set("k", {"v": 1})
+        with mock.patch.object(stats_cache, "_now", return_value=120.0):
+            self.assertEqual(stats_cache.get("k"), {"v": 1})
+        with mock.patch.object(stats_cache, "_now", return_value=131.0):
+            self.assertIsNone(stats_cache.get("k"))
+
+    def test_maintenance_settings_and_due(self) -> None:
+        """自动体检配置持久化；到期才启动，忙碌时下周期重试。"""
+        from datetime import datetime, timedelta
+        from unittest import mock
+
+        from app import maintenance, maintenance_settings as ms
+
+        cfg = ms.update(
+            {"scan_enabled": True, "scan_interval_hours": 6, "scan_deep": True}
+        )
+        self.assertTrue(cfg["scan_enabled"])
+        self.assertEqual(cfg["scan_interval_hours"], 6)
+        self.assertTrue(cfg["scan_deep"])
+        self.assertEqual(ms.update({"scan_interval_hours": 9999})["scan_interval_hours"], 720)
+
+        now = datetime(2026, 1, 1, 12, 0, 0)
+        ms.update({"scan_interval_hours": 2})
+        ms.mark_started(now.isoformat(timespec="seconds"))
+        self.assertFalse(maintenance.is_due(now + timedelta(hours=1)))
+        self.assertTrue(maintenance.is_due(now + timedelta(hours=2)))
+
+        with mock.patch.object(
+            maintenance, "start_library_scan", return_value=False
+        ) as start:
+            self.assertFalse(maintenance.run_if_due(now + timedelta(hours=3)))
+            start.assert_called_once_with(True)
+
+        with mock.patch.object(maintenance, "start_library_scan", return_value=True):
+            self.assertTrue(maintenance.run_if_due(now + timedelta(hours=3)))
+        self.assertTrue(ms.load()["last_scan_at"])
+
+        ms.update({"scan_enabled": False})
+        self.assertFalse(maintenance.is_due(now + timedelta(days=30)))
+
+    def test_reading_stats(self) -> None:
+        """阅读统计：已读/在读/完成、估算字数、最近阅读与分类分布。"""
+        from app.database import SessionLocal, get_db
+        from app.models import Book
+        from app.routers.admin import admin_reading_stats
+
+        s = SessionLocal()
+        s.add_all(
+            [
+                Book(
+                    title="甲",
+                    author="A",
+                    category="玄幻",
+                    read_at="2026-01-01T10:00:00",
+                    read_percent=50,
+                    word_count=1000,
+                ),
+                Book(
+                    title="乙",
+                    author="B",
+                    category="玄幻",
+                    read_at="2026-01-02T10:00:00",
+                    read_percent=100,
+                    word_count=2000,
+                ),
+                Book(
+                    title="丙",
+                    author="C",
+                    category="都市",
+                    read_at="",
+                    read_percent=0,
+                    word_count=3000,
+                ),
+            ]
+        )
+        s.commit()
+        s.close()
+
+        db = next(get_db())
+        try:
+            res = admin_reading_stats(db=db)
+        finally:
+            db.close()
+
+        self.assertEqual(res["total_books"], 3)
+        self.assertEqual(res["read_books"], 2)
+        self.assertEqual(res["reading_books"], 1)
+        self.assertEqual(res["finished_books"], 1)
+        self.assertEqual(res["unread_books"], 1)
+        self.assertEqual(res["total_words"], 6000)
+        self.assertEqual(res["read_words"], 2500)
+        self.assertEqual(res["avg_progress"], 75.0)
+        self.assertEqual([b["name"] for b in res["recent"]], ["乙", "甲"])
+        self.assertEqual(res["by_category"], [{"name": "玄幻", "count": 2}])
 
     def test_sort_books_by_read_at(self) -> None:
         """read=true + sort=read：只返回读过的书，按最近阅读倒序。"""

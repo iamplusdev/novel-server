@@ -9,11 +9,14 @@ import { useAuthStore } from "@/stores/auth";
 import { useThemeStore, type ThemeMode } from "@/stores/theme";
 import { useLibraryStore } from "@/stores/library";
 import {
+  fetchMaintenanceSettings,
   fetchScrapeSettings,
   fetchWebDavSettings,
+  saveMaintenanceSettings,
   saveScrapeSettings,
   saveWebDavSettings,
   testWebDav,
+  type MaintenanceSettings,
   type ScrapeSettingSpec,
   type ScrapeSettingsValues,
   type WebDavSettingsBody,
@@ -53,6 +56,45 @@ async function saveScrape() {
   } finally {
     scrapeSaving.value = false;
   }
+}
+
+// 自动体检（服务端进程内调度器）
+const maintenance = ref<MaintenanceSettings>({
+  scan_enabled: false,
+  scan_interval_hours: 24,
+  scan_deep: false,
+  last_scan_at: "",
+  last_scan_error: "",
+});
+const maintenanceSaving = ref(false);
+
+async function loadMaintenance() {
+  try {
+    maintenance.value = await fetchMaintenanceSettings();
+  } catch {
+    /* 忽略：加载失败不阻断页面 */
+  }
+}
+
+async function saveMaintenance() {
+  maintenanceSaving.value = true;
+  try {
+    const r = await saveMaintenanceSettings({
+      scan_enabled: maintenance.value.scan_enabled,
+      scan_interval_hours: maintenance.value.scan_interval_hours,
+      scan_deep: maintenance.value.scan_deep,
+    });
+    maintenance.value = r;
+    ElMessage.success("自动体检设置已保存");
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "保存失败");
+  } finally {
+    maintenanceSaving.value = false;
+  }
+}
+
+function fmtMaintenanceTime(value: string) {
+  return value ? value.replace("T", " ").slice(0, 16) : "尚未执行";
 }
 
 // WebDAV 进度同步（与 Legado 共用 bookProgress 目录）
@@ -179,6 +221,7 @@ async function savePw() {
 onMounted(async () => {
   theme.init();
   void loadScrape();
+  void loadMaintenance();
   void loadWebdav();
   try {
     await lib.loadStats();
@@ -297,6 +340,52 @@ onMounted(async () => {
         @click="saveScrape"
       >
         {{ scrapeSaving ? "保存中…" : "保存刮削参数" }}
+      </button>
+    </section>
+
+    <section class="page-card">
+      <div class="section-head">
+        <AppIcon name="check" :size="16" />
+        <h2 class="section-title">自动体检</h2>
+      </div>
+      <p class="muted">
+        定时执行书库体检（重复 / 异常）。导入或刮削进行中会自动跳过，下个检查周期再试；
+        启用后约 1 分钟内进行首次检查。
+      </p>
+      <div class="scrape-form">
+        <label class="scrape-field">
+          <span class="scrape-label">启用自动体检</span>
+          <el-switch v-model="maintenance.scan_enabled" />
+        </label>
+        <label class="scrape-field">
+          <span class="scrape-label">间隔（小时）</span>
+          <input
+            v-model.number="maintenance.scan_interval_hours"
+            type="number"
+            min="1"
+            max="720"
+            class="field-input"
+          />
+        </label>
+        <label class="scrape-field">
+          <span class="scrape-label">深度体检</span>
+          <el-switch v-model="maintenance.scan_deep" />
+          <span class="scrape-hint muted-xs">读取正文查乱码/控制符，较慢</span>
+        </label>
+      </div>
+      <p class="scrape-hint muted-xs">
+        上次触发：{{ fmtMaintenanceTime(maintenance.last_scan_at) }}
+      </p>
+      <p v-if="maintenance.last_scan_error" class="scrape-hint is-error">
+        上次错误：{{ maintenance.last_scan_error }}
+      </p>
+      <button
+        type="button"
+        class="primary-btn"
+        :disabled="maintenanceSaving"
+        @click="saveMaintenance"
+      >
+        {{ maintenanceSaving ? "保存中…" : "保存自动体检设置" }}
       </button>
     </section>
 
@@ -575,5 +664,9 @@ onMounted(async () => {
 
 .scrape-hint {
   margin-top: 2px;
+}
+
+.scrape-hint.is-error {
+  color: var(--color-danger);
 }
 </style>
