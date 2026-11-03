@@ -18,12 +18,19 @@ import {
   cancelScan,
   fetchScanStatus,
   mergeDuplicates,
+  previewRepair,
   relocateBooks,
   repairAll,
-  repairOne,
   startScan,
 } from "@/api/library";
-import type { BatchStatus, LibraryReport, ScanStatus, TasksStatus } from "@/api/types";
+import type {
+  BatchStatus,
+  LibraryReport,
+  RepairPreviewItem,
+  ScanStatus,
+  TasksStatus,
+} from "@/api/types";
+import { rebuildThumbs } from "@/api/admin";
 import { SCRAPE_MODE_OPTS } from "@/api/scrape";
 import { openSse, pollStatus, type SseHandle } from "@/utils/sse";
 import { useLibraryStore } from "@/stores/library";
@@ -94,6 +101,16 @@ const minScore = ref(0.7);
 const scrapeMode = ref("api");
 const starting = ref(false);
 const acting = ref(false);
+const repairPreviewOpen = ref(false);
+const repairPreviewLoading = ref(false);
+const repairPreviewTitle = ref("修复预览");
+const repairPreviewItems = ref<RepairPreviewItem[]>([]);
+const repairPreviewActionable = computed(() =>
+  repairPreviewItems.value.some((it) => !it.error),
+);
+let repairPreviewIds: number[] = [];
+let repairPreviewMode = "auto";
+let repairPreviewSeq = 0;
 let handle: SseHandle | null = null;
 
 const summary = computed(() => {
@@ -137,6 +154,88 @@ const batchLog = computed(() => {
   return lines.join("\n");
 });
 
+/** 批量刮削结构化结果：状态筛选 + CSV 导出 */
+const batchActionFilter = ref("all");
+const batchActionLabel: Record<string, string> = {
+  matched: "写入",
+  recovered: "兜底恢复",
+  skipped: "跳过",
+  failed: "失败",
+};
+const batchResults = computed(() => batch.value?.results || []);
+const batchActionOptions = computed(() => {
+  const counts = new Map<string, number>();
+  for (const r of batchResults.value) {
+    counts.set(r.action, (counts.get(r.action) || 0) + 1);
+  }
+  const known = Object.keys(batchActionLabel);
+  const extras = [...counts.keys()].filter((k) => !known.includes(k)).sort();
+  return [
+    { action: "all", label: "全部", count: batchResults.value.length },
+    ...known.map((action) => ({
+      action,
+      label: batchActionLabel[action],
+      count: counts.get(action) || 0,
+    })),
+    ...extras.map((action) => ({
+      action,
+      label: action,
+      count: counts.get(action) || 0,
+    })),
+  ];
+});
+const filteredBatchResults = computed(() =>
+  batchActionFilter.value === "all"
+    ? batchResults.value
+    : batchResults.value.filter((r) => r.action === batchActionFilter.value),
+);
+
+function batchActionClass(action: string): string {
+  if (action === "matched" || action === "recovered") return "is-success";
+  if (action === "skipped") return "is-warning";
+  return "is-danger";
+}
+
+function exportBatchReport() {
+  const rows = filteredBatchResults.value;
+  if (!rows.length) return;
+  const quote = (v: unknown) => {
+    const text = String(v ?? "");
+    // CSV 公式注入防护：Excel 会把 = + - @ 开头的内容当公式
+    const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
+  const header = ["书名", "结果", "书源", "匹配书名", "匹配作者", "分数", "说明", "时间"];
+  const lines = [header.map(quote).join(",")];
+  for (const r of rows) {
+    lines.push(
+      [
+        r.title,
+        batchActionLabel[r.action] || r.action,
+        r.source || "",
+        r.hit_title || "",
+        r.hit_author || "",
+        r.score != null ? r.score.toFixed(2) : "",
+        r.message || "",
+        r.time || "",
+      ]
+        .map(quote)
+        .join(","),
+    );
+  }
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `scrape-report-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 const kindLabel: Record<string, string> = {
   chapter_parse: "未分章",
   encoding: "乱码",
@@ -144,6 +243,40 @@ const kindLabel: Record<string, string> = {
   empty_chapters: "空章节",
   source_missing: "缺源文件",
 };
+
+/** 异常类型筛选：只影响列表展示，"修复全部"仍处理所有异常书 */
+const issueKindFilter = ref("all");
+const issueKindOptions = computed(() => {
+  const counts = new Map<string, number>();
+  for (const it of report.value?.issues || []) {
+    counts.set(it.kind, (counts.get(it.kind) || 0) + 1);
+  }
+  return [
+    { kind: "all", label: "全部", count: report.value?.issues?.length || 0 },
+    ...Object.entries(kindLabel).map(([kind, label]) => ({
+      kind,
+      label,
+      count: counts.get(kind) || 0,
+    })),
+  ];
+});
+const filteredIssues = computed(() => {
+  const issues = report.value?.issues || [];
+  return issueKindFilter.value === "all"
+    ? issues
+    : issues.filter((it) => it.kind === issueKindFilter.value);
+});
+
+// 修复后当前类型已无异常时，自动回到"全部"，避免停留在空列表
+watch(
+  () => report.value?.issues,
+  (issues) => {
+    if (issueKindFilter.value === "all") return;
+    if (!(issues || []).some((it) => it.kind === issueKindFilter.value)) {
+      issueKindFilter.value = "all";
+    }
+  },
+);
 
 function fmtWords(n?: number) {
   if (n === undefined || n === null) return "—";
@@ -240,17 +373,56 @@ async function onMerge(g: NonNullable<LibraryReport["duplicates"]>[number]) {
   }
 }
 
-async function onRepairOne(bookId: number) {
+/** 只读预览后再执行修复，避免误重解析 */
+async function openRepairPreview(ids: number[], title: string, mode = "auto") {
+  if (!ids.length) {
+    ElMessage.warning("没有需要修复的问题书");
+    return;
+  }
+  const seq = ++repairPreviewSeq;
+  repairPreviewIds = ids;
+  repairPreviewMode = mode;
+  repairPreviewTitle.value = title;
+  repairPreviewItems.value = [];
+  repairPreviewOpen.value = true;
+  repairPreviewLoading.value = true;
+  try {
+    const res = await previewRepair(mode, ids);
+    if (seq !== repairPreviewSeq) return;
+    repairPreviewItems.value = res.items || [];
+  } catch (e) {
+    if (seq === repairPreviewSeq) {
+      repairPreviewOpen.value = false;
+      ElMessage.error(e instanceof Error ? e.message : "修复预览失败");
+    }
+  } finally {
+    if (seq === repairPreviewSeq) repairPreviewLoading.value = false;
+  }
+}
+
+async function executeRepair(ids: number[], mode: string) {
   acting.value = true;
   try {
-    const res = await repairOne(bookId, "auto");
-    ElMessage.success(`${res.title || ""}：${(res.actions || []).join("；") || "已处理"}`);
+    const res = await repairAll(mode, ids);
+    ElMessage.success(`已修复 ${res.count || 0} 本`);
     await refreshAll();
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : "修复失败");
   } finally {
     acting.value = false;
   }
+}
+
+async function confirmRepairPreview() {
+  const ids = [...repairPreviewIds];
+  const mode = repairPreviewMode;
+  repairPreviewOpen.value = false;
+  await executeRepair(ids, mode);
+}
+
+async function onRepairOne(bookId: number) {
+  const issue = report.value?.issues.find((it) => it.book_id === bookId);
+  await openRepairPreview([bookId], `修复预览 · ${issue?.title || `#${bookId}`}`);
 }
 
 async function onRepairAll() {
@@ -260,22 +432,37 @@ async function onRepairAll() {
     ElMessage.warning("没有需要修复的问题书");
     return;
   }
+  await openRepairPreview(ids, `批量修复预览（${ids.length} 本）`);
+}
+
+async function onRebuildThumbs() {
+  const limit = 200;
   try {
     await ElMessageBox.confirm(
-      "对所有异常书执行自动修复？\n（清理字符，必要时从源 TXT 重解析）",
-      "修复全部",
-      { type: "warning", confirmButtonText: "修复", cancelButtonText: "取消" },
+      `为最多 ${limit} 本已有封面的书生成/更新缩略图？\n幂等执行，已是最新的会跳过；可重复点击继续处理。`,
+      "重建缩略图",
+      { type: "info", confirmButtonText: "开始", cancelButtonText: "取消" },
     );
   } catch {
     return;
   }
   acting.value = true;
   try {
-    const res = await repairAll("auto", ids);
-    ElMessage.success(`已修复 ${res.count || 0} 本`);
-    await refreshAll();
+    const res = await rebuildThumbs({ limit });
+    if (!res.available) {
+      ElMessage.warning("未安装 Pillow，无法生成缩略图");
+    } else if (!res.total) {
+      ElMessage.info("没有需要处理的封面");
+    } else if (res.failed) {
+      ElMessage.warning(
+        `缩略图：生成 ${res.generated} · 跳过 ${res.skipped} · 失败 ${res.failed}`,
+      );
+    } else {
+      ElMessage.success(`缩略图完成：生成 ${res.generated} · 跳过 ${res.skipped}`);
+    }
+    await lib.loadBooks();
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : "修复失败");
+    ElMessage.error(e instanceof Error ? e.message : "重建缩略图失败");
   } finally {
     acting.value = false;
   }
@@ -347,6 +534,7 @@ async function onStartBatch() {
     return;
   }
   starting.value = true;
+  batchActionFilter.value = "all";
   try {
     const res = await startBatchScrape({
       source: source.value,
@@ -446,6 +634,16 @@ onUnmounted(() => {
         >
           按分类归位
         </button>
+        <button
+          type="button"
+          class="ghost-btn"
+          title="为已有封面批量生成/更新缩略图（每次最多 200 本）"
+          :disabled="acting"
+          @click="onRebuildThumbs"
+        >
+          <AppIcon name="refresh" :size="14" />
+          重建缩略图
+        </button>
       </div>
       <p v-if="scanBlocked" class="muted check-hint">
         当前有「{{ scanBlocked }}」任务进行中，体检暂不可用（导入 / 体检 / 刮削互斥）。
@@ -525,6 +723,28 @@ onUnmounted(() => {
           修复：清理控制字符；若源 TXT 仍可读且未分章/乱码，则重新解析章节。
           勾选「深度体检」可查乱码/控制符（需读正文，较慢）。
         </p>
+        <div
+          v-if="scanned && report?.issues?.length"
+          class="filter-chips"
+          role="group"
+          aria-label="异常类型筛选"
+        >
+          <button
+            v-for="opt in issueKindOptions"
+            :key="opt.kind"
+            type="button"
+            class="filter-chip"
+            :class="{ 'is-active': issueKindFilter === opt.kind }"
+            :aria-pressed="issueKindFilter === opt.kind"
+            @click="issueKindFilter = opt.kind"
+          >
+            {{ opt.label }}
+            <span class="filter-count">{{ opt.count }}</span>
+          </button>
+        </div>
+        <p v-if="scanned && issueKindFilter !== 'all'" class="muted-xs filter-hint">
+          筛选只影响列表展示，「修复全部」仍处理所有异常书。
+        </p>
         <div v-if="!scanned" class="empty">
           <AppIcon name="check" :size="24" />
           <span>尚未扫描，点右上角「开始扫描」检查异常书。</span>
@@ -533,7 +753,11 @@ onUnmounted(() => {
           <AppIcon name="check" :size="24" />
           <span>没有发现异常，书库健康。</span>
         </div>
-        <div v-for="it in report?.issues || []" :key="it.book_id + it.kind" class="check-item">
+        <div v-else-if="!filteredIssues.length" class="empty">
+          <AppIcon name="check" :size="24" />
+          <span>当前筛选下没有异常。</span>
+        </div>
+        <div v-for="it in filteredIssues" :key="it.book_id + it.kind" class="check-item">
           <div class="body">
             <div class="title">
               {{ it.title }}
@@ -626,9 +850,127 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <div v-if="batchResults.length" class="batch-report">
+          <div class="batch-report-head">
+            <h3 class="batch-report-title">
+              刮削结果
+              <span class="muted-xs">{{ batchResults.length }} 条</span>
+            </h3>
+            <button type="button" class="ghost-btn sm" @click="exportBatchReport">
+              导出 CSV
+            </button>
+          </div>
+          <div class="filter-chips" role="group" aria-label="刮削结果筛选">
+            <button
+              v-for="opt in batchActionOptions"
+              :key="opt.action"
+              type="button"
+              class="filter-chip"
+              :class="{ 'is-active': batchActionFilter === opt.action }"
+              :aria-pressed="batchActionFilter === opt.action"
+              @click="batchActionFilter = opt.action"
+            >
+              {{ opt.label }}
+              <span class="filter-count">{{ opt.count }}</span>
+            </button>
+          </div>
+          <div class="batch-table-wrap">
+            <table class="batch-table">
+              <thead>
+                <tr>
+                  <th>书名</th>
+                  <th>结果</th>
+                  <th>书源</th>
+                  <th>匹配结果</th>
+                  <th>分数</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, i) in filteredBatchResults" :key="`${r.book_id}-${r.time}-${i}`">
+                  <td class="batch-title" :title="r.title">{{ r.title || "—" }}</td>
+                  <td>
+                    <span class="tag-soft" :class="batchActionClass(r.action)">
+                      {{ batchActionLabel[r.action] || r.action }}
+                    </span>
+                  </td>
+                  <td :title="r.source_id || ''">{{ r.source || "—" }}</td>
+                  <td class="batch-hit" :title="`${r.hit_title || ''} ${r.hit_author || ''}`">
+                    {{ r.hit_title || "—" }}
+                    <template v-if="r.hit_author"> · {{ r.hit_author }}</template>
+                  </td>
+                  <td class="num">{{ r.score != null ? r.score.toFixed(2) : "—" }}</td>
+                  <td class="batch-msg" :title="r.message || ''">{{ r.message || "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-if="!filteredBatchResults.length" class="muted batch-empty">
+              当前筛选下没有结果。
+            </p>
+          </div>
+        </div>
+
         <pre class="log-panel">{{ batchLog }}</pre>
       </div>
     </section>
+
+    <el-dialog
+      v-model="repairPreviewOpen"
+      :title="repairPreviewTitle"
+      width="min(640px, 92vw)"
+      append-to-body
+    >
+      <div v-loading="repairPreviewLoading" class="repair-preview-body">
+        <p class="muted repair-preview-hint">
+          预览只读取书籍，不会修改；确认后才会执行修复。
+        </p>
+        <div v-if="repairPreviewItems.length" class="repair-preview-list">
+          <div v-for="it in repairPreviewItems" :key="it.id" class="repair-preview-item">
+            <div class="repair-preview-head">
+              <span class="repair-preview-title">{{ it.title || `#${it.id}` }}</span>
+              <span class="repair-preview-meta">
+                <span>{{ it.chapter_count ?? "—" }} 章</span>
+                <span v-if="it.new_chapter_count != null">→ {{ it.new_chapter_count }} 章</span>
+                <span
+                  v-if="it.need_reparse"
+                  class="repair-source"
+                  :class="{ 'is-error': it.source_available === false }"
+                >
+                  源文件{{ it.source_available ? "可读" : "不可用" }}
+                </span>
+              </span>
+            </div>
+            <div class="repair-preview-actions">
+              <span
+                v-for="(action, ai) in it.actions"
+                :key="ai"
+                class="tag-soft"
+                :class="it.error ? 'is-danger' : it.will_change ? 'is-warning' : 'is-success'"
+              >
+                {{ action }}
+              </span>
+            </div>
+            <p v-if="it.error" class="repair-preview-error">{{ it.error }}</p>
+          </div>
+        </div>
+        <p v-else-if="!repairPreviewLoading" class="muted">没有可预览的书籍。</p>
+      </div>
+      <template #footer>
+        <div class="repair-preview-footer">
+          <button type="button" class="ghost-btn" @click="repairPreviewOpen = false">
+            取消
+          </button>
+          <button
+            type="button"
+            class="primary-btn"
+            :disabled="repairPreviewLoading || !repairPreviewActionable"
+            @click="confirmRepairPreview"
+          >
+            确认修复
+          </button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -777,6 +1119,214 @@ onUnmounted(() => {
   color: var(--color-text-3);
   border: 1px dashed var(--color-border);
   border-radius: var(--radius-md);
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: var(--text-xs);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.filter-chip:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.filter-chip.is-active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.filter-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.filter-chip.is-active .filter-count {
+  background: var(--color-surface);
+  color: var(--color-accent);
+}
+
+.filter-hint {
+  margin: 0;
+}
+
+.batch-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.batch-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.batch-report-title {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.batch-table-wrap {
+  overflow: auto;
+  max-height: 360px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.batch-table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.batch-table th,
+.batch-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.batch-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.batch-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.batch-title {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-hit {
+  max-width: 200px;
+  color: var(--color-text-2);
+}
+
+.batch-msg {
+  max-width: 260px;
+  color: var(--color-text-3);
+  word-break: break-word;
+}
+
+.batch-table .num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.batch-empty {
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+}
+
+.repair-preview-body {
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.repair-preview-hint {
+  margin: 0;
+}
+
+.repair-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.repair-preview-item {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+}
+
+.repair-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.repair-preview-title {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  word-break: break-word;
+}
+
+.repair-preview-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--color-text-3);
+  font-size: var(--text-xs);
+}
+
+.repair-source.is-error {
+  color: var(--color-danger);
+}
+
+.repair-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.repair-preview-error {
+  margin: 6px 0 0;
+  color: var(--color-danger);
+  font-size: var(--text-xs);
+}
+
+.repair-preview-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .check-item {

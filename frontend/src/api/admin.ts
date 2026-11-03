@@ -309,3 +309,24 @@ export function saveScrapeSettings(values: ScrapeSettingsValues) {
     values,
   );
 }
+
+/** 批量回填封面缩略图 */
+export interface ThumbRebuildResult {
+  ok: boolean;
+  available: boolean;
+  total: number;
+  generated: number;
+  skipped: number;
+  failed: number;
+  width: number;
+  force: boolean;
+}
+
+export function rebuildThumbs(payload: {
+  book_ids?: number[];
+  limit?: number;
+  force?: boolean;
+  width?: number;
+} = {}) {
+  return http.post<ThumbRebuildResult>("/api/admin/books/thumbs/rebuild", payload);
+}

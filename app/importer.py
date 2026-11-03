@@ -48,6 +48,8 @@ class ImportResult:
     updated: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    # 结构化失败项（用于前端单本/批量重试）：{path, name, error}
+    failed_items: list[dict] = field(default_factory=list)
     # 最近处理记录（带动作前缀），用于导入进度展示
     recent_log: list[str] = field(default_factory=list)
 
@@ -64,6 +66,7 @@ class ImportResult:
             "updated": self.updated,
             "skipped": self.skipped,
             "failed": self.failed,
+            "failed_items": self.failed_items,
             "summary": self.summary,
             "finished_at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -126,6 +129,14 @@ _SKIP_NAMES = {
     ".gitkeep",
     ".ds_store",
 }
+
+
+def _relative_source_path(path: Path) -> str:
+    """失败项保存相对 NOVELS_DIR 的路径，供重试接口校验后使用。"""
+    try:
+        return path.resolve().relative_to(settings.novels_dir.resolve()).as_posix()
+    except (OSError, ValueError):
+        return path.name
 
 
 def _iter_txt_files(root: Path):
@@ -349,7 +360,10 @@ def _progress_fields(result: ImportResult, total: int, done: int, current: str) 
     }
 
 
-def import_all(db: Session | None = None) -> ImportResult:
+def import_all(
+    db: Session | None = None,
+    only_paths: set[str] | None = None,
+) -> ImportResult:
     import logging
 
     log = logging.getLogger("importer")
@@ -360,6 +374,10 @@ def import_all(db: Session | None = None) -> ImportResult:
     root = settings.novels_dir
     try:
         files = list(_iter_txt_files(root))
+        # 失败重试：只处理指定的源文件，路径由接口层校验
+        if only_paths is not None:
+            wanted = {Path(p).resolve() for p in only_paths}
+            files = [(category, path) for category, path in files if path.resolve() in wanted]
         total = len(files)
         log.info("导入开始：%s 个 TXT", total)
         _set_import_status(**_progress_fields(result, total, 0, ""))
@@ -389,6 +407,13 @@ def import_all(db: Session | None = None) -> ImportResult:
                 err_label = f"{path.name}: {exc}"
                 log.warning("导入失败 %s: %s", path, exc)
                 result.failed.append(err_label)
+                result.failed_items.append(
+                    {
+                        "path": _relative_source_path(path),
+                        "name": path.name,
+                        "error": str(exc)[:500],
+                    }
+                )
                 result.recent_log.append(f"! {err_label}")
                 # 单本失败不影响整批，回滚脏对象后继续
                 db.rollback()
@@ -402,8 +427,8 @@ def import_all(db: Session | None = None) -> ImportResult:
     return result
 
 
-def import_all_async(mode: str = "local") -> bool:
-    """后台线程导入（仅本地 NOVELS_DIR；WebDAV 导入已移除）。"""
+def import_all_async(mode: str = "local", only_paths: set[str] | None = None) -> bool:
+    """后台线程导入（仅本地 NOVELS_DIR；only_paths 用于失败项重试）。"""
     global _import_status
     from .task_guard import other_task_running
 
@@ -433,7 +458,7 @@ def import_all_async(mode: str = "local") -> bool:
             recent=[],
         )
         try:
-            result = import_all()
+            result = import_all(only_paths=only_paths)
             # 结束时补全计数与百分比；total/done 沿用最后一次进度
             _set_import_status(
                 running=False,
@@ -459,6 +484,7 @@ def import_all_async(mode: str = "local") -> bool:
                     "updated": [],
                     "skipped": [],
                     "failed": [str(exc)],
+                    "failed_items": [],
                     "summary": f"导入失败: {exc}",
                     "finished_at": datetime.now().isoformat(timespec="seconds"),
                 },
@@ -482,6 +508,7 @@ def save_import_log(result: ImportResult, *, started_at: str, mode: str = "local
         "updated": result.updated[:500],
         "skipped": result.skipped[:500],
         "failed": result.failed[:500],
+        "failed_items": result.failed_items[:500],
         "recent": result.recent_log[-100:],
     }
     db = SessionLocal()
@@ -537,6 +564,7 @@ def query_import_logs(date: str | None = None, limit: int = 50) -> list[dict]:
                         "updated": d.get("updated") or [],
                         "skipped": d.get("skipped") or [],
                         "failed": d.get("failed") or [],
+                        "failed_items": d.get("failed_items") or [],
                         "recent": d.get("recent") or [],
                     },
                     # 历史只关心新增明细

@@ -110,6 +110,13 @@ export interface ScrapeSearchResponse {
   count: number;
 }
 
+/** 导入失败项：path 相对 NOVELS_DIR，可直接用于重试 */
+export interface ImportFailedItem {
+  path: string;
+  name: string;
+  error: string;
+}
+
 /** 本地导入实时状态 */
 export interface ImportStatus {
   running: boolean;
@@ -118,6 +125,7 @@ export interface ImportStatus {
     updated: string[];
     skipped: string[];
     failed: string[];
+    failed_items?: ImportFailedItem[];
     summary: string;
     finished_at: string;
   } | null;
@@ -133,6 +141,23 @@ export interface ImportStatus {
   cancel_requested?: boolean;
 }
 
+/** 批量刮削单本结果 */
+export interface BatchResult {
+  book_id: number;
+  title: string;
+  /** matched / recovered / skipped / failed */
+  action: string;
+  message?: string;
+  source?: string;
+  hit_title?: string;
+  hit_author?: string;
+  score?: number | null;
+  source_id?: string;
+  /** 是否由浏览器兜底恢复 */
+  recovered?: boolean;
+  time?: string;
+}
+
 /** 批量刮削实时状态 */
 export interface BatchStatus {
   running: boolean;
@@ -143,10 +168,29 @@ export interface BatchStatus {
   failed?: number;
   /** auto 解析后的实际取数通道：chrome | api */
   resolved?: string;
+  /** 结构化结果，按书号覆盖；最多 500 条 */
+  results?: BatchResult[];
+  started_at?: string;
+  finished_at?: string;
+  browser_retried?: number;
+  browser_recovered?: number;
   log?: { time: string; message: string }[];
   last_error?: string;
   cancel_requested?: boolean;
   dry_run?: boolean;
+}
+
+/** 修复预览：只读计算，不写数据库/正文包 */
+export interface RepairPreviewItem {
+  id: number;
+  title: string;
+  actions: string[];
+  chapter_count?: number | null;
+  new_chapter_count?: number | null;
+  need_reparse?: boolean;
+  source_available?: boolean | null;
+  will_change?: boolean;
+  error?: string;
 }
 
 /** 书库体检报告 */

@@ -61,7 +61,17 @@ def safe_cover_path(name: str) -> Path | None:
     return path
 
 
-def ensure_thumb(name: str, width: int = DEFAULT_WIDTH) -> Path | None:
+def thumb_cache_path(name: str, width: int = DEFAULT_WIDTH) -> Path | None:
+    """缩略图缓存路径；名字不安全时返回 None。"""
+    safe = _safe_name(name)
+    if not safe:
+        return None
+    return thumbs_dir() / f"{Path(safe).stem}_{clamp_width(width)}.webp"
+
+
+def ensure_thumb(
+    name: str, width: int = DEFAULT_WIDTH, *, force: bool = False
+) -> Path | None:
     """确保缩略图存在并返回路径；不可用时返回 None（调用方回退原图）。"""
     safe = _safe_name(name)
     if not safe or Image is None or ImageOps is None:
@@ -71,10 +81,12 @@ def ensure_thumb(name: str, width: int = DEFAULT_WIDTH) -> Path | None:
         return None
 
     w = clamp_width(width)
-    dest = thumbs_dir() / f"{Path(safe).stem}_{w}.webp"
+    dest = thumb_cache_path(safe, w)
+    if dest is None:
+        return None
     try:
-        # 原图未更新时直接复用缓存
-        if dest.is_file() and dest.stat().st_mtime_ns >= src.stat().st_mtime_ns:
+        # 原图未更新时直接复用缓存；force 用于批量强制重建
+        if not force and dest.is_file() and dest.stat().st_mtime_ns >= src.stat().st_mtime_ns:
             return dest
     except OSError:
         pass
@@ -96,6 +108,50 @@ def ensure_thumb(name: str, width: int = DEFAULT_WIDTH) -> Path | None:
         except OSError:
             pass
         return None
+
+
+def rebuild_thumbs(
+    books,
+    *,
+    width: int = DEFAULT_WIDTH,
+    force: bool = False,
+) -> dict:
+    """批量回填封面缩略图；幂等，已是最新则计入 skipped。"""
+    w = clamp_width(width)
+    stats = {
+        "available": Image is not None and ImageOps is not None,
+        "total": len(books),
+        "generated": 0,
+        "skipped": 0,
+        "failed": 0,
+        "width": w,
+        "force": bool(force),
+    }
+    if not stats["available"]:
+        return stats
+
+    for book in books:
+        name = (getattr(book, "cover_file", "") or "").strip()
+        if not name:
+            stats["skipped"] += 1
+            continue
+        src = safe_cover_path(name)
+        if src is None or not src.is_file():
+            stats["skipped"] += 1
+            continue
+        dest = thumb_cache_path(name, w)
+        if not force and dest is not None:
+            try:
+                if dest.is_file() and dest.stat().st_mtime_ns >= src.stat().st_mtime_ns:
+                    stats["skipped"] += 1
+                    continue
+            except OSError:
+                pass
+        if ensure_thumb(name, w, force=force) is not None:
+            stats["generated"] += 1
+        else:
+            stats["failed"] += 1
+    return stats
 
 
 def delete_thumbs_for(name: str) -> int:

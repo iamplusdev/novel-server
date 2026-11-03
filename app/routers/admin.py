@@ -36,6 +36,7 @@ from ..importer import (
 )
 from ..models import Book, Chapter
 from ..serializers import admin_book_detail, book_list_item, resolve_base_url
+from ..thumbs import rebuild_thumbs
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_dep)])
 
@@ -401,6 +402,13 @@ class BatchDeleteIn(BaseModel):
     ids: list[int] = Field(default_factory=list, min_length=1, max_length=500)
 
 
+class ThumbsRebuildIn(BaseModel):
+    book_ids: list[int] | None = Field(default=None, max_length=500)
+    limit: int = Field(default=200, ge=1, le=1000)
+    force: bool = False
+    width: int = Field(default=320, ge=120, le=800)
+
+
 class BatchUpdateIn(BaseModel):
     """批量编辑：仅处理显式提供的字段。"""
 
@@ -412,6 +420,22 @@ class BatchUpdateIn(BaseModel):
     tags: str | None = Field(default=None, max_length=300)
     tags_mode: str = Field(default="append", pattern="^(append|remove|replace)$")
     status: str | None = Field(default=None, pattern="^(连载|完结|未知)$")
+
+
+@router.post("/books/thumbs/rebuild")
+def admin_rebuild_thumbs(
+    payload: ThumbsRebuildIn, db: Session = Depends(get_db)
+) -> dict:
+    """批量回填已有封面的缩略图；可指定 book_ids，否则按 id 顺序最多处理 limit 本。"""
+    stmt = select(Book).where(Book.cover_file != "")
+    if payload.book_ids:
+        ids = sorted({int(i) for i in payload.book_ids if i})
+        if not ids:
+            raise HTTPException(400, "book_ids 不能为空")
+        stmt = stmt.where(Book.id.in_(ids))
+    books = db.execute(stmt.order_by(Book.id).limit(payload.limit)).scalars().all()
+    stats = rebuild_thumbs(books, width=payload.width, force=payload.force)
+    return {"ok": True, **stats}
 
 
 @router.put("/books/{book_id}/progress")
@@ -513,6 +537,46 @@ def admin_import(mode: str = Query(default="local", pattern="^local$")) -> dict:
     # WebDAV 导入已移除，仅支持本地 NOVELS_DIR
     started = import_all_async("local")
     return {"started": started, "mode": "local", "import": get_import_status()}
+
+
+class ImportRetryIn(BaseModel):
+    # 失败项相对 NOVELS_DIR 的路径；上限与导入日志一致
+    paths: list[str] = Field(..., min_length=1, max_length=500)
+
+
+def _validated_retry_paths(raw_paths: list[str]) -> list[str]:
+    """校验重试路径必须位于 NOVELS_DIR 内且为存在的 TXT。"""
+    root = settings.novels_dir.resolve()
+    valid: list[str] = []
+    for raw in raw_paths:
+        value = (raw or "").strip()
+        if not value:
+            continue
+        candidate = (root / value).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(400, f"重试路径不在书库目录内: {value}") from exc
+        if candidate.suffix.lower() != ".txt":
+            raise HTTPException(400, f"只允许重试 TXT 文件: {value}")
+        if candidate.is_file():
+            valid.append(str(candidate))
+    if not valid:
+        raise HTTPException(400, "失败文件已不存在或没有可重试的 TXT")
+    return list(dict.fromkeys(valid))
+
+
+@router.post("/import/retry")
+def admin_import_retry(payload: ImportRetryIn) -> dict:
+    """仅重试本次导入失败的文件，复用同一套后台进度/SSE。"""
+    paths = _validated_retry_paths(payload.paths)
+    started = import_all_async("local", only_paths=set(paths))
+    return {
+        "started": started,
+        "mode": "local",
+        "retry_count": len(paths),
+        "import": get_import_status(),
+    }
 
 
 @router.post("/import/cancel")

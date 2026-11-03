@@ -10,6 +10,7 @@ import {
   fetchImportLogs,
   fetchImportStatus,
   fetchTasksStatus,
+  retryImport,
   startImport,
   type ImportLogItem,
 } from "@/api/progress";
@@ -22,6 +23,7 @@ const lib = useLibraryStore();
 
 const status = ref<ImportStatus | null>(null);
 const starting = ref(false);
+const retrying = ref(false);
 const novelsPath = ref("NOVELS_DIR（服务端配置）");
 let handle: SseHandle | null = null;
 
@@ -82,6 +84,9 @@ const progressText = computed(() => {
     st.cancel_requested ? "\n（已请求停止…）" : ""
   }`;
 });
+
+const failedItems = computed(() => status.value?.last?.failed_items || []);
+const activeLogFailures = computed(() => activeLog.value?.detail?.failed_items || []);
 
 const logText = computed(() => {
   const st = status.value;
@@ -192,6 +197,36 @@ async function onRefresh() {
   }
 }
 
+/** 重试失败项：不传 paths 时重试当前导入的全部失败文件 */
+async function onRetryFailed(paths?: string[]) {
+  const list = paths?.length ? paths : failedItems.value.map((x) => x.path);
+  if (!list.length) {
+    ElMessage.warning("没有可重试的失败项");
+    return;
+  }
+  await refreshTasks();
+  if (blockedBy.value || status.value?.running) {
+    ElMessage.warning("有任务进行中，请先等待完成");
+    return;
+  }
+  retrying.value = true;
+  try {
+    const res = await retryImport(list);
+    status.value = res.import;
+    if (res.started) {
+      ElMessage.success(`已开始重试 ${res.retry_count} 个失败文件`);
+      watchProgress();
+    } else {
+      ElMessage.warning("导入任务已在运行，请稍后重试");
+    }
+    void refreshTasks();
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : "重试失败");
+  } finally {
+    retrying.value = false;
+  }
+}
+
 async function loadHistory() {
   historyLoading.value = true;
   try {
@@ -290,6 +325,39 @@ onUnmounted(() => {
 
       <h2 class="section-title">导入日志</h2>
       <pre class="log-panel">{{ logText }}</pre>
+
+      <div v-if="failedItems.length" class="failed-block">
+        <div class="failed-head">
+          <h2 class="section-title">
+            失败文件
+            <span class="muted-xs">{{ failedItems.length }}</span>
+          </h2>
+          <button
+            type="button"
+            class="ghost-btn sm"
+            :disabled="retrying || status?.running || !!blockedBy"
+            @click="onRetryFailed()"
+          >
+            {{ retrying ? "重试中…" : "重试全部" }}
+          </button>
+        </div>
+        <div class="failed-list">
+          <div v-for="item in failedItems" :key="item.path" class="failed-item">
+            <div class="failed-info">
+              <span class="failed-name" :title="item.path">{{ item.name }}</span>
+              <span class="failed-error">{{ item.error }}</span>
+            </div>
+            <button
+              type="button"
+              class="link-btn"
+              :disabled="retrying || status?.running || !!blockedBy"
+              @click="onRetryFailed([item.path])"
+            >
+              重试
+            </button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="page-card">
@@ -328,6 +396,39 @@ onUnmounted(() => {
         </h2>
         <pre class="log-panel">{{ activeLog.summary }}
 {{ (activeLog.added_list || activeLog.detail?.added || []).join("\n") }}</pre>
+
+        <div v-if="activeLogFailures.length" class="failed-block">
+          <div class="failed-head">
+            <h2 class="section-title">
+              失败文件
+              <span class="muted-xs">{{ activeLogFailures.length }}</span>
+            </h2>
+            <button
+              type="button"
+              class="ghost-btn sm"
+              :disabled="retrying || status?.running || !!blockedBy"
+              @click="onRetryFailed(activeLogFailures.map((x) => x.path))"
+            >
+              {{ retrying ? "重试中…" : "重试全部" }}
+            </button>
+          </div>
+          <div class="failed-list">
+            <div v-for="item in activeLogFailures" :key="item.path" class="failed-item">
+              <div class="failed-info">
+                <span class="failed-name" :title="item.path">{{ item.name }}</span>
+                <span class="failed-error">{{ item.error }}</span>
+              </div>
+              <button
+                type="button"
+                class="link-btn"
+                :disabled="retrying || status?.running || !!blockedBy"
+                @click="onRetryFailed([item.path])"
+              >
+                重试
+              </button>
+            </div>
+          </div>
+        </div>
       </template>
     </section>
   </div>
@@ -454,6 +555,81 @@ onUnmounted(() => {
 
 .section-title:first-child {
   margin-top: 0;
+}
+
+.failed-block {
+  margin-top: var(--space-4);
+}
+
+.failed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.failed-head .section-title {
+  margin: 0;
+}
+
+.failed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.failed-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+
+.failed-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.failed-name {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.failed-error {
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+  word-break: break-word;
+}
+
+.link-btn {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.link-btn:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+}
+
+.link-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .help-icon {

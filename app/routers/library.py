@@ -14,6 +14,7 @@ from ..library_check import (
     find_duplicate_groups,
     get_scan_status,
     merge_duplicates,
+    preview_repair_books,
     relocate_books,
     repair_book,
     repair_books,
@@ -39,6 +40,11 @@ class RepairIn(BaseModel):
     mode: str = Field(default="auto", pattern="^(auto|clean|reparse)$")
     # 未显式给 book_ids 时，需显式允许才做全库修复，避免隐式全库深扫
     allow_full_scan: bool = False
+
+
+class RepairPreviewIn(BaseModel):
+    book_ids: list[int] = Field(..., min_length=1, max_length=500)
+    mode: str = Field(default="auto", pattern="^(auto|clean|reparse)$")
 
 
 class RelocateIn(BaseModel):
@@ -132,6 +138,15 @@ def library_repair(payload: RepairIn, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(400, "请显式指定 book_ids；如需全库修复请传 allow_full_scan=true")
     results = repair_books(db, payload.book_ids, mode=payload.mode)
     return {"results": results, "count": len(results)}
+
+
+@router.post("/repair/preview")
+def library_repair_preview(
+    payload: RepairPreviewIn, db: Session = Depends(get_db)
+) -> dict:
+    """只读预览修复动作；确认后再调用 /repair。"""
+    items = preview_repair_books(db, payload.book_ids, mode=payload.mode)
+    return {"items": items, "count": len(items)}
 
 
 @router.post("/repair/{book_id}")

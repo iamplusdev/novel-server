@@ -95,11 +95,13 @@ def cover_thumb(name: str, w: int = 320) -> FileResponse:
     """封面缩略图：按需生成并缓存；Pillow 缺失或生成失败时回退原图。"""
     from .thumbs import ensure_thumb, safe_cover_path
 
-    path = ensure_thumb(name, w) or safe_cover_path(name)
+    thumb = ensure_thumb(name, w)
+    path = thumb or safe_cover_path(name)
     if path is None or not path.is_file():
         raise HTTPException(404, "封面不存在")
-    # 封面文件名带时间戳，替换后 URL 会变化，可安全缓存
-    return FileResponse(path, headers={"Cache-Control": "public, max-age=604800"})
+    # 缩略图可长缓存；回退原图时短缓存，安装 Pillow/回填后能及时生效
+    cache = "public, max-age=604800" if thumb is not None else "no-cache"
+    return FileResponse(path, headers={"Cache-Control": cache})
 
 
 # ---- 前端 SPA（history 路由回退；注册在 API 路由之后，不会抢 /api）----

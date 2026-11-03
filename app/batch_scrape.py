@@ -70,6 +70,9 @@ _source_cooldown_until: dict[str, float] = {}
 _source_block_streak: dict[str, int] = {}
 
 _lock = threading.Lock()
+# 结构化刮削结果：按书号 upsert，供前端结果表/导出使用
+_results_lock = threading.Lock()
+_RESULT_LIMIT = 500
 _status: dict = {
     "running": False,
     "total": 0,
@@ -77,6 +80,9 @@ _status: dict = {
     "matched": 0,
     "skipped": 0,
     "failed": 0,
+    "results": [],
+    "started_at": "",
+    "finished_at": "",
     "log": [],
     "last_error": "",
 }
@@ -87,6 +93,8 @@ _cancel = threading.Event()
 def get_batch_status() -> dict:
     out = dict(_status)
     out["log"] = list(_status.get("log") or [])
+    with _results_lock:
+        out["results"] = [dict(r) for r in (_status.get("results") or [])]
     out["cancel_requested"] = _cancel.is_set()
     return out
 
@@ -104,6 +112,53 @@ def _log(msg: str) -> None:
     logging.getLogger("batch_scrape").info("%s", msg)
     _status["log"].append({"time": datetime.now().isoformat(timespec="seconds"), "message": msg})
     del _status["log"][:-80]
+
+
+def _record_result(
+    *,
+    book_id: int = 0,
+    title: str = "",
+    action: str = "",
+    message: str = "",
+    source: str = "",
+    hit_title: str = "",
+    hit_author: str = "",
+    score: float | None = None,
+    source_id: str = "",
+    recovered: bool = False,
+) -> None:
+    """记录单本刮削结果；同一 book_id 覆盖旧结果，避免兜底恢复后出现重复行。"""
+    item = {
+        "book_id": int(book_id or 0),
+        "title": (title or "")[:200],
+        "action": action,
+        "message": (message or "")[:500],
+        "source": source,
+        "hit_title": (hit_title or "")[:200],
+        "hit_author": (hit_author or "")[:200],
+        "score": score,
+        "source_id": (source_id or "")[:200],
+        "recovered": bool(recovered),
+        "time": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _results_lock:
+        results = _status.setdefault("results", [])
+        if item["book_id"]:
+            for old in results:
+                if old.get("book_id") == item["book_id"]:
+                    for key, value in item.items():
+                        if key == "recovered":
+                            old[key] = bool(old.get(key) or value)
+                        elif value not in (None, ""):
+                            old[key] = value
+                    return
+        results.append(item)
+        del results[:-_RESULT_LIMIT]
+
+
+def _reset_results() -> None:
+    with _results_lock:
+        _status["results"] = []
 
 
 def _cache_get_hits(source_key: str, keyword: str) -> list | None:
@@ -400,6 +455,12 @@ def _run_ref_jobs(
         if not bid:
             _log(f"无法识别番茄书号/链接，跳过：{s[:80]}")
             _status["skipped"] += 1
+            _record_result(
+                title=s,
+                action="skipped",
+                source=label,
+                message="无法识别番茄书号/链接",
+            )
             continue
         parsed.append((s, bid))
 
@@ -437,6 +498,12 @@ def _run_ref_jobs(
             details.append((bid, None))
             _status["failed"] += 1
             _log(f"书号 {bid} 详情失败: {e}")
+            _record_result(
+                title=bid,
+                action="failed",
+                source=label,
+                message=f"详情失败: {e}",
+            )
             if bool(getattr(e, "blocked", False)):
                 _note_source_blocked("fanqie", label)
         time.sleep(scraper_settings.get("delay") + random.uniform(0.0, scraper_settings.get("jitter_max")))
@@ -458,6 +525,16 @@ def _run_ref_jobs(
             db.commit()
             _status["matched"] += 1
             _log(f"完成《{book.title}》[{label}] 按序绑定 id={hd.get('source_id')}")
+            _record_result(
+                book_id=book.id,
+                title=book.title,
+                action="matched",
+                source=label,
+                hit_title=str(hd.get("name") or ""),
+                hit_author=str(hd.get("author") or ""),
+                source_id=str(hd.get("source_id") or ""),
+                message="书号/链接按序绑定",
+            )
     else:
         remaining = [h for _, h in details if h is not None]
         matched_isbn: set[str] = set()
@@ -479,11 +556,31 @@ def _run_ref_jobs(
             db.commit()
             _status["matched"] += 1
             _log(f"完成《{book.title}》[{label}]→《{hd.get('name')}》分数{score:.2f} id={sid}")
+            _record_result(
+                book_id=book.id,
+                title=book.title,
+                action="matched",
+                source=label,
+                hit_title=str(hd.get("name") or ""),
+                hit_author=str(hd.get("author") or ""),
+                score=score,
+                source_id=sid,
+                message=f"匹配分数 {score:.2f}",
+            )
         # 未匹配上的 ref
         leftover = len(remaining)
         if leftover:
             _status["skipped"] += leftover
             _log(f"{leftover} 条书号未匹配到本地书（分数不足或已被占用）")
+            for hit in remaining:
+                _record_result(
+                    title=str(getattr(hit, "name", "") or "未匹配书号"),
+                    action="skipped",
+                    source=label,
+                    hit_title=str(getattr(hit, "name", "") or ""),
+                    hit_author=str(getattr(hit, "author", "") or ""),
+                    message="未匹配到本地书（分数不足或已被占用）",
+                )
 
     _note_source_ok("fanqie")
 
@@ -510,6 +607,16 @@ def _scrape_fanqie_direct(
         _apply_hit_to_book(db, book, d)
         db.commit()
         _log(f"完成《{book.title}》[{label}] id={bid}（书号/链接直连）")
+        _record_result(
+            book_id=book.id,
+            title=book.title,
+            action="matched",
+            source=label,
+            hit_title=str(d.get("name") or ""),
+            hit_author=str(d.get("author") or ""),
+            source_id=bid,
+            message="书号/链接直连",
+        )
         return "ok"
 
     # 无书号：必应反查书名 → 详情 → 分数匹配
@@ -549,6 +656,17 @@ def _scrape_fanqie_direct(
     db.commit()
     tag = "（缓存）" if cache_hit else "（必应反查）"
     _log(f"完成《{title}》[{label}]→《{hd.get('name')}》分数{score:.2f} id={src_id}{tag}")
+    _record_result(
+        book_id=book.id,
+        title=book.title,
+        action="matched",
+        source=label,
+        hit_title=str(hd.get("name") or ""),
+        hit_author=str(hd.get("author") or ""),
+        score=score,
+        source_id=src_id,
+        message="必应反查（缓存）" if cache_hit else "必应反查",
+    )
     return "ok"
 
 
@@ -603,6 +721,17 @@ def _scrape_one(
         _apply_hit_to_book(db, book, d)
         db.commit()
         _log(f"完成 {preview}（高置信跳过详情）")
+        _record_result(
+            book_id=book.id,
+            title=book.title,
+            action="matched",
+            source=label,
+            hit_title=str(hd.get("name") or ""),
+            hit_author=str(hd.get("author") or ""),
+            score=score,
+            source_id=src_id,
+            message="高置信跳过详情",
+        )
         return "ok"
 
     # 详情 + 写入（与单本一致）
@@ -624,6 +753,17 @@ def _scrape_one(
     _apply_hit_to_book(db, book, d)
     db.commit()
     _log(f"完成 {preview}")
+    _record_result(
+        book_id=book.id,
+        title=book.title,
+        action="matched",
+        source=label,
+        hit_title=str(d.get("name") or hd.get("name") or ""),
+        hit_author=str(d.get("author") or hd.get("author") or ""),
+        score=score,
+        source_id=src_id or str(d.get("source_id") or ""),
+        message="详情失败，使用搜索结果" if detail_blocked else "详情写入",
+    )
     return "blocked_ok" if detail_blocked else "ok"
 
 
@@ -689,6 +829,7 @@ def run_batch_scrape(
     from .scrapers.mode import MODE_API, MODE_AUTO, MODE_CHROME, normalize_mode
 
     scrape_mode = normalize_mode(mode)
+    _reset_results()
     _status["mode"] = scrape_mode
     # auto = API 优先（Chrome 仅作失败兜底），故主阶段解析为：显式 chrome 才用浏览器，其余走 API
     resolved = MODE_CHROME if scrape_mode == MODE_CHROME else MODE_API
@@ -770,10 +911,24 @@ def run_batch_scrape(
                 result = _scrape_book_across(db, book, source_pairs, min_score=min_score)
                 if result == "skip":
                     _status["skipped"] += 1
+                    _record_result(
+                        book_id=book.id,
+                        title=title,
+                        action="skipped",
+                        source=source,
+                        message="未达到匹配阈值",
+                    )
                     block_streak = 0
                 elif result == "fail":
                     _status["failed"] += 1
                     failed_jobs.append((book.id, title))
+                    _record_result(
+                        book_id=book.id,
+                        title=title,
+                        action="failed",
+                        source=source,
+                        message="所有书源均失败",
+                    )
                     block_streak = 0
                 elif result == "blocked_ok":
                     _status["matched"] += 1
@@ -786,6 +941,13 @@ def run_batch_scrape(
                 db.rollback()
                 _status["failed"] += 1
                 failed_jobs.append((book.id, title))
+                _record_result(
+                    book_id=book.id,
+                    title=title,
+                    action="failed",
+                    source=source,
+                    message=str(exc),
+                )
                 blocked = bool(getattr(exc, "blocked", False))
                 if blocked:
                     block_streak += 1
@@ -839,6 +1001,7 @@ def run_batch_scrape(
         _log(summary)
         return dict(_status)
     finally:
+        _status["finished_at"] = datetime.now().isoformat(timespec="seconds")
         if resolved == MODE_CHROME:
             from .scrapers import http_util as _hu
 
@@ -887,11 +1050,33 @@ def _run_browser_fallback(
                     # 成功则从 failed 计数里扣回
                     _status["failed"] = max(0, _status["failed"] - 1)
                     _log(f"[浏览器] 恢复《{title}》")
+                    _record_result(
+                        book_id=book.id,
+                        title=title,
+                        action="recovered",
+                        source=label,
+                        message="浏览器兜底恢复",
+                        recovered=True,
+                    )
                 elif result == "skip":
                     _log(f"[浏览器] 《{title}》仍无匹配")
+                    _record_result(
+                        book_id=book.id,
+                        title=title,
+                        action="failed",
+                        source=label,
+                        message="浏览器重试仍无匹配",
+                    )
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
                 _log(f"[浏览器] 《{title}》仍失败: {exc}")
+                _record_result(
+                    book_id=book.id,
+                    title=title,
+                    action="failed",
+                    source=label,
+                    message=f"浏览器重试仍失败: {exc}",
+                )
             time.sleep(scraper_settings.get("delay") + random.uniform(0.0, scraper_settings.get("jitter_max")))
     finally:
         http_util.set_browser_mode(False)
@@ -913,12 +1098,14 @@ def start_batch_scrape(**kwargs) -> bool:
         _status["running"] = True
         _status["last_error"] = ""
         _status["started_at"] = datetime.now().isoformat(timespec="seconds")
+        _status["finished_at"] = ""
         try:
             run_batch_scrape(**kwargs)
         except Exception as exc:  # noqa: BLE001
             _status["last_error"] = str(exc)
             _log(f"批处理异常: {exc}")
         finally:
+            _status["finished_at"] = datetime.now().isoformat(timespec="seconds")
             _status["running"] = False
             _lock.release()
 

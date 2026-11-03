@@ -75,6 +75,85 @@ class CoreTests(unittest.TestCase):
         # 再次调用命中缓存，路径一致
         self.assertEqual(thumbs.ensure_thumb(name, 200), out)
 
+    def test_rebuild_thumbs_idempotent(self) -> None:
+        """批量回填：首次生成、二次跳过、force 重建、无封面跳过。"""
+        from app import thumbs
+        from app.models import Book
+
+        if thumbs.Image is None or thumbs.ImageOps is None:
+            self.skipTest("未安装 Pillow")
+        from PIL import Image as PILImage
+
+        name = "1_rebuild.jpg"
+        PILImage.new("RGB", (600, 900), (20, 120, 200)).save(
+            self.cfg.settings.covers_dir / name, format="JPEG"
+        )
+        book = Book(title="回填书", cover_file=name)
+
+        first = thumbs.rebuild_thumbs([book])
+        self.assertTrue(first["available"])
+        self.assertEqual(first["generated"], 1)
+        self.assertEqual(first["skipped"], 0)
+
+        second = thumbs.rebuild_thumbs([book])
+        self.assertEqual(second["generated"], 0)
+        self.assertEqual(second["skipped"], 1)
+
+        forced = thumbs.rebuild_thumbs([book], force=True)
+        self.assertEqual(forced["generated"], 1)
+
+        no_cover = thumbs.rebuild_thumbs([Book(title="无封面", cover_file="")])
+        self.assertEqual(no_cover["skipped"], 1)
+
+    def test_rebuild_thumbs_without_pillow(self) -> None:
+        """未安装 Pillow 时返回 available=false，不抛异常。"""
+        from unittest import mock
+
+        from app import thumbs
+        from app.models import Book
+
+        with mock.patch.object(thumbs, "Image", None), mock.patch.object(
+            thumbs, "ImageOps", None
+        ):
+            res = thumbs.rebuild_thumbs([Book(title="无 Pillow", cover_file="x.jpg")])
+        self.assertFalse(res["available"])
+        self.assertEqual(res["generated"], 0)
+
+    def test_rebuild_thumbs_endpoint(self) -> None:
+        """管理端接口只处理有封面的书，并返回统计。"""
+        from app import thumbs
+        from app.database import SessionLocal, get_db
+        from app.models import Book
+        from app.routers.admin import ThumbsRebuildIn, admin_rebuild_thumbs
+
+        if thumbs.Image is None or thumbs.ImageOps is None:
+            self.skipTest("未安装 Pillow")
+        from PIL import Image as PILImage
+
+        name = "1_endpoint.jpg"
+        PILImage.new("RGB", (400, 600), (10, 160, 90)).save(
+            self.cfg.settings.covers_dir / name, format="JPEG"
+        )
+        s = SessionLocal()
+        s.add_all(
+            [
+                Book(title="有封面", cover_file=name),
+                Book(title="无封面", cover_file=""),
+            ]
+        )
+        s.commit()
+        s.close()
+
+        db = next(get_db())
+        try:
+            res = admin_rebuild_thumbs(ThumbsRebuildIn(limit=10), db=db)
+        finally:
+            db.close()
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["available"])
+        self.assertEqual(res["total"], 1)
+        self.assertEqual(res["generated"], 1)
+
     def test_cover_thumb_rejects_unsafe_names(self) -> None:
         """路径穿越/非图片扩展名一律拒绝。"""
         from app import thumbs
@@ -96,7 +175,8 @@ class CoreTests(unittest.TestCase):
             self.assertIsNone(thumbs.ensure_thumb(name, 320))
             resp = main_mod.cover_thumb(name, 320)
         self.assertEqual(Path(resp.path).name, name)
-        self.assertIn("max-age=604800", resp.headers.get("cache-control", ""))
+        # 回退原图不长久缓存，安装 Pillow/回填后能及时切换到缩略图
+        self.assertEqual(resp.headers.get("cache-control"), "no-cache")
 
     def test_safe_delete_cover_removes_thumbs(self) -> None:
         """删除/更换封面时同步清理派生缩略图。"""
@@ -368,6 +448,118 @@ class CoreTests(unittest.TestCase):
         self.assertIn("正文甲内容", joined)
         self.assertIn("正文乙内容", joined)
         s.close()
+
+    def test_import_only_paths_and_failed_items(self) -> None:
+        """失败项带相对路径；only_paths 只重试指定文件。"""
+        from unittest import mock
+
+        from app import importer
+
+        novels = self.cfg.settings.novels_dir / "未分类"
+        novels.mkdir(parents=True, exist_ok=True)
+        good = novels / "good.txt"
+        bad = novels / "bad.txt"
+        body = "第一章 开始\n正文内容"
+        good.write_text(body, encoding="utf-8")
+        bad.write_text(body, encoding="utf-8")
+
+        real_loader = importer.load_txt_book_with_hash
+
+        def fake_loader(path, category, cancel=None):
+            if Path(path).name == "bad.txt":
+                raise ValueError("坏文件")
+            return real_loader(path, category, cancel=cancel)
+
+        with mock.patch.object(importer, "load_txt_book_with_hash", side_effect=fake_loader):
+            res = importer.import_all(
+                only_paths={str(good.resolve()), str(bad.resolve())}
+            )
+
+        self.assertEqual(len(res.added), 1, res.summary)
+        self.assertEqual(len(res.failed_items), 1)
+        item = res.failed_items[0]
+        self.assertEqual(item["name"], "bad.txt")
+        self.assertEqual(item["path"], "未分类/bad.txt")
+        self.assertIn("坏文件", item["error"])
+        self.assertEqual(res.to_dict()["failed_items"], res.failed_items)
+
+    def test_import_retry_path_validation(self) -> None:
+        """重试路径必须位于 NOVELS_DIR 内且为存在的 TXT。"""
+        from fastapi import HTTPException
+
+        from app.routers.admin import _validated_retry_paths
+
+        novels = self.cfg.settings.novels_dir / "未分类"
+        novels.mkdir(parents=True, exist_ok=True)
+        ok = novels / "ok.txt"
+        ok.write_text("第一章 开始\n正文", encoding="utf-8")
+
+        self.assertEqual(
+            _validated_retry_paths(["未分类/ok.txt", "未分类/ok.txt"]),
+            [str(ok.resolve())],
+        )
+        with self.assertRaises(HTTPException):
+            _validated_retry_paths(["../outside.txt"])
+        with self.assertRaises(HTTPException):
+            _validated_retry_paths(["未分类/ok.md"])
+
+    def test_import_log_keeps_failed_items(self) -> None:
+        """失败项随历史日志落库，刷新页面后仍可重试。"""
+        from app.importer import ImportResult, query_import_logs, save_import_log
+
+        item = {"path": "未分类/bad.txt", "name": "bad.txt", "error": "解析失败"}
+        result = ImportResult(failed=["bad.txt: 解析失败"], failed_items=[item], skipped=["ok"])
+        save_import_log(result, started_at="2026-01-01T00:00:00", mode="local")
+
+        logs = query_import_logs(limit=1)
+        self.assertEqual(logs[0]["detail"]["failed_items"], [item])
+
+    def test_repair_preview_is_read_only(self) -> None:
+        """预览只计算动作，不改 DB/正文；随后修复仍按同一计划执行。"""
+        from app.database import SessionLocal, get_db
+        from app.library_check import preview_repair_book, repair_book
+        from app.models import Book, Chapter
+
+        s = SessionLocal()
+        book = Book(
+            title="预览书",
+            author="A",
+            category="未分类",
+            word_count=10,
+            chapter_count=1,
+            updated_at="2026-01-01T00:00:00",
+        )
+        s.add(book)
+        s.flush()
+        chapter = Chapter(
+            book_id=book.id,
+            index=0,
+            title="第一章",
+            content="正常\x00文本",
+            content_chars=7,
+            content_offset=0,
+            content_length=0,
+        )
+        s.add(chapter)
+        s.commit()
+        book_id = book.id
+        s.close()
+
+        db = next(get_db())
+        try:
+            preview = preview_repair_book(db, book_id, mode="auto")
+            self.assertTrue(preview["will_change"])
+            self.assertIn("清理控制字符/零宽字符", preview["actions"])
+
+            # 预览后数据和更新时间保持不变
+            db.expire_all()
+            current = db.get(Book, book_id)
+            self.assertEqual(current.updated_at, "2026-01-01T00:00:00")
+
+            repaired = repair_book(db, book_id, mode="auto")
+            self.assertIn("已清理控制字符/零宽字符", repaired["actions"])
+        finally:
+            db.close()
 
     def test_chapter_parse_variants(self) -> None:
         """分章：标题+正文同行 / 全角与大写数字 / 无换行连排 均应识别。"""
@@ -685,6 +877,46 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(b.source, "")
         finally:
             db.close()
+
+    def test_batch_scrape_result_report(self) -> None:
+        """批量刮削结果：同书号 upsert，兜底恢复覆盖失败记录。"""
+        from app import batch_scrape as bs
+
+        with bs._results_lock:
+            bs._status["results"] = []
+        try:
+            bs._record_result(
+                book_id=1, title="甲", action="failed", message="详情失败", source="起点"
+            )
+            bs._record_result(
+                book_id=1,
+                title="甲",
+                action="recovered",
+                message="浏览器兜底恢复",
+                source="起点",
+                hit_title="甲站",
+                score=0.91,
+                recovered=True,
+            )
+            bs._record_result(
+                book_id=2, title="乙", action="skipped", message="未达到匹配阈值"
+            )
+
+            status = bs.get_batch_status()
+            self.assertEqual(len(status["results"]), 2)
+            first = status["results"][0]
+            self.assertEqual(first["action"], "recovered")
+            self.assertTrue(first["recovered"])
+            self.assertEqual(first["hit_title"], "甲站")
+            self.assertEqual(first["score"], 0.91)
+            self.assertEqual(status["results"][1]["action"], "skipped")
+
+            # 返回的是副本，调用方修改不会污染全局状态
+            status["results"][0]["title"] = "changed"
+            self.assertEqual(bs.get_batch_status()["results"][0]["title"], "甲")
+        finally:
+            with bs._results_lock:
+                bs._status["results"] = []
 
     def test_sort_books_by_read_at(self) -> None:
         """read=true + sort=read：只返回读过的书，按最近阅读倒序。"""

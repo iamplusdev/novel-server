@@ -1,5 +1,10 @@
 import { http } from "./client";
-import type { BatchStatus, ImportStatus, TasksStatus } from "./types";
+import type {
+  BatchStatus,
+  ImportFailedItem,
+  ImportStatus,
+  TasksStatus,
+} from "./types";
 
 /** 导入/体检/刮削互斥任务状态（前端禁用按钮与提示用） */
 export function fetchTasksStatus() {
@@ -15,6 +20,14 @@ export function startImport() {
 
 export function cancelImport() {
   return http.post<{ ok: boolean; import: ImportStatus }>("/api/admin/import/cancel");
+}
+
+/** 仅重试失败项；paths 为相对 NOVELS_DIR 的路径 */
+export function retryImport(paths: string[]) {
+  return http.post<{ started: boolean; mode: string; retry_count: number; import: ImportStatus }>(
+    "/api/admin/import/retry",
+    { paths },
+  );
 }
 
 export function fetchImportStatus() {
@@ -37,6 +50,7 @@ export interface ImportLogItem {
     updated: string[];
     skipped: string[];
     failed: string[];
+    failed_items?: ImportFailedItem[];
     recent: string[];
   };
   /** 仅新增列表（历史只记录新增时使用） */

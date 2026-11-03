@@ -327,6 +327,99 @@ def _read_source_text(book: Book) -> str | None:
         return None
 
 
+def _plan_repair(book: Book, chapters, texts: list[str], mode: str) -> dict:
+    """只读计算修复计划；repair_book 与预览共用，避免判断逻辑分叉。"""
+    cleaned_list = [_clean_text(t or "") for t in texts]
+    clean_changed = cleaned_list != texts
+    need_reparse = mode == "reparse"
+    if mode == "auto":
+        need_reparse = (
+            book.word_count >= 5000 and len(chapters) <= 1
+        ) or any((t or "").count("�") >= 5 for t in texts) or not chapters
+    source = _read_source_text(book) if need_reparse else None
+    parsed = None
+    if source:
+        parsed = load_txt_book_from_text(
+            source, Path(book.source_path or book.title).stem, book.category
+        )
+    return {
+        "cleaned_list": cleaned_list,
+        "clean_changed": clean_changed,
+        "need_reparse": need_reparse,
+        "source": source,
+        "parsed": parsed,
+    }
+
+
+def preview_repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
+    """只读预览单本修复动作，不写数据库/正文包。"""
+    book = db.get(Book, book_id)
+    if not book:
+        raise ValueError("书籍不存在")
+    chapters = db.execute(
+        select(Chapter).where(Chapter.book_id == book.id).order_by(Chapter.index, Chapter.id)
+    ).scalars().all()
+    texts = _load_chapter_texts(db, book.id, chapters)
+    plan = _plan_repair(book, chapters, texts, mode)
+
+    actions: list[str] = []
+    effective_reparse = False
+    if plan["clean_changed"]:
+        actions.append("清理控制字符/零宽字符")
+    if plan["need_reparse"]:
+        parsed = plan["parsed"]
+        if not plan["source"]:
+            actions.append("无法读取源 TXT，仅能清理字符")
+        elif parsed is not None:
+            if len(parsed.chapters) <= 1 and len(chapters) > 1:
+                actions.append("源文件仍无法分章，保留原章节结构")
+            else:
+                effective_reparse = True
+                actions.append(f"从源重新解析为 {len(parsed.chapters)} 章")
+
+    return {
+        "id": book.id,
+        "title": book.title,
+        "actions": actions or ["无需修复"],
+        "chapter_count": len(chapters),
+        "new_chapter_count": len(plan["parsed"].chapters) if effective_reparse else None,
+        "need_reparse": plan["need_reparse"],
+        "source_available": bool(plan["source"]) if plan["need_reparse"] else None,
+        "will_change": bool(plan["clean_changed"] or effective_reparse),
+    }
+
+
+def preview_repair_books(
+    db: Session, book_ids: list[int], mode: str = "auto"
+) -> list[dict]:
+    """批量只读预览；单本失败不影响其它书。"""
+    items: list[dict] = []
+    seen: set[int] = set()
+    for raw_id in book_ids:
+        book_id = int(raw_id)
+        if book_id in seen:
+            continue
+        seen.add(book_id)
+        try:
+            items.append(preview_repair_book(db, book_id, mode=mode))
+        except Exception as exc:  # noqa: BLE001
+            book = db.get(Book, book_id)
+            items.append(
+                {
+                    "id": book_id,
+                    "title": book.title if book else "",
+                    "actions": [],
+                    "chapter_count": None,
+                    "new_chapter_count": None,
+                    "need_reparse": False,
+                    "source_available": None,
+                    "will_change": False,
+                    "error": str(exc),
+                }
+            )
+    return items
+
+
 def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
     """修复一本书。
 
@@ -345,34 +438,28 @@ def repair_book(db: Session, book_id: int, mode: str = "auto") -> dict:
     actions = []
     texts = _load_chapter_texts(db, book.id, chapters)
     staged = False  # 是否已把新正文写入临时包（决定提交/回滚时切换或丢弃）
+    plan = _plan_repair(book, chapters, texts, mode)
 
     # 1) 清理字符（读正文包 → 清理后整包重写并回填偏移）
-    if mode in ("clean", "auto", "reparse"):
-        cleaned_list = [_clean_text(t or "") for t in texts]
-        if cleaned_list != texts:
-            spans = write_pack_staged(book.id, cleaned_list)
-            staged = True
-            for ch, txt, (off, blen, clen) in zip(chapters, cleaned_list, spans):
-                ch.content = ""
-                ch.content_offset = off
-                ch.content_length = blen
-                ch.content_chars = clen
-            texts = cleaned_list
-            actions.append("已清理控制字符/零宽字符")
+    if plan["clean_changed"]:
+        cleaned_list = plan["cleaned_list"]
+        spans = write_pack_staged(book.id, cleaned_list)
+        staged = True
+        for ch, txt, (off, blen, clen) in zip(chapters, cleaned_list, spans):
+            ch.content = ""
+            ch.content_offset = off
+            ch.content_length = blen
+            ch.content_chars = clen
+        texts = cleaned_list
+        actions.append("已清理控制字符/零宽字符")
 
-    need_reparse = mode == "reparse"
-    if mode == "auto":
-        need_reparse = (
-            book.word_count >= 5000 and len(chapters) <= 1
-        ) or any((t or "").count("�") >= 5 for t in texts) or not chapters
-
+    need_reparse = plan["need_reparse"]
     if need_reparse:
-        src = _read_source_text(book)
+        src = plan["source"]
         if not src:
             actions.append("无法读取源 TXT，仅做了字符清理")
         else:
-            # 再按最佳编码（decode_txt_bytes 已试过，这里对 bytes 重新选择）
-            parsed = load_txt_book_from_text(src, Path(book.source_path or book.title).stem, book.category)
+            parsed = plan["parsed"]
             if len(parsed.chapters) <= 1 and len(chapters) > 1:
                 actions.append("源文件仍无法分章，保留原章节结构")
             else:

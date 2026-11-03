@@ -1,5 +1,5 @@
 import { http } from "./client";
-import type { LibraryReport, ScanStatus } from "./types";
+import type { LibraryReport, RepairPreviewItem, ScanStatus } from "./types";
 
 /** 后台体检进度 SSE */
 export const SCAN_STREAM_URL = "/api/admin/library/scan/stream";
@@ -26,6 +26,13 @@ export function mergeDuplicates(keepId: number, deleteIds: number[]) {
   return http.post<{ kept: { id: number; title: string }; deleted: unknown[] }>(
     "/api/admin/library/merge",
     { keep_id: keepId, delete_ids: deleteIds },
+  );
+}
+
+export function previewRepair(mode: string = "auto", bookIds: number[]) {
+  return http.post<{ items: RepairPreviewItem[]; count: number }>(
+    "/api/admin/library/repair/preview",
+    { mode, book_ids: bookIds },
   );
 }
 
