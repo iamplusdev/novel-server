@@ -109,6 +109,12 @@ def book_list_item(book: Book, base: str | None = None) -> dict:
         "updated_at": book.updated_at,
         # 阅读进度百分比（0–100），列表卡片展示用
         "read_percent": int(getattr(book, "read_percent", 0) or 0),
+        # 最近阅读章节序号（0 基，-1=无记录），「继续阅读」卡片展示用
+        "read_chapter_index": (
+            int(book.read_chapter_index)
+            if getattr(book, "read_chapter_index", None) is not None
+            else -1
+        ),
         # 最近阅读时间（ISO8601，空串=未读），「继续阅读」排序用
         "read_at": getattr(book, "read_at", "") or "",
     }
