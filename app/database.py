@@ -1,7 +1,7 @@
 """SQLAlchemy 引擎与会话。"""
 from __future__ import annotations
 
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 
 from sqlalchemy import create_engine, delete, event, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -151,12 +151,41 @@ def _migrate_content_to_packs() -> None:
                 conn.execute(text("VACUUM"))
 
 
-# FTS 删除同步触发器：索引与内容表不一致时会抛 database disk image is malformed
+# FTS 同步触发器：索引与内容表不一致时，UPDATE/DELETE 触发器对缺失 rowid
+# 执行 'delete' 会抛 database disk image is malformed（外部内容表特性，非文件损坏）
+_FTS_AI_TRIGGER_SQL = (
+    "CREATE TRIGGER IF NOT EXISTS books_ai_fts AFTER INSERT ON books BEGIN "
+    "INSERT INTO books_fts(rowid, title, author, tags, intro) "
+    "VALUES (new.id, new.title, new.author, new.tags, new.intro); END"
+)
 _FTS_AD_TRIGGER_SQL = (
     "CREATE TRIGGER IF NOT EXISTS books_ad_fts AFTER DELETE ON books BEGIN "
     "INSERT INTO books_fts(books_fts, rowid, title, author, tags, intro) "
     "VALUES ('delete', old.id, old.title, old.author, old.tags, old.intro); END"
 )
+_FTS_AU_TRIGGER_SQL = (
+    "CREATE TRIGGER IF NOT EXISTS books_au_fts AFTER UPDATE ON books BEGIN "
+    "INSERT INTO books_fts(books_fts, rowid, title, author, tags, intro) "
+    "VALUES ('delete', old.id, old.title, old.author, old.tags, old.intro); "
+    "INSERT INTO books_fts(rowid, title, author, tags, intro) "
+    "VALUES (new.id, new.title, new.author, new.tags, new.intro); END"
+)
+
+_FTS_TRIGGER_SQLS = (_FTS_AI_TRIGGER_SQL, _FTS_AD_TRIGGER_SQL, _FTS_AU_TRIGGER_SQL)
+
+
+def _create_fts_triggers(conn) -> None:
+    from sqlalchemy import text
+
+    for sql in _FTS_TRIGGER_SQLS:
+        conn.execute(text(sql))
+
+
+def _drop_fts_triggers(conn) -> None:
+    from sqlalchemy import text
+
+    for name in ("books_ai_fts", "books_ad_fts", "books_au_fts"):
+        conn.execute(text(f"DROP TRIGGER IF EXISTS {name}"))
 
 
 # FTS5 外部内容表列定义（建表/触发器/重建共用）
@@ -214,28 +243,12 @@ def _init_fts() -> None:
             if not ddl:
                 conn.execute(text(_fts_ddl(tokenizer)))
             # 增量同步触发器
-            for name, sql in (
-                (
-                    "books_ai_fts",
-                    "CREATE TRIGGER IF NOT EXISTS books_ai_fts AFTER INSERT ON books BEGIN "
-                    "INSERT INTO books_fts(rowid, title, author, tags, intro) "
-                    "VALUES (new.id, new.title, new.author, new.tags, new.intro); END",
-                ),
-                ("books_ad_fts", _FTS_AD_TRIGGER_SQL),
-                (
-                    "books_au_fts",
-                    "CREATE TRIGGER IF NOT EXISTS books_au_fts AFTER UPDATE ON books BEGIN "
-                    "INSERT INTO books_fts(books_fts, rowid, title, author, tags, intro) "
-                    "VALUES ('delete', old.id, old.title, old.author, old.tags, old.intro); "
-                    "INSERT INTO books_fts(rowid, title, author, tags, intro) "
-                    "VALUES (new.id, new.title, new.author, new.tags, new.intro); END",
-                ),
-            ):
-                conn.execute(text(sql))
-            # 书籍数与 FTS 不一致（含 FTS 为空/半同步）时重建，避免删除触发器报错
-            n_fts = conn.execute(text("SELECT count(*) FROM books_fts")).scalar() or 0
-            n_books = conn.execute(text("SELECT count(*) FROM books")).scalar() or 0
-            if n_books != n_fts:
+            _create_fts_triggers(conn)
+            # 书籍行集合与 FTS 不一致时重建（count 相等但 rowid 集合漂移也要重建，
+            # 否则 UPDATE/DELETE 触发器对缺失 rowid 报 malformed）
+            fts_ids = {r[0] for r in conn.execute(text("SELECT rowid FROM books_fts"))}
+            book_ids = {r[0] for r in conn.execute(text("SELECT id FROM books"))}
+            if fts_ids != book_ids:
                 conn.execute(text("INSERT INTO books_fts(books_fts) VALUES('rebuild')"))
     except Exception:  # noqa: BLE001
         # 无 FTS5 的构建则自动降级为 LIKE
@@ -248,6 +261,30 @@ def rebuild_fts() -> None:
         return
     with engine.begin() as conn:
         conn.execute(text("INSERT INTO books_fts(books_fts) VALUES('rebuild')"))
+
+
+def commit_with_fts_recovery(db: Session, apply: Callable[[], None]) -> None:
+    """执行 apply() 变更并提交；FTS 索引与主表不同步导致 malformed 时自动重建后重试。
+
+    背景：books_fts 为外部内容表，UPDATE/DELETE 触发器对 FTS 中缺失的 rowid
+    执行 'delete' 会报 database disk image is malformed（并非文件损坏）。
+    恢复流程：回滚事务 → 摘掉三个同步触发器 → rebuild 索引 → 恢复触发器
+    → 重新执行 apply() 并提交。其他异常原样抛出。
+    """
+    apply()
+    try:
+        db.commit()
+        return
+    except Exception as exc:  # noqa: BLE001
+        if "malformed" not in str(exc).lower() or not fts_available():
+            raise
+        db.rollback()
+    with engine.begin() as conn:
+        _drop_fts_triggers(conn)
+        conn.execute(text("INSERT INTO books_fts(books_fts) VALUES('rebuild')"))
+        _create_fts_triggers(conn)
+    apply()
+    db.commit()
 
 
 def delete_books_safe(db: Session, book_ids: Sequence[int]) -> bool:
