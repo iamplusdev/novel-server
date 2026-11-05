@@ -41,10 +41,6 @@ class Settings:
         # 反代可信 Host 白名单（逗号分隔）；为空则对外基址固定用 PUBLIC_BASE_URL
         raw_hosts = os.environ.get("TRUSTED_HOSTS", "")
         self.trusted_hosts: list[str] = [h.strip() for h in raw_hosts.split(",") if h.strip()]
-        # Legado WebDAV 同步：凭据只存服务端；未配置时同步接口返回未配置状态（不报错）
-        self.webdav_url: str = _env("WEBDAV_URL", "").rstrip("/")
-        self.webdav_username: str = _env("WEBDAV_USERNAME", "")
-        self.webdav_password: str = _env("WEBDAV_PASSWORD", "")
 
     def ensure_dirs(self) -> None:
         self.novels_dir.mkdir(parents=True, exist_ok=True)

@@ -578,70 +578,12 @@ def admin_update_progress(
     # FTS 索引与主表不同步时触发器会报 malformed，自动重建后重试
     commit_with_fts_recovery(db, _apply)
     db.refresh(book)
-    db.refresh(book)
     return {
         "ok": True,
         "id": book.id,
         "read_percent": book.read_percent,
         "read_chapter_index": book.read_chapter_index,
         "read_at": book.read_at,
-    }
-
-
-class LegadoPushIn(BaseModel):
-    """Legado 进度推送：章节 ID + 章内字符偏移 + 客户端时间戳（毫秒）。"""
-
-    chapter_id: int = Field(ge=1)
-    chapter_pos: int = Field(default=0, ge=0)
-    client_time: int | None = Field(default=None, ge=0)
-
-
-@router.post("/books/{book_id}/sync/push")
-def admin_legado_push(book_id: int, payload: LegadoPushIn, db: Session = Depends(get_db)) -> dict:
-    """推送进度到 Legado WebDAV（凭据在服务端）；未配置/失败都不报错。"""
-    from .. import legado_sync
-
-    book = db.get(Book, book_id)
-    if not book:
-        raise HTTPException(404, "书籍不存在")
-    ch = db.get(Chapter, int(payload.chapter_id))
-    if not ch or ch.book_id != book.id:
-        raise HTTPException(404, "章节不存在")
-    time_ms = int(payload.client_time) if payload.client_time else int(time.time() * 1000)
-    result = legado_sync.push_progress(
-        name=book.name,
-        author=book.author or "",
-        chapter_index=int(ch.index),
-        chapter_pos=int(payload.chapter_pos),
-        chapter_time_ms=time_ms,
-        chapter_title=ch.title or "",
-    )
-    if result.get("ok") and not result.get("skipped"):
-        # 同步成功时顺带更新本地进度记录，保持列表展示一致
-        book.read_chapter_index = int(ch.index)
-        book.read_at = datetime.now().isoformat(timespec="seconds")
-        db.commit()
-    return {"ok": True, **result}
-
-
-@router.post("/books/{book_id}/sync/pull")
-def admin_legado_pull(book_id: int, db: Session = Depends(get_db)) -> dict:
-    """从 Legado WebDAV 拉取远端进度；未配置返回 configured=False（不报错）。"""
-    from .. import legado_sync
-
-    book = db.get(Book, book_id)
-    if not book:
-        raise HTTPException(404, "书籍不存在")
-    result = legado_sync.pull_progress(name=book.name, author=book.author or "")
-    return {
-        "ok": True,
-        "book_id": book.id,
-        "local": {
-            "chapter_index": book.read_chapter_index,
-            "percent": book.read_percent,
-            "read_at": book.read_at or "",
-        },
-        **result,
     }
 
 
