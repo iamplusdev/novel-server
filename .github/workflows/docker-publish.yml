@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: iamplusdev/novel-server
+  IMAGE_NAME: iamplusdev/inovel-server
 
 concurrency:
   group: docker-publish-${{ github.ref }}

@@ -3,7 +3,7 @@
 个人 **TXT 小说库**：导入、刮削、体检、网页阅读，并通过 Legado（开源阅读）书源在手机上阅读。
 目标是依赖少、部署简单，可长期跑在个人服务器 / NAS 上。
 
-- **源码仓库（唯一）**：<https://github.com/iamplusdev/novel-server>
+- **源码仓库（唯一）**：<https://github.com/iamplusdev/inovel-server>
 
 ## 目录
 
@@ -71,7 +71,7 @@
 
 ```bash
 mkdir -p novel-server && cd novel-server
-git clone https://github.com/iamplusdev/novel-server.git .
+git clone https://github.com/iamplusdev/inovel-server.git .
 mkdir -p novels data covers
 ```
 
@@ -112,8 +112,8 @@ docker compose build
 docker compose up -d
 
 # 方式 B：使用预构建镜像
-docker pull iamplusdev/novel-server:latest
-# 将 compose 中的 build: 段删除，改为 image: iamplusdev/novel-server:latest
+docker pull iamplusdev/inovel-server:latest
+# 将 compose 中的 build: 段删除，改为 image: iamplusdev/inovel-server:latest
 docker compose up -d
 
 docker compose ps
@@ -475,7 +475,7 @@ python scripts/release.py --bump minor --dry-run   # 预览 minor；去掉 --dry
 
 ### 镜像与自动构建
 
-- 镜像：`iamplusdev/novel-server`，架构 `linux/amd64`。
+- 镜像：`iamplusdev/inovel-server`，架构 `linux/amd64`。
 - 标签：`latest`、`v1.2.3`、`1.2.3`、`1.2`、`sha-<短哈希>`。
 - 触发：**仅推送 `v*` 发布标签**或手动运行；推 `main` 只推代码，不构建镜像。
 - **README 随发布 tag 同步为 Docker Hub 镜像说明**（不再由 main 的 README 变更触发）。

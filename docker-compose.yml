@@ -5,7 +5,7 @@ services:
       # 需要 Chrome 刮削时置 1，镜像内安装 Playwright（CDP 连宿主机 Chrome）
       args:
         INSTALL_BROWSER_DEPS: "1"
-    image: novel-server:latest
+    image: iamplusdev/inovel-server:latest
     container_name: novel-server
     restart: unless-stopped
     # host 网络：可直达宿主机 tieron Chrome CDP（127.0.0.1:16002）
